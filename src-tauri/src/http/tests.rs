@@ -41,6 +41,7 @@ pub(super) fn client() -> Client {
 pub(super) fn input(url: &str) -> ExecutionInput {
     ExecutionInput {
         request: Request {
+            import_issues: vec![],
             auth: None,
             id: Uuid::new_v4().to_string(),
             name: "Synthetic request".into(),
@@ -248,6 +249,25 @@ async fn sends_method_query_headers_body_and_resolves_values_before_dispatch() {
     assert_eq!(result.text.as_deref(), Some(r#"{"ok":true}"#));
     assert!(result.json_text.as_deref().unwrap().contains('\n'));
     assert!(result.headers.iter().any(|h| h.name == "x-example"));
+    assert!(raw
+        .to_ascii_lowercase()
+        .contains(concat!("user-agent: fluxkit/", env!("CARGO_PKG_VERSION"))));
+    assert!(raw.to_ascii_lowercase().contains("accept: */*"));
+    let snapshot = serde_json::to_string(&result.request_headers).unwrap();
+    assert!(!snapshot.contains("synthetic-token"));
+    assert!(result
+        .request_headers
+        .iter()
+        .any(|row| row.name == "authorization"
+            && row.source == "authentication"
+            && row.value == "••••••••"));
+    assert!(result
+        .request_headers
+        .iter()
+        .any(|row| row.name == "content-type"
+            && row.value == "application/json"
+            && row.source == "automatic"));
+
     let value = serde_json::to_value(&result).unwrap();
     assert!(value.get("elapsedMs").is_some());
     assert!(value.get("byteCount").is_some());
@@ -625,6 +645,8 @@ async fn inherited_authentication_uses_variable_ids_and_manual_fields_win() {
     let parent = Uuid::new_v4().to_string();
     let child = Uuid::new_v4().to_string();
     let collection = Collection {
+        open_api: None,
+        postman: None,
         schema_version: 1,
         id: Uuid::new_v4().to_string(),
         name: "API".into(),
@@ -942,4 +964,220 @@ async fn history_keeps_transfer_status_and_timing_without_network_payloads() {
         .unwrap()
         .contains("private-path"));
     task.await.unwrap();
+}
+
+#[test]
+fn import_review_blocks_execution_and_tokens_before_values_even_if_the_input_omits_the_flag() {
+    use crate::projects::{model::Collection, store::ProjectStore};
+    struct NoValues(std::cell::Cell<usize>);
+    impl Values for NoValues {
+        fn get(&self, _: &str) -> Result<Option<String>, String> {
+            self.0.set(self.0.get() + 1);
+            Err("Unexpected credential read".into())
+        }
+        fn set(&self, _: &str, _: &str) -> Result<(), String> {
+            Err("Unexpected credential write".into())
+        }
+        fn delete(&self, _: &str) -> Result<(), String> {
+            Err("Unexpected credential deletion".into())
+        }
+    }
+    let root = tempdir().unwrap();
+    let settings = tempdir().unwrap();
+    let mut store = ProjectStore::default();
+    let project = store
+        .create(root.path(), "Review execution".into())
+        .unwrap();
+    let mut pending = input("https://synthetic.invalid/checked");
+    pending.request.import_issues =
+        vec!["Configure imported authentication and attachments.".into()];
+    let values = NoValues(std::cell::Cell::new(0));
+    let cancel = CancellationToken::new();
+    let http = client();
+    assert!(prepare::prepare(
+        &pending,
+        None,
+        "session",
+        settings.path(),
+        &http,
+        &values,
+        &cancel
+    )
+    .err()
+    .unwrap()
+    .contains("review"));
+    let collection = Collection {
+        schema_version: 1,
+        id: Uuid::new_v4().to_string(),
+        name: "Pending".into(),
+        auth: None,
+        open_api: None,
+        postman: None,
+        folders: vec![],
+        requests: vec![pending.request.clone()],
+    };
+    let saved = store
+        .save_collection(&project.handle, collection.clone(), None)
+        .unwrap();
+    pending.request.import_issues.clear();
+    pending.scope = Some(Scope {
+        handle: project.handle.clone(),
+        environment: None,
+        revision: "missing".into(),
+        project_revision: project.revision.clone(),
+        collection_id: Some(collection.id.clone()),
+        collection_revision: Some(saved.revision.clone()),
+    });
+    assert!(prepare::prepare(
+        &pending,
+        Some(root.path()),
+        &project.data.id,
+        settings.path(),
+        &http,
+        &values,
+        &cancel
+    )
+    .err()
+    .unwrap()
+    .contains("review"));
+    assert!(
+        prepare::token_plan(&pending, root.path(), &project.data.id, settings.path())
+            .err()
+            .unwrap()
+            .contains("review")
+    );
+    assert_eq!(values.0.get(), 0);
+    let mut reviewed = collection;
+    reviewed.requests[0].import_issues.clear();
+    let saved = store
+        .save_collection(&project.handle, reviewed, Some(saved.revision))
+        .unwrap();
+    pending.scope.as_mut().unwrap().collection_revision = Some(saved.revision);
+    assert!(prepare::prepare(
+        &pending,
+        Some(root.path()),
+        &project.data.id,
+        settings.path(),
+        &http,
+        &values,
+        &cancel
+    )
+    .is_ok());
+    assert_eq!(values.0.get(), 0);
+}
+
+#[tokio::test]
+async fn header_inspection_and_dispatch_preserve_manual_defaults_and_mask_user_values() {
+    let (url, captured, task) = server(response("204 No Content", "", b""), Duration::ZERO).await;
+    let mut request = input(&url);
+    request.request.body.kind = BodyKind::Json;
+    request.request.body.text = "{}".into();
+    request.request.headers = [
+        ("User-Agent", "SyntheticClient/7"),
+        ("Accept", "application/json"),
+        ("Content-Type", "application/problem+json"),
+        ("Authorization", "Bearer synthetic-private"),
+        ("Cookie", "synthetic-cookie"),
+        ("X-Private", "synthetic-custom"),
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, (name, value))| Entry {
+        id: i as u32 + 1,
+        enabled: true,
+        key: (*name).into(),
+        value: (*value).into(),
+    })
+    .collect();
+    let settings = tempdir().unwrap();
+    let transport = client();
+    let cancel = CancellationToken::new();
+    let prepared = prepare::prepare(
+        &request,
+        None,
+        "session",
+        settings.path(),
+        &transport,
+        &Fake(HashMap::new()),
+        &cancel,
+    )
+    .unwrap();
+    let inspected = serde_json::to_string(&prepared.header_summary()).unwrap();
+    assert!(!inspected.contains("synthetic-"));
+    assert!(!inspected.contains("SyntheticClient"));
+    assert!(prepared
+        .header_summary()
+        .iter()
+        .all(|row| row.source == "manual" && row.value == "••••••••"));
+    let result =
+        transfer::execute(&transport, prepared, Duration::from_secs(2), &cancel, None).await;
+    let raw = String::from_utf8(captured.await.unwrap())
+        .unwrap()
+        .to_ascii_lowercase();
+    task.await.unwrap();
+    for field in [
+        "user-agent: syntheticclient/7",
+        "accept: application/json",
+        "content-type: application/problem+json",
+        "authorization: bearer synthetic-private",
+    ] {
+        assert!(raw.contains(field));
+    }
+    assert_eq!(
+        serde_json::to_string(&result.request_headers).unwrap(),
+        inspected
+    );
+    assert_eq!(result.status, Some(204));
+}
+
+#[test]
+fn automatic_defaults_do_not_override_pending_custom_login_headers() {
+    use crate::projects::store::ProjectStore;
+    let root = tempdir().unwrap();
+    let settings = tempdir().unwrap();
+    let mut store = ProjectStore::default();
+    let project = store.create(root.path(), "Synthetic".into()).unwrap();
+    for name in ["User-Agent", "Accept"] {
+        let mut request = input("https://example.invalid/me");
+        request.scope = Some(Scope {
+            handle: project.handle.clone(),
+            project_revision: project.revision.clone(),
+            collection_id: None,
+            collection_revision: None,
+            environment: None,
+            revision: "missing".into(),
+        });
+        request.request.auth = Some(serde_json::from_value(serde_json::json!({
+            "kind":"customLogin", "config":{
+                "login":{"url":{"parts":[{"kind":"literal","text":"https://example.invalid/token"}],
+                    "separator":"", "prefix":"", "suffix":"", "base64":false},
+                    "method":"POST", "params":[], "headers":[], "body":{"kind":"none"},
+                    "successStatuses":[200], "token":{"kind":"text"},
+                    "renewalToken":null, "expiresIn":null, "lifetimeSeconds":null},
+                "renewal":null, "placement":{"name":name,"placement":"header","prefix":""}
+            }
+        })).unwrap());
+        let mut prepared = prepare::prepare(
+            &request,
+            Some(root.path()),
+            &project.data.id,
+            settings.path(),
+            &client(),
+            &Fake(HashMap::new()),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(!prepared.request.headers().contains_key(name));
+        let plan = prepared.token.take().unwrap();
+        let record: super::tokens::Record = serde_json::from_value(serde_json::json!({
+            "schemaVersion":1,"token":"synthetic-token","renewalToken":null,"acquiredAt":1,"expiresAt":null
+        })).unwrap();
+        plan.apply(&mut prepared.request, &record).unwrap();
+        assert_eq!(prepared.request.headers()[name], "synthetic-token");
+        assert!(prepared.header_summary().iter().any(|header| header
+            .name
+            .eq_ignore_ascii_case(name)
+            && header.source == "authentication"
+            && header.value == "••••••••"));
+    }
 }

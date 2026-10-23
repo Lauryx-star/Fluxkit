@@ -1,11 +1,30 @@
+import { MoveRequestDialog } from './projects/MoveRequestDialog';
+import { requestLocation } from './projects/location';
+import { Select } from './ui/Select';
+import { ExportDialog } from './exports/ExportDialog';
+import type { ExportPreview, ExportTarget } from './exports/types';
+import { previewOpenApiExport, saveOpenApiExport, discardOpenApiExport } from './native';
+import { PostmanImportPicker } from './imports/PostmanImportPicker';
+import { ImportDialog } from './imports/ImportDialog';
+import type { ImportPreview } from './imports/types';
+import {
+  chooseOpenApiImport,
+  renameImportVariable,
+  choosePostmanImport,
+  commitOpenApiImport,
+  discardOpenApiImport,
+} from './native';
 import { AuthEditor } from './auth/AuthEditor';
+import { AuthTest } from './auth/AuthTest';
+import { HeaderInspector } from './http/HeaderInspector';
+import { emptyDraft } from './projects/types';
 import { AuthDialog } from './auth/AuthDialog';
 import { TokenControls } from './auth/TokenControls';
 import { HistoryPanel } from './history/HistoryPanel';
 import type { Auth, AuthTarget } from './auth/types';
-import { authLabel, effectiveAuth, manualAuthHint } from './auth/rules';
+import { authLabel, effectiveAuth, manualAuthHint, validAuth } from './auth/rules';
 import brandMark from '../assets/fluxkit.svg';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './components/Icon';
 import { KeyValueEditor } from './components/KeyValueEditor';
 import { environmentAction, getAppInfo, isDesktop } from './native';
@@ -15,16 +34,24 @@ import { useHttp } from './http/useHttp';
 import { ResponseView } from './http/ResponseView';
 import { ProjectTree } from './projects/ProjectTree';
 import { BodyEditor } from './projects/BodyEditor';
-import { NameDialog, ConfirmDialog } from './projects/Dialogs';
+import { NameDialog, ConfirmDialog, QuitDialog } from './projects/Dialogs';
 import { EnvironmentControls } from './environments/EnvironmentControls';
 import { VariableContext } from './environments/VariableContext';
 import { VariableInput } from './environments/VariableInput';
 import type { EnvironmentView } from './environments/types';
 
 type EditorTab = 'Params' | 'Headers' | 'Body' | 'Auth';
-const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
+const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'TRACE'];
 const editorTabs: EditorTab[] = ['Params', 'Headers', 'Body', 'Auth'];
 export default function App() {
+  const variableSave = useRef<(() => Promise<boolean>) | null>(null);
+  const authSave = useRef<(() => Promise<boolean>) | null>(null);
+  const registerVariableSave = useCallback((save: (() => Promise<boolean>) | null) => {
+    variableSave.current = save;
+  }, []);
+  const registerAuthSave = useCallback((save: (() => Promise<boolean>) | null) => {
+    authSave.current = save;
+  }, []);
   const [variableChanges, setVariableChanges] = useState(false);
   const [environmentState, setEnvironmentState] = useState<Record<string, EnvironmentView>>({});
   const onEnvironmentView = useCallback((handle: string, view: EnvironmentView) => {
@@ -46,10 +73,222 @@ export default function App() {
     title: string;
     initial: Auth | null;
   } | null>(null);
-  const workspace = useWorkspace(variableChanges || authChanges);
+  const [exportHandle, setExportHandle] = useState<string | null>(null);
+  const [exportPreview, setExportPreview] = useState<ExportPreview | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [postmanPicker, setPostmanPicker] = useState(false);
+  const [choosingImport, setChoosingImport] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importStarted, setImportStarted] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importDialog, setImportDialog] = useState<{
+    handle: string;
+    projectName: string;
+    preview: ImportPreview;
+  } | null>(null);
+  const [importRefresh, setImportRefresh] = useState<Record<string, number>>({});
+  const saveOtherEditors = useCallback(async () => {
+    if (variableChanges && (!variableSave.current || !(await variableSave.current()))) {
+      return false;
+    }
+    if (authChanges && (!authSave.current || !(await authSave.current()))) {
+      return false;
+    }
+    return true;
+  }, [variableChanges, authChanges]);
+  const workspace = useWorkspace(
+    variableChanges || authChanges,
+    saveOtherEditors,
+    choosingImport || importBusy || exportBusy,
+  );
+  const [moveTarget, setMoveTarget] = useState<{
+    draftId: number;
+    collectionId?: string;
+    folderId?: string | null;
+  } | null>(null);
+  const movingDraft = workspace.drafts.find((item) => item.id === moveTarget?.draftId);
+  const movingProject = workspace.projects.find(
+    (item) => item.handle === (movingDraft?.projectHandle ?? workspace.activeHandle),
+  );
+  function chooseMove(draftId: number, collectionId?: string, folderId?: string | null) {
+    const item = workspace.drafts.find((item) => item.id === draftId);
+    if (!item || busy || !project) {
+      return;
+    }
+    if (item.projectHandle && item.projectHandle !== project.handle) {
+      workspace.setError(
+        'Choose a destination in this request’s project. Moving between projects is not supported.',
+      );
+      return;
+    }
+    workspace.setError(null);
+    setMoveTarget({ draftId, collectionId, folderId });
+  }
   const historyProject = workspace.projects.find((item) => item.handle === historyHandle);
-  const { drafts, activeId, setActiveId, draft, project, busy, updateDraft, closeDraft } =
-    workspace;
+  const {
+    drafts,
+    activeId,
+    setActiveId,
+    draft,
+    project,
+    busy: workspaceBusy,
+    updateDraft,
+    closeDraft,
+  } = workspace;
+  const busy = workspaceBusy || choosingImport || importBusy || exportBusy;
+  const exportProject = workspace.projects.find((p) => p.handle === exportHandle);
+  async function prepareExport(target: ExportTarget) {
+    if (!exportHandle || exportBusy) {
+      return;
+    }
+    setExportBusy(true);
+    setExportError(null);
+    try {
+      setExportPreview(await previewOpenApiExport(exportHandle, target));
+    } catch (error) {
+      setExportError(typeof error === 'string' ? error : 'Could not prepare the export.');
+    } finally {
+      setExportBusy(false);
+    }
+  }
+  async function saveExport() {
+    if (!exportHandle || !exportPreview || exportBusy) {
+      return;
+    }
+    setExportBusy(true);
+    setExportError(null);
+    try {
+      if (await saveOpenApiExport(exportHandle, exportPreview.id)) {
+        setExportHandle(null);
+        setExportPreview(null);
+        setExportNotice('OpenAPI YAML export saved.');
+      }
+    } catch (error) {
+      setExportError(typeof error === 'string' ? error : 'Could not save the export.');
+    } finally {
+      setExportBusy(false);
+    }
+  }
+  async function closeExport() {
+    if (exportBusy) {
+      return;
+    }
+    setExportBusy(true);
+    try {
+      if (exportPreview) {
+        await discardOpenApiExport(exportPreview.id);
+      }
+      setExportHandle(null);
+      setExportPreview(null);
+      setExportError(null);
+    } catch {
+      setExportError('Could not close this export preview. Retry closing it.');
+    } finally {
+      setExportBusy(false);
+    }
+  }
+  async function chooseImport(
+    source: 'OpenAPI' | 'Postman' = 'OpenAPI',
+    collectionId: string | null = null,
+  ) {
+    if (!project || busy) {
+      return;
+    }
+    setPostmanPicker(false);
+    setChoosingImport(true);
+    workspace.setError(null);
+    setImportError(null);
+    setImportStarted(false);
+    try {
+      const preview =
+        source === 'Postman'
+          ? await choosePostmanImport(project.handle, collectionId)
+          : await chooseOpenApiImport(project.handle);
+      if (preview) {
+        setImportDialog({ handle: project.handle, projectName: project.data.name, preview });
+      }
+    } catch (error) {
+      workspace.setError(typeof error === 'string' ? error : 'Could not prepare the import.');
+    } finally {
+      setChoosingImport(false);
+    }
+  }
+  async function renameImportedVariable(oldName: string, name: string) {
+    if (!importDialog || importBusy || importStarted) {
+      return false;
+    }
+    setImportBusy(true);
+    setImportError(null);
+    try {
+      const preview = await renameImportVariable(
+        importDialog.handle,
+        importDialog.preview.id,
+        oldName,
+        name,
+      );
+      setImportDialog((current) => (current ? { ...current, preview } : null));
+      return true;
+    } catch (error) {
+      setImportError(typeof error === 'string' ? error : 'Could not rename the import variable.');
+      return false;
+    } finally {
+      setImportBusy(false);
+    }
+  }
+  async function commitImport(storeValues: boolean) {
+    if (!importDialog || importBusy) {
+      return;
+    }
+    setImportBusy(true);
+    setImportStarted(true);
+    setImportError(null);
+    try {
+      const result = await commitOpenApiImport(
+        importDialog.handle,
+        importDialog.preview.id,
+        storeValues,
+      );
+      workspace.acceptImportedProject(result.project);
+      setEnvironmentState((items) => {
+        const next = { ...items };
+        delete next[importDialog.handle];
+        return next;
+      });
+      setImportRefresh((items) => ({
+        ...items,
+        [importDialog.handle]: (items[importDialog.handle] ?? 0) + 1,
+      }));
+      if (result.error) {
+        setImportError(result.error);
+      } else {
+        setImportDialog(null);
+      }
+    } catch (error) {
+      setImportError(
+        typeof error === 'string'
+          ? error
+          : 'Import could not finish. Inspect Project variables before retrying.',
+      );
+    } finally {
+      setImportBusy(false);
+    }
+  }
+  async function cancelImport() {
+    if (!importDialog || importBusy) {
+      return;
+    }
+    setImportBusy(true);
+    try {
+      await discardOpenApiImport(importDialog.preview.id);
+      setImportDialog(null);
+    } catch {
+      setImportError('Could not release this preview. Retry closing it.');
+    } finally {
+      setImportBusy(false);
+    }
+  }
   const checkResult =
     variableCheck?.requestId === draft?.requestId && variableCheck?.handle === project?.handle
       ? variableCheck
@@ -86,8 +325,16 @@ export default function App() {
           : (project.data.auth ?? null),
     });
   }
+  const savedImportIssues = draft?.collectionId
+    ? (authProject?.collections
+        .find((c) => c.data.id === draft.collectionId)
+        ?.data.requests.find((r) => r.id === draft.requestId)?.importIssues ?? [])
+    : [];
+  const draftImportIssues = draft?.importIssues ?? [];
+  const needsImportReview = draftImportIssues.length > 0 || savedImportIssues.length > 0;
   const canSend =
     workspace.desktop &&
+    !needsImportReview &&
     !busy &&
     (!authProject || executionEnvironment !== null) &&
     timeoutSeconds >= 1 &&
@@ -158,8 +405,13 @@ export default function App() {
         if (
           !workspace.nameDialog &&
           !workspace.confirmation &&
+          !workspace.quitOpen &&
           !variablesOpen &&
           !authDialog &&
+          !moveTarget &&
+          !importDialog &&
+          !postmanPicker &&
+          !exportHandle &&
           !historyProject
         ) {
           workspace.saveDraft();
@@ -168,11 +420,20 @@ export default function App() {
     }
     window.addEventListener('keydown', onSave);
     return () => window.removeEventListener('keydown', onSave);
-  }, [workspace, variablesOpen, authDialog, historyProject]);
+  }, [
+    workspace,
+    variablesOpen,
+    authDialog,
+    moveTarget,
+    historyProject,
+    importDialog,
+    postmanPicker,
+    exportHandle,
+  ]);
 
   return (
     <VariableContext.Provider value={variableContext}>
-      <div className="app-shell">
+      <div className="app-shell" inert={workspace.quitOpen || !!moveTarget}>
         <aside className="sidebar" aria-label="Workspace navigation">
           <div className="brand">
             <img className="brand-mark" src={brandMark} alt="" />
@@ -204,18 +465,18 @@ export default function App() {
           {project ? (
             <>
               <div className="project-picker">
-                <select
+                <Select
                   aria-label="Active project"
                   value={workspace.activeHandle ?? ''}
                   disabled={busy}
-                  onChange={(event) => workspace.setActiveHandle(event.target.value)}
+                  onValueChange={(selectedValue) => workspace.setActiveHandle(selectedValue)}
                 >
                   {workspace.projects.map((item) => (
                     <option key={item.handle} value={item.handle}>
                       {item.data.name}
                     </option>
                   ))}
-                </select>
+                </Select>
               </div>
               <div className="project-actions">
                 <button disabled={busy} onClick={workspace.renameProject}>
@@ -242,6 +503,32 @@ export default function App() {
               >
                 Request history
               </button>
+              <button
+                className="secondary-button project-auth-button"
+                disabled={busy || variablesOpen || !!authDialog}
+                onClick={() => void chooseImport()}
+              >
+                {choosingImport ? 'Reading file…' : 'Import OpenAPI…'}
+              </button>
+              <button
+                className="secondary-button project-auth-button"
+                disabled={busy || variablesOpen || !!authDialog}
+                onClick={() => setPostmanPicker(true)}
+              >
+                Import Postman…
+              </button>
+              <button
+                className="secondary-button project-auth-button"
+                disabled={busy || variablesOpen || !!authDialog}
+                onClick={() => {
+                  setExportHandle(project.handle);
+                  setExportPreview(null);
+                  setExportError(null);
+                  setExportNotice(null);
+                }}
+              >
+                Export OpenAPI…
+              </button>
               <div className="sidebar-section collections-heading">
                 <span>COLLECTIONS</span>
                 <button
@@ -260,6 +547,24 @@ export default function App() {
                 collections={project.collections}
                 busy={busy}
                 onAuth={(id, folder) => editAuthentication(id, folder?.id ?? null)}
+                projectHandle={project.handle}
+                onDropDraft={chooseMove}
+                onDropRequest={(handle, sourceId, requestId, collectionId, folderId) => {
+                  if (handle !== project.handle || busy) {
+                    return;
+                  }
+                  const request = project.collections
+                    .find((item) => item.data.id === sourceId)
+                    ?.data.requests.find((item) => item.id === requestId);
+                  if (!request) {
+                    return;
+                  }
+                  const id = workspace.openRequest(sourceId, request);
+                  if (id !== undefined) {
+                    workspace.setError(null);
+                    setMoveTarget({ draftId: id, collectionId, folderId });
+                  }
+                }}
                 onSelect={workspace.select}
                 onNew={addDraft}
                 onFolder={workspace.createFolder}
@@ -318,14 +623,25 @@ export default function App() {
           <header className="workspace-header">
             <div className="breadcrumb">
               Workspace <Icon name="chevron" size={12} />
+              {draft && (
+                <button
+                  className="breadcrumb-location"
+                  disabled={!project || busy}
+                  onClick={() => chooseMove(draft.id)}
+                  aria-label="Change request location"
+                >
+                  {requestLocation(authProject ?? project, draft.collectionId, draft.folderId)}
+                </button>
+              )}
               <span>{draft ? draft.name : 'Overview'}</span>
             </div>
             {project ? (
               <EnvironmentControls
-                key={project.handle}
+                key={`${project.handle}-${importRefresh[project.handle] ?? 0}`}
                 handle={project.handle}
                 ask={workspace.ask}
                 onDirty={setVariableChanges}
+                onRegisterSave={registerVariableSave}
                 onOpen={setVariablesOpen}
                 onView={onEnvironmentView}
               />
@@ -360,6 +676,15 @@ export default function App() {
                   <div
                     className={`request-tab ${item.id === activeId ? 'active' : ''}`}
                     key={item.id}
+                    draggable={!busy}
+                    onDragStart={(event) => {
+                      if (busy) {
+                        event.preventDefault();
+                        return;
+                      }
+                      event.dataTransfer.setData('application/x-fluxkit-draft', String(item.id));
+                      event.dataTransfer.effectAllowed = 'move';
+                    }}
                   >
                     <button
                       className="tab-select"
@@ -437,6 +762,36 @@ export default function App() {
               </section>
             ) : (
               <section className="request-editor" aria-label="Request editor">
+                {needsImportReview && (
+                  <section className="import-review" aria-label="Import review required">
+                    <h3>Imported request needs review</h3>
+                    <p>
+                      Sending and token acquisition are locked. Review the imported configuration,
+                      choose local attachments and configure authentication/variables as needed.
+                    </p>
+                    <ul>
+                      {(draftImportIssues.length ? draftImportIssues : savedImportIssues).map(
+                        (issue, index) => (
+                          <li key={index}>{issue}</li>
+                        ),
+                      )}
+                    </ul>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={!draftImportIssues.length}
+                        disabled={busy}
+                        onChange={(e) =>
+                          updateDraft({ importIssues: e.target.checked ? [] : savedImportIssues })
+                        }
+                      />{' '}
+                      I reviewed and configured this request
+                    </label>
+                    {!draftImportIssues.length && (
+                      <p>Save this request to record the review and enable sending.</p>
+                    )}
+                  </section>
+                )}
                 <div className="editor-heading">
                   <div>
                     <span className="eyebrow">
@@ -448,8 +803,23 @@ export default function App() {
                       value={draft.name}
                       onChange={(event) => updateDraft({ name: event.target.value })}
                     />
+                    <p className="request-location">
+                      {requestLocation(authProject ?? project, draft.collectionId, draft.folderId)}
+                    </p>
                   </div>
                   <div className="save-controls">
+                    <button
+                      className="secondary-button"
+                      disabled={!project || busy}
+                      title={requestLocation(
+                        authProject ?? project,
+                        draft.collectionId,
+                        draft.folderId,
+                      )}
+                      onClick={() => chooseMove(draft.id)}
+                    >
+                      Move…
+                    </button>
                     <span className="subtle-tag">{isDirty(draft) ? 'Unsaved' : 'Saved'}</span>
                     <button
                       className="secondary-button"
@@ -524,16 +894,16 @@ export default function App() {
                   </div>
                 </div>
                 <div className="url-bar">
-                  <select
+                  <Select
                     aria-label="HTTP method"
                     value={draft.method}
                     className={`method-${draft.method.toLowerCase()}`}
-                    onChange={(event) => updateDraft({ method: event.target.value })}
+                    onValueChange={(selectedValue) => updateDraft({ method: selectedValue })}
                   >
                     {methods.map((method) => (
                       <option key={method}>{method}</option>
                     ))}
-                  </select>
+                  </Select>
                   <VariableInput
                     label="Request URL"
                     variant="url"
@@ -660,21 +1030,47 @@ export default function App() {
                     />
                   )}
                   {editorTab === 'Headers' && (
-                    <KeyValueEditor
-                      label="Header"
-                      entries={draft.headers}
-                      onChange={(headers) => updateDraft({ headers })}
-                    />
+                    <>
+                      <HeaderInspector
+                        input={{
+                          request: requestData(draft),
+                          scope: executionScope,
+                          timeoutMs: timeoutSeconds * 1000,
+                          saveResponse: false,
+                        }}
+                        disabled={!canSend}
+                        sent={execution?.result?.requestHeaders}
+                      />
+                      <KeyValueEditor
+                        label="Header"
+                        entries={draft.headers}
+                        onChange={(headers) => updateDraft({ headers })}
+                      />
+                    </>
                   )}
                   {editorTab === 'Body' && (
                     <BodyEditor draft={draft} onChange={updateDraft} onFile={workspace.attach} />
                   )}
                   {editorTab === 'Auth' && (
                     <>
+                      <AuthTest
+                        key={`test:${JSON.stringify([draft.id, effective, executionScope])}`}
+                        input={{
+                          request: requestData(draft),
+                          scope: executionScope,
+                          timeoutMs: timeoutSeconds * 1000,
+                          saveResponse: false,
+                        }}
+                        tokenOnly={['oauth2', 'customLogin'].includes(effective.auth?.kind ?? '')}
+                        disabled={
+                          !canSend ||
+                          !validAuth(draft.auth ?? null, executionEnvironment?.data.variables ?? [])
+                        }
+                      />
                       {(effective.auth?.kind === 'oauth2' ||
                         effective.auth?.kind === 'customLogin') && (
                         <TokenControls
-                          key={JSON.stringify([draft.id, effective, executionScope])}
+                          key={`token:${JSON.stringify([draft.id, effective, executionScope])}`}
                           input={{
                             request: requestData(draft),
                             scope: executionScope,
@@ -727,11 +1123,94 @@ export default function App() {
             onClose={() => setHistoryHandle(null)}
           />
         )}
+        {exportNotice && (
+          <p role="status" className="export-notice">
+            {exportNotice}
+          </p>
+        )}
+        {exportProject && (
+          <ExportDialog
+            project={exportProject}
+            dirty={drafts.some((d) => d.projectHandle === exportProject.handle && isDirty(d))}
+            preview={exportPreview}
+            busy={exportBusy}
+            error={exportError}
+            onPreview={(t) => void prepareExport(t)}
+            onSave={() => void saveExport()}
+            onClose={() => void closeExport()}
+          />
+        )}
+        {postmanPicker && project && (
+          <PostmanImportPicker
+            collections={project.collections}
+            onChoose={(id) => void chooseImport('Postman', id)}
+            onCancel={() => setPostmanPicker(false)}
+          />
+        )}
+        {importDialog && (
+          <ImportDialog
+            preview={importDialog.preview}
+            projectName={importDialog.projectName}
+            busy={importBusy}
+            started={importStarted}
+            error={importError}
+            onImport={(values) => void commitImport(values)}
+            onRename={renameImportedVariable}
+            onCancel={() => void cancelImport()}
+          />
+        )}
         {authDialog && (
           <AuthDialog
             key={`${authDialog.handle}-${authDialog.target.collectionId}-${authDialog.target.folderId}`}
             title={authDialog.title}
             initial={authDialog.initial}
+            testInput={(() => {
+              const owner = workspace.projects.find((item) => item.handle === authDialog.handle);
+              const environment = environmentState[authDialog.handle];
+              if (!owner || !environment) {
+                return null;
+              }
+              const collection = owner.collections.find(
+                (item) => item.data.id === authDialog.target.collectionId,
+              );
+              const parentFolder = authDialog.target.folderId
+                ? (collection?.data.folders.find(
+                    (folder) => folder.id === authDialog.target.folderId,
+                  )?.parentId ?? null)
+                : null;
+              const parentCollection = authDialog.target.folderId ? collection : undefined;
+              return {
+                request: requestData(
+                  emptyDraft(0, owner.handle, parentCollection?.data.id ?? null, parentFolder),
+                ),
+                scope: {
+                  handle: owner.handle,
+                  projectRevision: owner.revision,
+                  collectionId: parentCollection?.data.id ?? null,
+                  collectionRevision: parentCollection?.revision ?? null,
+                  environment: environment.selectedEnvironment,
+                  revision: environment.revision,
+                },
+                timeoutMs: 60000,
+                saveResponse: false,
+              };
+            })()}
+            inheritedAuth={(() => {
+              const owner = workspace.projects.find((item) => item.handle === authDialog.handle);
+              const collection = owner?.collections.find(
+                (item) => item.data.id === authDialog.target.collectionId,
+              )?.data;
+              const parent = authDialog.target.folderId
+                ? (collection?.folders.find((item) => item.id === authDialog.target.folderId)
+                    ?.parentId ?? null)
+                : null;
+              return effectiveAuth(
+                owner,
+                authDialog.target.folderId ? authDialog.target.collectionId : null,
+                parent,
+              ).auth;
+            })()}
+
             inherited={(() => {
               const owner = workspace.projects.find((item) => item.handle === authDialog.handle);
               const collection = owner?.collections.find(
@@ -753,12 +1232,13 @@ export default function App() {
             busy={busy}
             error={workspace.error}
             onDirty={setAuthChanges}
-            onSave={(auth) => {
-              void workspace.saveAuthentication(authDialog.target, auth).then((saved) => {
-                if (saved) {
-                  setAuthDialog(null);
-                }
-              });
+            onRegisterSave={registerAuthSave}
+            onSave={async (auth) => {
+              const saved = await workspace.saveAuthentication(authDialog.target, auth);
+              if (saved) {
+                setAuthDialog(null);
+              }
+              return saved;
             }}
             onCancel={(dirty) => {
               if (!dirty) {
@@ -795,6 +1275,36 @@ export default function App() {
           />
         )}
       </div>
+      {moveTarget && movingDraft && movingProject && (
+        <div inert={workspace.quitOpen}>
+          <MoveRequestDialog
+            key={`${moveTarget.draftId}-${moveTarget.collectionId}-${moveTarget.folderId}`}
+            draft={movingDraft}
+            project={movingProject}
+            initialCollectionId={moveTarget.collectionId}
+            initialFolderId={moveTarget.folderId}
+            busy={busy}
+            error={workspace.error}
+            onCancel={() => setMoveTarget(null)}
+            onMove={(collectionId, folderId, allowMetadataLoss) => {
+              void workspace
+                .moveDraft(movingDraft.id, collectionId, folderId, allowMetadataLoss)
+                .then((saved) => {
+                  if (saved) {
+                    setMoveTarget(null);
+                  }
+                });
+            }}
+          />
+        </div>
+      )}
+      {workspace.quitOpen && (
+        <QuitDialog
+          saving={workspace.quitSaving}
+          error={workspace.quitError}
+          onChoose={(choice) => void workspace.finishQuit(choice)}
+        />
+      )}
     </VariableContext.Provider>
   );
 }

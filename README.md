@@ -12,8 +12,13 @@ with parameters, headers, text/JSON/form bodies, and portable file attachments.
 Use **Save** or **Cmd/Ctrl+S** to save the selected request. Unsaved changes are marked;
 closing a dirty request, reloading/closing its project, or closing the desktop window
 requires confirmation. Structural operations such as creating collections and renaming
-folders save immediately. **Close project** keeps its files on disk. After restarting,
-choose **Open project** to reopen the folder; recent paths and tabs are not yet restored.
+folders save immediately. **Close project** keeps its files on disk. The last active project
+reopens automatically on desktop startup; request tabs and unsaved drafts are not restored.
+
+Quitting with unsaved changes offers **Cancel**, **Discard changes**, and **Save & quit**.
+Save & quit saves dirty request tabs across all open projects and pending authentication,
+variable definitions and edited variable values before closing. Missing destinations,
+invalid fields and save failures keep Fluxkit open; successful partial saves remain saved.
 
 See [local file format and recovery](docs/FILE_FORMAT.md) for storage, conflict handling,
 limits, backups, and removal behavior. User request fields are plain JSON; use placeholders
@@ -32,14 +37,45 @@ Configure Basic, Bearer/JWT, API Key, OAuth2 Client Credentials, or Custom Login
 and folder authentication settings. Credential fields reference project variables; manual headers
 and query parameters take priority. See [authentication and inheritance](docs/AUTHENTICATION.md).
 Token acquisition, expiry, manual renewal, and local token removal are described in
-[token authentication](docs/TOKEN_AUTHENTICATION.md). Exchange formats remain planned in
+[token authentication](docs/TOKEN_AUTHENTICATION.md). Native backup export/import remains planned in
 [the product plan](docs/PRODUCT.md) and [milestones](docs/MILESTONES.md).
 Browser preview supports draft editing; native sending and project files require the desktop app.
+
+The desktop app reopens the last active project on startup. Its location is remembered in
+local app-data settings; unsaved drafts and responses are not restored. Closing the last
+project explicitly leaves the next startup empty. If its folder moved or is unavailable,
+use **Open project** to locate it again. See [local startup settings](docs/FILE_FORMAT.md#local-startup-selection).
+
+Selection menus use the Fluxkit theme on every platform. Use arrow keys or Home/End to
+navigate, type a name prefix to find an option, and press Enter or Space to select it.
+Escape closes without changing the value; Tab closes and moves to the next control.
 
 Open **Request history** for a project and enable **Record request history** to opt in.
 History stores up to 100 entries for seven days, with literal hosts visible locally and
 path/query content redacted. Closing a project preserves history; **Clear history** explicitly
 clears it. Bodies, headers, and resolved values are excluded. See [the history contract](docs/HISTORY.md).
+
+The first milestone 8 slice adds **Import OpenAPI…** for OpenAPI 3.0.x/3.1.x YAML and JSON.
+Review the mappings and compatibility report before adding a new collection. Defaults/examples
+can be stored as new OS variable values or imported as definitions only. Internal references
+are supported; external references are blocked without network access. See
+[OpenAPI import and partial-failure recovery](docs/OPENAPI_IMPORT.md).
+
+Only OpenAPI server URLs and authentication create project variables, with readable names
+such as `baseUrl`. Normal parameter values remain editable at each request. The variable
+list explains their origins. Use
+**Rename** in the import preview to change a name once across all imported request references.
+Set the server variable's value once in **Variables**, optionally per environment.
+
+**Import Postman…** accepts Collection v2.1 JSON and separate environment exports. Choose the
+imported collection whose variable mapping an environment should use. Review new names and
+unsupported scripts/runtime features before confirming. Dynamic values, unsupported auth
+and multipart files can be imported with a persistent request review lock: configure them,
+confirm the review and Save to enable sending. See [Postman migration](docs/POSTMAN_IMPORT.md).
+
+**Export OpenAPI…** previews the saved project, a collection, a folder subtree or one request
+as OpenAPI 3.1.0 YAML. Project export creates one document per non-empty collection. Local
+values and payload examples are excluded; conflicts block saving. See [OpenAPI export](docs/OPENAPI_EXPORT.md).
 
 ## Requirements
 
@@ -112,7 +148,8 @@ with `npm run tauri -- icon assets/fluxkit.svg`.
 - `docs/`: agreed product scope and milestones.
 - `AGENTS.md`: engineering rules and required checks.
 
-Native project commands accept session handles issued by the folder chooser; the frontend
+Native project commands accept session handles issued by the folder chooser or validated
+last-project restoration; the frontend
 cannot submit arbitrary filesystem paths. Only the bundled main window receives their
 permissions. Window event/destroy permissions support the unsaved-change close guard.
 No filesystem, shell, HTTP, or credential plugins are exposed to the frontend. Production content security policy allows bundled
@@ -124,6 +161,16 @@ macOS, Windows, and Linux are target platforms. Record actual host build and smo
 results in [development validation](docs/VALIDATION.md); do not infer support for another
 platform from a successful local build. Cross-platform CI and release validation are
 planned for the release milestone.
+
+Use **Test authentication** in scope settings or the request Auth tab to verify current
+settings without saving them. Basic/Bearer/API Key send GET to a chosen protected test URL;
+OAuth2/Custom Login test their configured login and discard the test token. Unsaved session
+and saved requests can use **Move…** next to Save, or the clickable location in the
+breadcrumbs. Choose a collection/folder and confirm **Save & move** to save edits and relocate
+within the project. Drag a request tab or saved tree request onto a collection/folder to open
+the same confirmation. In **Headers → Automatic and sent headers**, inspect
+masked current headers locally or review the last dispatch. Fluxkit sends a versioned
+User-Agent and Accept by default; manual values take priority.
 
 ## License
 

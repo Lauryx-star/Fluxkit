@@ -1,0 +1,12 @@
+{
+  "id": "source-environment-id",
+  "name": "Synthetic Production",
+  "values": [
+    { "key": "baseUrl", "value": "https://production.synthetic.invalid/api", "enabled": true },
+    { "key": "token", "value": "synthetic-production-token", "type": "secret", "enabled": true },
+    { "key": "username", "value": "ignored-disabled-value", "enabled": false },
+    { "key": "unreferenced", "value": "synthetic-standalone", "enabled": true }
+  ],
+  "_postman_variable_scope": "environment",
+  "_postman_exported_using": "Postman/synthetic"
+}

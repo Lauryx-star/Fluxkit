@@ -106,7 +106,7 @@ pub(crate) fn revision(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-pub(super) fn encode(value: &impl Serialize) -> Result<Vec<u8>, String> {
+pub(crate) fn encode(value: &impl Serialize) -> Result<Vec<u8>, String> {
     let mut bytes = serde_json::to_vec_pretty(value)
         .map_err(|_| "Could not serialize project data.".to_string())?;
     bytes.push(b'\n');
@@ -116,7 +116,7 @@ pub(super) fn encode(value: &impl Serialize) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-pub(super) fn atomic(path: &Path, bytes: &[u8], new: bool) -> Result<(), String> {
+pub(crate) fn atomic(path: &Path, bytes: &[u8], new: bool) -> Result<(), String> {
     let parent = path.parent().ok_or(IO_ERROR)?;
     safe(parent, true)?;
     if path.symlink_metadata().is_ok() {
@@ -140,7 +140,7 @@ pub(super) fn atomic(path: &Path, bytes: &[u8], new: bool) -> Result<(), String>
     Ok(())
 }
 
-pub(super) fn replace(
+pub(crate) fn replace(
     root: &Path,
     path: &Path,
     expected: &str,
@@ -375,7 +375,7 @@ pub(crate) fn load_project(root: &Path) -> Result<(Project, Vec<u8>), String> {
     Ok((project, bytes))
 }
 
-fn load(root: &Path, handle: &str) -> Result<ProjectView, String> {
+pub(crate) fn load(root: &Path, handle: &str) -> Result<ProjectView, String> {
     let (project, bytes) = load_project(root)?;
     let directory = root.join("collections");
     safe(&directory, true)?;

@@ -1,0 +1,64 @@
+openapi: 3.0.4
+info:
+  title: Fixture Pets
+  version: '1.0'
+servers:
+  - url: https://fixture.example.test/{stage}
+    variables:
+      stage:
+        default: v1
+security:
+  - token: []
+paths:
+  /pets/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - name: search
+        in: query
+        example: old
+    get:
+      summary: Get a pet
+      tags: [Pets, Search]
+      parameters:
+        - name: search
+          in: query
+          required: true
+          example: 'synthetic search'
+          schema: { type: string }
+      responses:
+        '200':
+          description: A pet
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pet' }
+    post:
+      operationId: updatePet
+      tags: [Pets]
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/Pet'
+      responses:
+        '204': { description: Updated }
+components:
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      example: 'a/b'
+      schema: { type: string }
+  requestBodies:
+    Pet:
+      required: true
+      content:
+        application/json:
+          example: { name: Synthetic pet }
+          schema: { $ref: '#/components/schemas/Pet' }
+  securitySchemes:
+    token: { type: http, scheme: bearer }
+  schemas:
+    Pet:
+      type: object
+      properties:
+        default: { type: string }
+        parent: { $ref: '#/components/schemas/Pet' }

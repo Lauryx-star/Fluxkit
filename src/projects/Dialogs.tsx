@@ -25,7 +25,7 @@ export function Modal({ children, label }: { children: ReactNode; label: string 
           }
           const controls = Array.from(
             event.currentTarget.querySelectorAll<HTMLElement>(
-              'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)',
+              'button:not(:disabled), input:not(:disabled), select:not(:disabled):not([tabindex="-1"]), textarea:not(:disabled)',
             ),
           );
           const first = controls[0],
@@ -114,6 +114,59 @@ export function ConfirmDialog({
         <button className="primary-button" onClick={() => onAnswer(true)}>
           Continue
         </button>
+      </div>
+    </Modal>
+  );
+}
+
+export function QuitDialog({
+  saving,
+  error,
+  onChoose,
+}: {
+  saving: boolean;
+  error: string | null;
+  onChoose: (choice: 'cancel' | 'discard' | 'save') => void;
+}) {
+  const cancel = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!saving) {
+      cancel.current?.focus();
+    }
+  }, [saving]);
+  return (
+    <Modal label="Unsaved changes">
+      <div
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && !saving) {
+            onChoose('cancel');
+          }
+        }}
+      >
+        <h2>Save changes before quitting?</h2>
+        <p>You have unsaved changes. Save them, discard them, or return to Fluxkit.</p>
+        {error && <p role="alert">{error}</p>}
+        {saving && <p role="status">Saving changes… Fluxkit will quit when all saves succeed.</p>}
+        <div className="dialog-actions quit-actions">
+          <button
+            ref={cancel}
+            className="secondary-button"
+            disabled={saving}
+            onClick={() => onChoose('cancel')}
+          >
+            Cancel
+          </button>
+          <button
+            className="secondary-button"
+            disabled={saving}
+            onClick={() => onChoose('discard')}
+          >
+            Discard changes
+          </button>
+          <button className="primary-button" disabled={saving} onClick={() => onChoose('save')}>
+            Save & quit
+          </button>
+        </div>
       </div>
     </Modal>
   );

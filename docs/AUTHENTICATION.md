@@ -105,3 +105,48 @@ checks protect writes, and credential values never enter those backups.
 through its existing atomic write/backup/revision path and returns ProjectView. Collection
 and folder settings use the existing save_collection command. Only the bundled main window
 receives the new command permission. No secret-reveal or broad filesystem capability is added.
+
+## Explicit authentication tests
+
+**Test authentication** is available in project, collection and folder settings and in the
+request Auth tab. It uses the editor's current settings, selected environment and shared
+variable fallback without saving configuration. Inherit tests the parent scope, including
+when replacing a saved override with unsaved inheritance. Native revision and import-review
+checks still apply. Changing authentication/environment or closing the test cancels abandoned
+work; no automatic retries occur.
+
+Basic, Bearer and API Key use an explicitly entered **Test URL** and GET, without the API
+request's body, manual headers or query rows. The URL may contain project placeholders and
+its own query. Redirects remain disabled. A complete 2xx response reports success; other
+statuses and transport failures report failure. A public endpoint can return 2xx without
+checking authentication, so choose a protected endpoint such as `/me`.
+
+OAuth2 Client Credentials and Custom Login execute a fresh configured token/login request.
+A test succeeds only if its configured response/extraction rules produce a usable token.
+Tests do not read, renew, replace or forget stored tokens. Credential variables are read
+through the normal OS adapter; the acquired test token is discarded in native memory.
+Neither response payloads nor tokens cross the test IPC boundary. Tests do not add history
+or save files. Cancellation cannot undo an endpoint's already processed effects.
+
+`test_authentication(id, input, tokenOnly)` consumes a normal cancellable HTTP reservation.
+It returns `{success, status, message}` only; a token test has no API status and describes
+successful acquisition rather than API authorization. Basic/Key/Bearer tests enforce GET,
+no body, manual headers, extra query rows or download in Rust. Token tests use the same
+validated scope and endpoint rules as acquisition, with a write-discarding value adapter.
+
+Both unsaved and saved requests use **Move…** beside Save or the clickable breadcrumb
+location. Choose the destination collection and full nested folder path, then confirm
+**Save & move**. This immediately saves open request edits and relocates within the same
+project. Dragging a request tab or saved tree request onto a collection/folder opens the
+same confirmation. Cancelling the dialog writes nothing; failed moves retain the draft.
+
+The dialog describes effective authentication at the destination. Inherit uses the new
+collection/folder immediately after success; explicit request authentication stays attached.
+The request UUID, variable references, selected environment and attachment paths remain
+unchanged. Existing project references cannot be moved across projects by this action.
+Request-owned tokens retain identity; inherited tokens follow the destination's owner and
+configuration, with the same environment isolation. No credentials are accessed during moves.
+Native file drops are disabled on the main WebView so internal HTML drag-and-drop can work;
+attachment selection continues through explicit file dialogs. Native mouse-drag behavior
+still requires platform validation; the destination dialog provides a keyboard/mouse fallback.
+See [FILE_FORMAT.md](FILE_FORMAT.md) for cross-file recovery and OpenAPI metadata decisions.

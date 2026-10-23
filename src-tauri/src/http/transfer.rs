@@ -187,6 +187,7 @@ pub async fn execute(
     let start = Instant::now();
     let mut result = ExecutionResult::failure(Outcome::Response, "");
     result.message = None;
+    result.request_headers = prepared.header_summary();
     let mut bytes = Vec::new();
     let mut textual = false;
     let mut json = false;

@@ -16,6 +16,7 @@ export interface RequestBody {
   file: Attachment | null;
 }
 export interface SavedRequest {
+  importIssues?: string[];
   auth?: Auth | null;
   id: string;
   name: string;
@@ -33,6 +34,12 @@ export interface Folder {
   parentId: string | null;
 }
 export interface Collection {
+  postman?: { version: string; variables: Record<string, string> } | null;
+  openApi?: {
+    version: string;
+    document: Record<string, unknown>;
+    operations?: Record<string, string>;
+  } | null;
   auth?: Auth | null;
   schemaVersion: number;
   id: string;
@@ -52,6 +59,7 @@ export interface ProjectView {
   collections: CollectionView[];
 }
 export interface Draft {
+  importIssues?: string[];
   auth?: Auth | null;
   id: number;
   requestId: string;
@@ -71,6 +79,7 @@ export interface Draft {
 }
 export function requestData(draft: Draft): SavedRequest {
   return {
+    ...(draft.importIssues?.length ? { importIssues: draft.importIssues } : {}),
     ...(draft.auth ? { auth: draft.auth } : {}),
     id: draft.requestId,
     name: draft.name,
@@ -95,6 +104,7 @@ export function fromRequest(
     id,
     requestId: request.id,
     auth: request.auth,
+    importIssues: request.importIssues,
     name: request.name,
     method: request.method,
     url: request.url,

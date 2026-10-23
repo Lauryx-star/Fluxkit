@@ -1,0 +1,112 @@
+{
+  "info": {
+    "name": "Synthetic Shop",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://synthetic.invalid/api" },
+    { "key": "token", "value": "synthetic-token" },
+    { "key": "username", "value": "synthetic-user" }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
+  "event": [
+    { "listen": "prerequest", "script": { "exec": ["throw new Error('must never run');"] } }
+  ],
+  "item": [
+    {
+      "name": "Products",
+      "auth": { "type": "noauth" },
+      "item": [
+        {
+          "name": "List products",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/products/:id?active=yes",
+              "query": [
+                { "key": "active", "value": "yes" },
+                { "key": "disabled", "value": "ignored", "disabled": true }
+              ],
+              "variable": [{ "key": "id", "value": "a/b" }]
+            },
+            "header": [
+              { "key": "X-User", "value": "{{username}}" },
+              { "key": "X-Static", "value": "synthetic-header" }
+            ]
+          },
+          "response": [{ "body": "SAVED_RESPONSE_MUST_NOT_PERSIST" }]
+        },
+        {
+          "name": "Writes",
+          "item": [
+            {
+              "name": "Create product",
+              "request": {
+                "method": "POST",
+                "url": "{{baseUrl}}/products",
+                "auth": {
+                  "type": "basic",
+                  "basic": [
+                    { "key": "username", "value": "{{username}}" },
+                    { "key": "password", "value": "synthetic-password" }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"owner\":\"{{username}}\",\"name\":\"synthetic-body\"}",
+                  "options": { "raw": { "language": "json" } }
+                }
+              }
+            },
+            {
+              "name": "Upload metadata",
+              "request": {
+                "method": "PATCH",
+                "url": "{{baseUrl}}/metadata",
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [{ "key": "name", "value": "synthetic-multipart", "type": "text" }]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Form",
+      "request": {
+        "method": "POST",
+        "url": "https://synthetic.invalid/form?name=a%2Fb&plus=a+b",
+        "header": "X-Trace: synthetic-trace",
+        "body": { "mode": "urlencoded", "urlencoded": [{ "key": "name", "value": "{{username}}" }] }
+      }
+    },
+    {
+      "name": "OAuth",
+      "request": {
+        "method": "GET",
+        "url": {
+          "protocol": "https",
+          "host": ["synthetic", "invalid"],
+          "port": "8443",
+          "path": ["oauth"]
+        },
+        "auth": {
+          "type": "oauth2",
+          "oauth2": [
+            { "key": "grant_type", "value": "client_credentials" },
+            { "key": "accessTokenUrl", "value": "{{baseUrl}}/token" },
+            { "key": "clientId", "value": "synthetic-client" },
+            { "key": "clientSecret", "value": "synthetic-client-secret" },
+            { "key": "scope", "value": "read" },
+            { "key": "client_authentication", "value": "body" }
+          ]
+        }
+      }
+    }
+  ]
+}

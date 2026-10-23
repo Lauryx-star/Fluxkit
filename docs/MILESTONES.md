@@ -4,7 +4,7 @@ The first release delivers the scope in [the product plan](PRODUCT.md). Mileston
 implementation order, not permission to omit later confirmed features. Milestones 1 through 5 have
 been implemented and validated on macOS; see [validation results](VALIDATION.md) for the
 exact native and automated checks and their limits. Milestones 6 and 7 are implemented with Linux
-validation recorded there; milestones 8 and 9 remain planned.
+validation recorded there; milestone 8 is in progress and milestone 9 remains planned.
 
 ## Milestone 1 Desktop foundation
 
@@ -128,6 +128,15 @@ Acceptance criteria:
 - Retention tests control time deterministically and cover count and age boundaries.
 
 ## Milestone 8 Migration and exchange
+
+Status: in progress. The first OpenAPI 3.0.x/3.1.x YAML/JSON import slice is implemented;
+[OPENAPI_IMPORT.md](OPENAPI_IMPORT.md) defines mappings, compatibility blockers, internal-only
+references, metadata preservation, and failure recovery. Postman Collection v2.1 and associated
+environment JSON import are implemented; [POSTMAN_IMPORT.md](POSTMAN_IMPORT.md) defines their
+scope mappings and limits. OpenAPI 3.1.0 YAML export is implemented for saved requests,
+folder subtrees, collections and projects; [OPENAPI_EXPORT.md](OPENAPI_EXPORT.md) defines
+privacy, validation, conflicts and write recovery. Native backup export/import remains planned.
+See validation for executed platform checks.
 
 Select supported input versions and the OpenAPI output version before implementation.
 Implement OpenAPI import, Postman collection/environment import, OpenAPI YAML export,

@@ -1,10 +1,19 @@
+import { selectOption } from './test/selectOption';
 import { render, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { getAppInfo, isDesktop } from './native';
 
-vi.mock('./native', () => ({ isDesktop: vi.fn(), getAppInfo: vi.fn() }));
+vi.mock('./native', () => ({
+  isDesktop: vi.fn(),
+  getAppInfo: vi.fn(),
+  restoreLastProject: vi.fn(async () => null),
+  rememberProject: vi.fn(async () => {}),
+}));
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => ({ onCloseRequested: async () => () => {}, destroy: async () => {} }),
+}));
 
 beforeEach(() => {
   vi.mocked(isDesktop).mockReturnValue(false);
@@ -27,7 +36,7 @@ describe('desktop foundation', () => {
       'https://example.test/one',
     );
     await user.click(screen.getByRole('button', { name: 'New request tab' }));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'HTTP method' }), 'POST');
+    await selectOption(user, screen.getByRole('combobox', { name: 'HTTP method' }), 'POST');
     await user.type(
       screen.getByRole('textbox', { name: 'Request URL' }),
       'https://example.test/two',
@@ -63,7 +72,7 @@ describe('desktop foundation', () => {
     await user.click(screen.getByRole('button', { name: 'Remove Header 2' }));
     expect(screen.queryByRole('textbox', { name: 'Header key 2' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('tab', { name: 'Body' }));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Body type' }), 'text');
+    await selectOption(user, screen.getByRole('combobox', { name: 'Body type' }), 'text');
     await user.type(screen.getByRole('textbox', { name: 'Request body' }), 'hello');
     await user.click(screen.getByRole('tab', { name: 'Params' }));
     await user.click(screen.getByRole('tab', { name: 'Body' }));

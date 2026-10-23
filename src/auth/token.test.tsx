@@ -1,3 +1,4 @@
+import { selectOption } from '../test/selectOption';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
@@ -77,11 +78,11 @@ describe('token configuration', () => {
       );
     }
     render(<Editor />);
-    await user.selectOptions(screen.getByLabelText('Authentication method'), 'oauth2');
-    await user.selectOptions(screen.getByLabelText('Client ID variable'), 'user-id');
-    await user.selectOptions(screen.getByLabelText('Client secret variable'), 'secret-id');
-    await user.selectOptions(screen.getByLabelText('Token endpoint input 1 source'), 'variable');
-    await user.selectOptions(screen.getByLabelText('Token endpoint input 1 variable'), 'user-id');
+    await selectOption(user, screen.getByLabelText('Authentication method'), 'oauth2');
+    await selectOption(user, screen.getByLabelText('Client ID variable'), 'user-id');
+    await selectOption(user, screen.getByLabelText('Client secret variable'), 'secret-id');
+    await selectOption(user, screen.getByLabelText('Token endpoint input 1 source'), 'variable');
+    await selectOption(user, screen.getByLabelText('Token endpoint input 1 variable'), 'user-id');
     const result = changed.mock.lastCall?.[0] as Auth;
     expect(result).toMatchObject({
       kind: 'oauth2',
@@ -111,15 +112,19 @@ describe('token configuration', () => {
       );
     }
     render(<Editor />);
-    await user.selectOptions(screen.getByLabelText('Authentication method'), 'customLogin');
+    await selectOption(user, screen.getByLabelText('Authentication method'), 'customLogin');
     expect(screen.getByText(/Expiry unknown/)).toBeVisible();
+    await user.click(screen.getByLabelText('Login endpoint input 1 source'));
+    expect(screen.getByRole('option', { name: 'Literal text' })).toBeVisible();
     expect(screen.queryByRole('option', { name: 'Stored renewal value' })).not.toBeInTheDocument();
+    await user.keyboard('{Escape}');
     await user.click(screen.getByLabelText('Use a separate renewal request'));
-    await user.selectOptions(
+    await selectOption(
+      user,
       screen.getByLabelText('Renewal endpoint input 1 source'),
       'renewalToken',
     );
-    await user.selectOptions(screen.getByLabelText('Login token extraction source'), 'header');
+    await selectOption(user, screen.getByLabelText('Login token extraction source'), 'header');
     fireEvent.change(screen.getByLabelText('Login token extraction header name'), {
       target: { value: 'X-Session' },
     });

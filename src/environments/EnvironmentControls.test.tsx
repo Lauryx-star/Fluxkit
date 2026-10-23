@@ -1,4 +1,5 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { selectOption } from '../test/selectOption';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { EnvironmentControls } from './EnvironmentControls';
@@ -50,13 +51,13 @@ beforeEach(() => {
 async function open() {
   const user = userEvent.setup();
   render(<EnvironmentControls handle="project" ask={ask} onDirty={onDirty} onOpen={onOpen} />);
-  await screen.findByRole('option', { name: 'Testserver' });
+  await waitFor(() => expect(screen.getByLabelText('Project environment')).toBeEnabled());
   await user.click(screen.getByRole('button', { name: 'Variables' }));
   return user;
 }
 it('shows new input and lets users mask it without loading or changing stored values', async () => {
   const user = await open();
-  await user.selectOptions(screen.getByLabelText('Value variable'), 'var');
+  await selectOption(user, screen.getByLabelText('Value variable'), 'var');
   const input = screen.getByLabelText('Variable value');
   expect(input).toHaveAttribute('type', 'text');
   await user.type(input, 'https://example.test');
@@ -68,7 +69,7 @@ it('shows new input and lets users mask it without loading or changing stored va
   expect(environmentAction).toHaveBeenCalledTimes(1);
   expect(values.size).toBe(0);
   await user.click(screen.getByRole('button', { name: 'Hide value' }));
-  await user.selectOptions(screen.getByLabelText('Value environment'), 'env');
+  await selectOption(user, screen.getByLabelText('Value environment'), 'env');
   expect(input).toHaveValue('');
   expect(input).toHaveAttribute('type', 'text');
 });
@@ -76,7 +77,7 @@ it('loads only definitions, explicitly saves a value and reveals it on demand', 
   values.set('var/null', 'synthetic-private');
   const user = await open();
   expect(environmentAction).toHaveBeenCalledTimes(1);
-  await user.selectOptions(screen.getByLabelText('Value variable'), 'var');
+  await selectOption(user, screen.getByLabelText('Value variable'), 'var');
   expect(screen.getByLabelText('Variable value')).toHaveValue('');
   await user.click(screen.getByRole('button', { name: 'Load & reveal' }));
   expect(await screen.findByLabelText('Variable value')).toHaveValue('synthetic-private');
@@ -101,7 +102,7 @@ it('confirms removal of definitions and OS values and preserves edits when cance
   await user.click(screen.getByRole('button', { name: 'Remove baseUrl' }));
   expect(ask).toHaveBeenCalledWith(expect.stringContaining("this machine's OS credential store"));
   expect(view.data.variables).toHaveLength(1);
-  await user.selectOptions(screen.getByLabelText('Value variable'), 'var');
+  await selectOption(user, screen.getByLabelText('Value variable'), 'var');
   await user.type(screen.getByLabelText('Variable value'), 'unsaved');
   ask.mockResolvedValueOnce(false);
   await user.click(screen.getByRole('button', { name: 'Done' }));
@@ -111,14 +112,14 @@ it('confirms removal of definitions and OS values and preserves edits when cance
 });
 it('keeps input after credential-store failure and changes the project-wide selection', async () => {
   const user = await open();
-  await user.selectOptions(screen.getByLabelText('Value variable'), 'var');
+  await selectOption(user, screen.getByLabelText('Value variable'), 'var');
   await user.type(screen.getByLabelText('Variable value'), 'keep-me');
   vi.mocked(environmentAction).mockRejectedValueOnce('Unlock the OS credential store and retry.');
   await user.click(screen.getByRole('button', { name: 'Save value' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('Unlock the OS credential store');
   expect(screen.getByLabelText('Variable value')).toHaveValue('keep-me');
   await user.click(screen.getByRole('button', { name: 'Done' }));
-  await user.selectOptions(screen.getByLabelText('Project environment'), 'env');
+  await selectOption(user, screen.getByLabelText('Project environment'), 'env');
   expect(environmentAction).toHaveBeenLastCalledWith('project', {
     kind: 'select',
     environment: 'env',
@@ -130,9 +131,45 @@ it('lets users explicitly reset an environment removed outside the app', async (
   const user = await open();
   expect(screen.getByLabelText('Project environment')).toHaveValue('__missing');
   await user.click(screen.getByRole('button', { name: 'Done' }));
-  await user.selectOptions(screen.getByLabelText('Project environment'), '');
+  await selectOption(user, screen.getByLabelText('Project environment'), '');
   expect(environmentAction).toHaveBeenLastCalledWith('project', {
     kind: 'select',
     environment: null,
   });
+});
+
+it('saves pending definitions and then the edited value with the new revision for Save & quit', async () => {
+  const user = userEvent.setup();
+  let save: (() => Promise<boolean>) | null = null;
+  render(
+    <EnvironmentControls
+      handle="project"
+      ask={ask}
+      onDirty={onDirty}
+      onOpen={onOpen}
+      onRegisterSave={(callback) => {
+        save = callback;
+      }}
+    />,
+  );
+  await waitFor(() => expect(screen.getByLabelText('Project environment')).toBeEnabled());
+  await user.click(screen.getByRole('button', { name: 'Variables' }));
+  await selectOption(user, screen.getByLabelText('Value variable'), 'var');
+  await user.type(screen.getByLabelText('Variable value'), 'synthetic-value');
+  await user.type(screen.getByLabelText('Definition name'), 'otherVariable');
+  let saved = false;
+  await act(async () => {
+    saved = await save!();
+  });
+  expect(saved).toBe(true);
+  expect(values.get('var/null')).toBe('synthetic-value');
+  expect(environmentAction).toHaveBeenLastCalledWith(
+    'project',
+    expect.objectContaining({
+      kind: 'setValue',
+      expected: '2',
+    }),
+  );
+  expect(view.data.variables.some((variable) => variable.name === 'otherVariable')).toBe(true);
+  expect(screen.getByLabelText('Variable value')).toHaveValue('');
 });

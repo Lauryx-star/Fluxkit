@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select';
 import { useState } from 'react';
 import type { Definition } from '../environments/types';
 import type { Auth, Composition, Extraction, LoginEntry, LoginRequest, Part } from './types';
@@ -17,7 +18,12 @@ function Variable({
   return (
     <label className="dialog-label">
       {label}
-      <select aria-label={label} required value={value} onChange={(e) => onChange(e.target.value)}>
+      <Select
+        aria-label={label}
+        required
+        value={value}
+        onValueChange={(selectedValue) => onChange(selectedValue)}
+      >
         <option value="">Choose a project variable…</option>
         {value && !variables.some((v) => v.id === value) && (
           <option value={value}>Missing variable — choose a replacement</option>
@@ -27,7 +33,7 @@ function Variable({
             {v.name}
           </option>
         ))}
-      </select>
+      </Select>
     </label>
   );
 }
@@ -54,11 +60,11 @@ export function CompositionEditor({
         <div className="token-part" key={index}>
           <label className="dialog-label">
             Input {index + 1} source
-            <select
+            <Select
               aria-label={`${label} input ${index + 1} source`}
               value={part.kind}
-              onChange={(e) => {
-                const kind = e.target.value as Part['kind'];
+              onValueChange={(selectedValue) => {
+                const kind = selectedValue as Part['kind'];
                 change(
                   index,
                   kind === 'literal'
@@ -77,7 +83,7 @@ export function CompositionEditor({
                   <option value="renewalToken">Stored renewal value</option>
                 </>
               )}
-            </select>
+            </Select>
           </label>
           {part.kind === 'literal' && (
             <label className="dialog-label">
@@ -158,11 +164,11 @@ function ExtractionEditor({
   return (
     <fieldset className="token-composition">
       <legend>{label}</legend>
-      <select
+      <Select
         aria-label={`${label} source`}
         value={value?.kind ?? 'none'}
-        onChange={(e) => {
-          const kind = e.target.value;
+        onValueChange={(selectedValue) => {
+          const kind = selectedValue;
           onChange(
             kind === 'none'
               ? null
@@ -178,7 +184,7 @@ function ExtractionEditor({
         <option value="text">Complete response text (trimmed)</option>
         <option value="json">JSON field (JSON Pointer)</option>
         <option value="header">Response header</option>
-      </select>
+      </Select>
       {value?.kind === 'json' && (
         <label className="dialog-label">
           JSON Pointer
@@ -343,15 +349,15 @@ function LoginRequestEditor({
       />
       <label className="dialog-label">
         HTTP method
-        <select
+        <Select
           aria-label={`${label} method`}
           value={value.method}
-          onChange={(e) => onChange({ ...value, method: e.target.value })}
+          onValueChange={(selectedValue) => onChange({ ...value, method: selectedValue })}
         >
           {['POST', 'GET', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((m) => (
             <option key={m}>{m}</option>
           ))}
-        </select>
+        </Select>
       </label>
       <Entries
         label={`${label} query parameter`}
@@ -369,11 +375,11 @@ function LoginRequestEditor({
       />
       <label className="dialog-label">
         Body
-        <select
+        <Select
           aria-label={`${label} body type`}
           value={value.body.kind}
-          onChange={(e) => {
-            const kind = e.target.value as LoginRequest['body']['kind'];
+          onValueChange={(selectedValue) => {
+            const kind = selectedValue as LoginRequest['body']['kind'];
             onChange({
               ...value,
               body:
@@ -389,7 +395,7 @@ function LoginRequestEditor({
           <option value="text">Text</option>
           <option value="json">JSON</option>
           <option value="urlEncoded">URL-encoded form</option>
-        </select>
+        </Select>
       </label>
       {(value.body.kind === 'text' || value.body.kind === 'json') && (
         <CompositionEditor
@@ -511,22 +517,22 @@ export function TokenAuthEditor({
           />
           <label className="dialog-label">
             Client authentication
-            <select
+            <Select
               aria-label="Client authentication"
               value={value.config.clientAuthentication}
-              onChange={(e) =>
+              onValueChange={(selectedValue) =>
                 onChange({
                   ...value,
                   config: {
                     ...value.config,
-                    clientAuthentication: e.target.value as 'basic' | 'body',
+                    clientAuthentication: selectedValue as 'basic' | 'body',
                   },
                 })
               }
             >
               <option value="basic">HTTP Basic</option>
               <option value="body">Client credentials in form body</option>
-            </select>
+            </Select>
           </label>
           <p className="auth-help">
             Acquires a Bearer token. Known expiry triggers reacquisition before sending. No
@@ -569,17 +575,17 @@ export function TokenAuthEditor({
             <legend>Use token in API requests</legend>
             <label className="dialog-label">
               Token placement
-              <select
+              <Select
                 aria-label="Token placement"
                 value={value.config.placement.placement}
-                onChange={(e) =>
+                onValueChange={(selectedValue) =>
                   onChange({
                     ...value,
                     config: {
                       ...value.config,
                       placement: {
                         ...value.config.placement,
-                        placement: e.target.value as 'header' | 'query',
+                        placement: selectedValue as 'header' | 'query',
                       },
                     },
                   })
@@ -587,7 +593,7 @@ export function TokenAuthEditor({
               >
                 <option value="header">Header</option>
                 <option value="query">Query parameter</option>
-              </select>
+              </Select>
             </label>
             <label className="dialog-label">
               Token field name

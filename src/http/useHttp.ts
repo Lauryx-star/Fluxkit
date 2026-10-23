@@ -81,7 +81,11 @@ export function useHttp(drafts: Draft[]) {
       const payloads = Object.keys(next).filter((key) => {
         const result = next[Number(key)]?.result;
         return (
-          result && (result.text !== null || result.jsonText !== null || result.headers.length > 0)
+          result &&
+          (result.text !== null ||
+            result.jsonText !== null ||
+            result.headers.length > 0 ||
+            (result.requestHeaders?.length ?? 0) > 0)
         );
       });
       for (const key of payloads
@@ -96,6 +100,7 @@ export function useHttp(drafts: Draft[]) {
               text: null,
               jsonText: null,
               headers: [],
+              requestHeaders: undefined,
               message:
                 'Response details released to limit memory. Explicitly send again if you need a new response.',
             },

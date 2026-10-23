@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select';
 import { KeyValueEditor } from '../components/KeyValueEditor';
 import { VariableInput } from '../environments/VariableInput';
 import type { Attachment, Draft } from './types';
@@ -15,10 +16,12 @@ export function BodyEditor({
     <div className="body-editor">
       <label className="body-format">
         Body type
-        <select
+        <Select
           aria-label="Body type"
           value={draft.bodyFormat}
-          onChange={(event) => onChange({ bodyFormat: event.target.value as Draft['bodyFormat'] })}
+          onValueChange={(selectedValue) =>
+            onChange({ bodyFormat: selectedValue as Draft['bodyFormat'] })
+          }
         >
           <option value="none">None</option>
           <option value="json">JSON</option>
@@ -26,7 +29,7 @@ export function BodyEditor({
           <option value="urlEncoded">URL-encoded form</option>
           <option value="multipart">Multipart form</option>
           <option value="file">File</option>
-        </select>
+        </Select>
       </label>
       {draft.bodyFormat === 'none' && <p className="panel-hint">This request has no body.</p>}
       {(draft.bodyFormat === 'json' || draft.bodyFormat === 'text') && (

@@ -16,6 +16,9 @@ pub(super) struct Effective {
     pub owner: String,
 }
 pub(super) fn effective(input: &ExecutionInput, root: Option<&Path>) -> Result<Effective, String> {
+    if !input.request.import_issues.is_empty() {
+        return Err("This imported request needs review. Configure its pending items, confirm the import review and save before sending or acquiring tokens.".into());
+    }
     let mut inherited = None;
     let mut owner = format!("request/{}", input.request.id);
     if let Some(scope) = &input.scope {
@@ -39,6 +42,13 @@ pub(super) fn effective(input: &ExecutionInput, root: Option<&Path>) -> Result<E
             }
             let collection: Collection = store::decode(&bytes)?;
             collection.validate()?;
+            if collection
+                .requests
+                .iter()
+                .any(|r| r.id == input.request.id && !r.import_issues.is_empty())
+            {
+                return Err("The saved request still needs import review. Confirm the review and save it before sending or acquiring tokens.".into());
+            }
             if collection.id != *id {
                 return Err("Collection identity changed.".into());
             }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import * as native from '../native';
 import {
@@ -16,7 +16,11 @@ import {
   type SavedRequest,
 } from './types';
 
-export function useWorkspace(additionalChanges = false) {
+export function useWorkspace(
+  additionalChanges = false,
+  saveAdditionalChanges?: () => Promise<boolean>,
+  additionalBusy = false,
+) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [nextId, setNextId] = useState(1);
@@ -27,8 +31,18 @@ export function useWorkspace(additionalChanges = false) {
     collectionId: string;
     folderId: string | null;
   } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [restoring, setRestoring] = useState(() => native.isDesktop());
+  const [busy, setBusy] = useState(() => native.isDesktop());
+  const startup = useRef<Promise<ProjectView | null> | null>(null);
+  const remembered = useRef<string | null>(null);
+  const rememberQueue = useRef<Promise<void>>(Promise.resolve());
   const [error, setError] = useState<string | null>(null);
+  const [quitOpen, setQuitOpen] = useState(false);
+  const [quitSaving, setQuitSaving] = useState(false);
+  const [quitError, setQuitError] = useState<string | null>(null);
+  const quitInFlight = useRef(false);
+  // Auth saves following request saves must use the revisions just returned by native code.
+  const quitCollections = useRef<Map<string, CollectionView> | null>(null);
   const [confirmation, setConfirmation] = useState<{
     message: string;
     resolve: (yes: boolean) => void;
@@ -42,6 +56,84 @@ export function useWorkspace(additionalChanges = false) {
   const draft = drafts.find((item) => item.id === activeId);
   const desktop = native.isDesktop();
   const hasChanges = additionalChanges || drafts.some(isDirty);
+
+  const requestWindowClose = useEffectEvent(async (event: { preventDefault: () => void }) => {
+    event.preventDefault();
+    if (quitInFlight.current) {
+      return;
+    }
+    if (busy || additionalBusy) {
+      setError('Wait for the current operation to finish before quitting Fluxkit.');
+      return;
+    }
+    if (hasChanges) {
+      setQuitOpen(true);
+    } else {
+      await finishQuit('discard');
+    }
+  });
+
+  useEffect(() => {
+    if (!desktop) {
+      return;
+    }
+    let disposed = false;
+    // StrictMode replays effects: reuse the same native restore instead of registering twice.
+    startup.current ??= native.restoreLastProject();
+    void startup.current
+      .then(
+        (view) => {
+          if (!disposed) {
+            remembered.current = view?.handle ?? null;
+            if (view) {
+              setProjects([view]);
+              setActiveHandle(view.handle);
+            }
+          }
+        },
+        (reason: unknown) => {
+          if (!disposed) {
+            setError(
+              typeof reason === 'string'
+                ? reason
+                : 'The last project could not be reopened. Use Open project to choose it again.',
+            );
+          }
+        },
+      )
+      .finally(() => {
+        if (!disposed) {
+          setRestoring(false);
+          setBusy(false);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [desktop]);
+
+  useEffect(() => {
+    if (!desktop || restoring || remembered.current === activeHandle) {
+      return;
+    }
+    remembered.current = activeHandle;
+    let disposed = false;
+    // Preserve activation order even if a user switches projects faster than disk writes finish.
+    const pending = rememberQueue.current.then(() => native.rememberProject(activeHandle));
+    rememberQueue.current = pending.catch(() => {});
+    void pending.catch((reason: unknown) => {
+      if (!disposed) {
+        setError(
+          typeof reason === 'string'
+            ? reason
+            : 'Could not remember the active project for the next app start. Your project remains open.',
+        );
+      }
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [desktop, restoring, activeHandle]);
 
   const ask = useCallback(
     (message: string) =>
@@ -69,18 +161,13 @@ export function useWorkspace(additionalChanges = false) {
   }, [hasChanges]);
 
   useEffect(() => {
-    if (!desktop || !hasChanges) {
+    if (!desktop) {
       return;
     }
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void getCurrentWindow()
-      .onCloseRequested(async (event) => {
-        event.preventDefault();
-        if (await ask('Close Fluxkit and discard unsaved changes?')) {
-          await getCurrentWindow().destroy();
-        }
-      })
+      .onCloseRequested((event) => requestWindowClose(event))
       .then((stop) => {
         if (disposed) {
           stop();
@@ -95,7 +182,7 @@ export function useWorkspace(additionalChanges = false) {
       disposed = true;
       unlisten?.();
     };
-  }, [desktop, hasChanges, ask]);
+  }, [desktop]);
 
   async function perform(operation: () => Promise<void>) {
     if (busy) {
@@ -124,6 +211,7 @@ export function useWorkspace(additionalChanges = false) {
     }
   }
   function updateCollection(handle: string, view: CollectionView) {
+    quitCollections.current?.set(JSON.stringify([handle, view.data.id]), view);
     setProjects((items) =>
       items.map((item) =>
         item.handle !== handle
@@ -287,7 +375,10 @@ export function useWorkspace(additionalChanges = false) {
     });
   }
   function findCollection(id: string) {
-    return project?.collections.find((item) => item.data.id === id);
+    return (
+      quitCollections.current?.get(JSON.stringify([project?.handle, id])) ??
+      project?.collections.find((item) => item.data.id === id)
+    );
   }
   function createFolder(id: string, parentId: string | null) {
     const collection = findCollection(id);
@@ -430,11 +521,12 @@ export function useWorkspace(additionalChanges = false) {
     );
     if (existing) {
       setActiveId(existing.id);
-      return;
+      return existing.id;
     }
     setDrafts((items) => [...items, fromRequest(nextId, request, project.handle, collectionId)]);
     setActiveId(nextId);
     setNextId(nextId + 1);
+    return nextId;
   }
   function updateDraft(patch: Partial<Draft>) {
     setDrafts((items) =>
@@ -455,6 +547,88 @@ export function useWorkspace(additionalChanges = false) {
         setActiveHandle(selected.projectHandle);
       }
     }
+  }
+  function assignDraft(id: number, collectionId: string, folderId: string | null = null) {
+    const item = drafts.find((entry) => entry.id === id);
+    const collection = project?.collections.find((entry) => entry.data.id === collectionId);
+    if (busy || !item || item.savedSnapshot || item.collectionId || !project || !collection) {
+      setError('Only unsaved requests without a collection can be assigned here.');
+      return;
+    }
+    if (item.projectHandle && item.projectHandle !== project.handle) {
+      setError('Choose a collection in this request’s project to keep variable references valid.');
+      return;
+    }
+    if (folderId && !collection.data.folders.some((folder) => folder.id === folderId)) {
+      setError('This folder no longer exists.');
+      return;
+    }
+    setDrafts((items) =>
+      items.map((entry) =>
+        entry.id === id
+          ? {
+              ...entry,
+              projectHandle: project.handle,
+              collectionId,
+              folderId,
+            }
+          : entry,
+      ),
+    );
+    setActiveId(id);
+    setSelection({ handle: project.handle, collectionId, folderId });
+    setError(null);
+  }
+  async function moveDraft(
+    id: number,
+    collectionId: string,
+    folderId: string | null,
+    allowMetadataLoss: boolean,
+  ) {
+    const item = drafts.find((entry) => entry.id === id);
+    const owner = projects.find((entry) => entry.handle === (item?.projectHandle ?? activeHandle));
+    const destination = owner?.collections.find((entry) => entry.data.id === collectionId);
+    const source = item?.savedSnapshot
+      ? owner?.collections.find((entry) => entry.data.id === item.collectionId)
+      : undefined;
+    if (!item || !owner || !destination || (item.savedSnapshot && !source) || busy) {
+      setError('Choose an existing collection in this request’s project before moving.');
+      return false;
+    }
+    let saved = false;
+    await perform(async () => {
+      const request = { ...requestData(item), folderId };
+      const views = await native.moveRequest(owner.handle, {
+        request,
+        sourceCollectionId: source?.data.id ?? null,
+        sourceRevision: source?.revision ?? null,
+        targetCollectionId: destination.data.id,
+        targetRevision: destination.revision,
+        projectRevision: owner.revision,
+        allowMetadataLoss,
+      });
+      for (const view of views) {
+        updateCollection(owner.handle, view);
+      }
+      setDrafts((items) =>
+        items.map((entry) =>
+          entry.id === id
+            ? {
+                ...entry,
+                projectHandle: owner.handle,
+                collectionId,
+                folderId,
+                savedSnapshot: JSON.stringify(request),
+              }
+            : entry,
+        ),
+      );
+      setActiveId(id);
+      setActiveHandle(owner.handle);
+      setSelection({ handle: owner.handle, collectionId, folderId });
+      saved = true;
+    });
+    return saved;
   }
   function target(item: Draft) {
     const owner = projects.find((p) => p.handle === (item.projectHandle ?? activeHandle));
@@ -507,6 +681,86 @@ export function useWorkspace(additionalChanges = false) {
       );
     });
   }
+
+  async function saveAllDrafts() {
+    const groups = new Map<
+      string,
+      { handle: string; collection: CollectionView; drafts: Draft[] }
+    >();
+    // Resolve every destination before writing anything. Session drafts need an open collection.
+    for (const item of drafts.filter(isDirty)) {
+      const { owner, collection } = target(item);
+      const key = JSON.stringify([owner.handle, collection.data.id]);
+      const group = groups.get(key) ?? { handle: owner.handle, collection, drafts: [] };
+      group.drafts.push(item);
+      groups.set(key, group);
+    }
+    for (const { handle, collection, drafts: changed } of groups.values()) {
+      const requests = new Map(collection.data.requests.map((request) => [request.id, request]));
+      for (const item of changed) {
+        requests.set(item.requestId, requestData(item));
+      }
+      const view = await native.saveCollection(
+        handle,
+        { ...collection.data, requests: [...requests.values()] },
+        collection.revision,
+      );
+      updateCollection(handle, view);
+      setDrafts((items) =>
+        items.map((item) => {
+          const saved = changed.find((entry) => entry.id === item.id);
+          return saved
+            ? {
+                ...item,
+                projectHandle: handle,
+                collectionId: collection.data.id,
+                savedSnapshot: JSON.stringify(requestData(saved)),
+              }
+            : item;
+        }),
+      );
+    }
+  }
+
+  async function finishQuit(choice: 'cancel' | 'discard' | 'save') {
+    if (quitInFlight.current) {
+      return;
+    }
+    if (choice === 'cancel') {
+      setQuitOpen(false);
+      setQuitError(null);
+      return;
+    }
+    quitInFlight.current = true;
+    setQuitSaving(true);
+    setQuitError(null);
+    quitCollections.current = new Map();
+    try {
+      if (choice === 'save') {
+        await saveAllDrafts();
+        if (additionalChanges && (!saveAdditionalChanges || !(await saveAdditionalChanges()))) {
+          throw new Error(
+            'Could not save all changes. Check the open editor and complete any missing fields before quitting. Successfully saved changes are kept.',
+          );
+        }
+      }
+      await rememberQueue.current;
+      await getCurrentWindow().destroy();
+    } catch (reason: unknown) {
+      setQuitOpen(true);
+      setQuitError(
+        typeof reason === 'string'
+          ? reason
+          : reason instanceof Error
+            ? reason.message
+            : 'Could not save all changes or quit Fluxkit. Your remaining edits are still open.',
+      );
+    } finally {
+      quitCollections.current = null;
+      quitInFlight.current = false;
+      setQuitSaving(false);
+    }
+  }
   function attach(accept: (file: Attachment) => void) {
     if (!draft) {
       return;
@@ -535,6 +789,9 @@ export function useWorkspace(additionalChanges = false) {
   }
   return {
     ask,
+    acceptImportedProject: (view: ProjectView) => {
+      setProjects((items) => items.map((item) => (item.handle === view.handle ? view : item)));
+    },
     drafts,
     activeId,
     setActiveId: (id: number | null) => {
@@ -553,6 +810,10 @@ export function useWorkspace(additionalChanges = false) {
       setActiveId(drafts.filter((item) => item.projectHandle === handle).at(-1)?.id ?? null);
     },
     busy,
+    quitOpen,
+    quitSaving,
+    quitError,
+    finishQuit,
     error,
     setError,
     confirmation,
@@ -575,6 +836,8 @@ export function useWorkspace(additionalChanges = false) {
     updateDraft,
     closeDraft,
     saveDraft,
+    assignDraft,
+    moveDraft,
     attach,
     select: (collectionId: string, folderId: string | null) => {
       if (project) {

@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select';
 import { useEffect, useState } from 'react';
 import { environmentAction } from '../native';
 import { Modal } from '../projects/Dialogs';
@@ -9,8 +10,16 @@ interface Props {
   onDirty: (dirty: boolean) => void;
   onOpen: (open: boolean) => void;
   onView?: (handle: string, view: EnvironmentView) => void;
+  onRegisterSave?: (save: (() => Promise<boolean>) | null) => void;
 }
-export function EnvironmentControls({ handle, ask, onDirty, onOpen, onView }: Props) {
+export function EnvironmentControls({
+  handle,
+  ask,
+  onDirty,
+  onOpen,
+  onView,
+  onRegisterSave,
+}: Props) {
   const [view, setView] = useState<EnvironmentView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -55,11 +64,13 @@ export function EnvironmentControls({ handle, ask, onDirty, onOpen, onView }: Pr
   }
   return (
     <div className="environment-controls">
-      <select
+      <Select
         aria-label="Project environment"
         value={view?.selectionMissing ? '__missing' : (view?.selectedEnvironment ?? '')}
         disabled={busy || !view}
-        onChange={(event) => void act({ kind: 'select', environment: event.target.value || null })}
+        onValueChange={(selectedValue) =>
+          void act({ kind: 'select', environment: selectedValue || null })
+        }
       >
         {view?.selectionMissing && (
           <option value="__missing" disabled>
@@ -72,7 +83,7 @@ export function EnvironmentControls({ handle, ask, onDirty, onOpen, onView }: Pr
             {item.name}
           </option>
         ))}
-      </select>
+      </Select>
       <button className="secondary-button" onClick={() => show(true)}>
         Variables
       </button>
@@ -92,6 +103,7 @@ export function EnvironmentControls({ handle, ask, onDirty, onOpen, onView }: Pr
           act={act}
           ask={ask}
           onDirty={onDirty}
+          onRegisterSave={onRegisterSave}
           onClose={() => {
             onDirty(false);
             show(false);
@@ -112,9 +124,19 @@ interface ManagerProps {
     | Promise<null | Awaited<ReturnType<typeof environmentAction>>>;
   ask: Props['ask'];
   onDirty: Props['onDirty'];
+  onRegisterSave: Props['onRegisterSave'];
   onClose: () => void;
 }
-function EnvironmentManager({ view, busy, error, act, ask, onDirty, onClose }: ManagerProps) {
+function EnvironmentManager({
+  view,
+  busy,
+  error,
+  act,
+  ask,
+  onDirty,
+  onClose,
+  onRegisterSave,
+}: ManagerProps) {
   const [kind, setKind] = useState<'variables' | 'environments'>('variables');
   const [name, setName] = useState('');
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -144,6 +166,67 @@ function EnvironmentManager({ view, busy, error, act, ask, onDirty, onClose }: M
     }
     return Boolean(await act({ kind: 'save', data, expected: view.revision }));
   }
+  async function saveName() {
+    if (!view || !name.trim()) {
+      setStatus('Enter a non-empty definition name before saving.');
+      return null;
+    }
+    const entries = renaming
+      ? view.data[kind].map((item) =>
+          item.id === renaming ? { ...item, name: name.trim() } : item,
+        )
+      : [...view.data[kind], { id: crypto.randomUUID(), name: name.trim() }];
+    const reply = await act({
+      kind: 'save',
+      data: { ...view.data, [kind]: entries },
+      expected: view.revision,
+    });
+    if (reply) {
+      setName('');
+      setRenaming(null);
+    }
+    return reply;
+  }
+  async function saveValue(expected = view?.revision) {
+    if (!variable || !expected) {
+      return false;
+    }
+    const reply = await act({
+      kind: 'setValue',
+      variable,
+      environment: environment || null,
+      value,
+      expected,
+    });
+    if (reply) {
+      setValue('');
+      setVisible(true);
+      setValueDirty(false);
+      setStatus('Saved in OS credential store.');
+    }
+    return !!reply;
+  }
+  // Register the current editor snapshot; nothing is saved or revealed until explicitly requested.
+  useEffect(() => {
+    onRegisterSave?.(async () => {
+      if (!dirty) {
+        return true;
+      }
+      if (busy || !view) {
+        return false;
+      }
+      let revision = view.revision;
+      if (name.length) {
+        const reply = await saveName();
+        if (!reply) {
+          return false;
+        }
+        revision = reply.view.revision;
+      }
+      return !valueDirty || (await saveValue(revision));
+    });
+    return () => onRegisterSave?.(null);
+  });
   async function remove(item: Definition, group: typeof kind) {
     if (
       !view ||
@@ -231,31 +314,18 @@ function EnvironmentManager({ view, busy, error, act, ask, onDirty, onClose }: M
             className="definition-form"
             onSubmit={(event) => {
               event.preventDefault();
-              if (!view || !name.trim()) {
-                return;
-              }
-              const entries = renaming
-                ? view.data[kind].map((item) =>
-                    item.id === renaming ? { ...item, name: name.trim() } : item,
-                  )
-                : [...view.data[kind], { id: crypto.randomUUID(), name: name.trim() }];
-              void saveDefinitions({ ...view.data, [kind]: entries }).then((saved) => {
-                if (saved) {
-                  setName('');
-                  setRenaming(null);
-                }
-              });
+              void saveName();
             }}
           >
-            <select
+            <Select
               aria-label="Definition type"
               value={kind}
               disabled={renaming !== null}
-              onChange={(event) => setKind(event.target.value as typeof kind)}
+              onValueChange={(selectedValue) => setKind(selectedValue as typeof kind)}
             >
               <option value="variables">Variable</option>
               <option value="environments">Environment</option>
-            </select>
+            </Select>
             <input
               aria-label="Definition name"
               placeholder={kind === 'variables' ? 'baseUrl' : 'Testserver'}
@@ -283,11 +353,11 @@ function EnvironmentManager({ view, busy, error, act, ask, onDirty, onClose }: M
         <fieldset disabled={busy || !view}>
           <legend>Local value</legend>
           <div className="definition-form">
-            <select
+            <Select
               aria-label="Value variable"
               value={variable}
-              onChange={(event) => {
-                const next = event.target.value;
+              onValueChange={(selectedValue) => {
+                const next = selectedValue;
                 void discardValue().then((yes) => {
                   if (yes) {
                     setVariable(next);
@@ -301,12 +371,12 @@ function EnvironmentManager({ view, busy, error, act, ask, onDirty, onClose }: M
                   {item.name}
                 </option>
               ))}
-            </select>
-            <select
+            </Select>
+            <Select
               aria-label="Value environment"
               value={environment}
-              onChange={(event) => {
-                const next = event.target.value;
+              onValueChange={(selectedValue) => {
+                const next = selectedValue;
                 void discardValue().then((yes) => {
                   if (yes) {
                     setEnvironment(next);
@@ -320,7 +390,7 @@ function EnvironmentManager({ view, busy, error, act, ask, onDirty, onClose }: M
                   {item.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
           <label className="dialog-label">
             Value
@@ -373,28 +443,7 @@ function EnvironmentManager({ view, busy, error, act, ask, onDirty, onClose }: M
             >
               Load & reveal
             </button>
-            <button
-              disabled={!variable || !valueDirty}
-              onClick={() => {
-                if (!view) {
-                  return;
-                }
-                void act({
-                  kind: 'setValue',
-                  variable,
-                  environment: environment || null,
-                  value,
-                  expected: view.revision,
-                }).then((reply) => {
-                  if (reply) {
-                    setValue('');
-                    setVisible(true);
-                    setValueDirty(false);
-                    setStatus('Saved in OS credential store.');
-                  }
-                });
-              }}
-            >
+            <button disabled={!variable || !valueDirty} onClick={() => void saveValue()}>
               Save value
             </button>
             <button

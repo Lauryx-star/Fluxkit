@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select';
 import type { Auth } from './types';
 import type { Definition } from '../environments/types';
 import { TokenAuthEditor } from './TokenAuthEditor';
@@ -20,12 +21,12 @@ export function AuthEditor({
     return (
       <label className="dialog-label">
         {label}
-        <select
+        <Select
           aria-label={label}
           value={id}
           disabled={disabled}
           required
-          onChange={(event) => change(event.target.value)}
+          onValueChange={(selectedValue) => change(selectedValue)}
         >
           <option value="">Choose a project variable…</option>
           {id && !variables.some((item) => item.id === id) && (
@@ -36,7 +37,7 @@ export function AuthEditor({
               {item.name}
             </option>
           ))}
-        </select>
+        </Select>
       </label>
     );
   }
@@ -44,12 +45,12 @@ export function AuthEditor({
     <div className="auth-editor">
       <label className="dialog-label">
         Authentication method
-        <select
+        <Select
           aria-label="Authentication method"
           value={value?.kind ?? (root ? 'none' : 'inherit')}
           disabled={disabled}
-          onChange={(event) => {
-            const kind = event.target.value;
+          onValueChange={(selectedValue) => {
+            const kind = selectedValue;
             onChange(
               kind === 'oauth2'
                 ? {
@@ -94,7 +95,7 @@ export function AuthEditor({
           <option value="apiKey">API Key</option>
           <option value="oauth2">OAuth2 Client Credentials</option>
           <option value="customLogin">Custom Login</option>
-        </select>
+        </Select>
       </label>
       {value?.kind === 'basic' && (
         <div className="auth-fields">
@@ -123,17 +124,17 @@ export function AuthEditor({
           </label>
           <label className="dialog-label">
             API key placement
-            <select
+            <Select
               aria-label="API key placement"
               value={value.placement}
               disabled={disabled}
-              onChange={(event) =>
-                onChange({ ...value, placement: event.target.value as 'header' | 'query' })
+              onValueChange={(selectedValue) =>
+                onChange({ ...value, placement: selectedValue as 'header' | 'query' })
               }
             >
               <option value="header">Header</option>
               <option value="query">Query parameter</option>
-            </select>
+            </Select>
           </label>
           {variable('API key variable', value.value, (id) => onChange({ ...value, value: id }))}
         </>

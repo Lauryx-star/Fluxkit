@@ -20,6 +20,23 @@ use tokio_util::{io::ReaderStream, sync::CancellationToken};
 pub struct Prepared {
     pub request: reqwest::Request,
     pub token: Option<super::tokens::Plan>,
+    pub display_headers: Vec<super::model::RequestHeader>,
+    pub header_names: Vec<String>,
+}
+impl Prepared {
+    pub fn header_summary(&self) -> Vec<super::model::RequestHeader> {
+        let mut rows = self.display_headers.clone();
+        for (name, _) in self.request.headers() {
+            if !self.header_names.iter().any(|key| key == name.as_str()) {
+                rows.push(super::model::RequestHeader {
+                    name: name.to_string(),
+                    value: "••••••••".into(),
+                    source: "authentication",
+                });
+            }
+        }
+        rows
+    }
 }
 struct CachedValues<'a, V> {
     source: &'a V,
@@ -80,6 +97,7 @@ pub fn prepare(
     cancel: &CancellationToken,
 ) -> Result<Prepared, String> {
     input.request.validate()?;
+    let auth = super::auth::effective(input, root)?;
     if !(1_000..=300_000).contains(&input.timeout_ms) {
         return Err("Timeout must be between 1 and 300 seconds.".into());
     }
@@ -165,6 +183,7 @@ pub fn prepare(
     }
     let mut headers = HeaderMap::new();
     let mut header_bytes = 0usize;
+    let mut manual_names = HashMap::new();
     for entry in request
         .headers
         .iter()
@@ -191,9 +210,17 @@ pub fn prepare(
         if header_bytes > 64 * 1024 || headers.len() >= 1000 {
             return Err("Request headers exceed 64 KiB or 1,000 entries.".into());
         }
+        manual_names.insert(
+            name.to_string(),
+            if entry.key.contains("{{") {
+                "[resolved header name]".to_string()
+            } else {
+                name.to_string()
+            },
+        );
         headers.append(name, value);
     }
-    let auth = super::auth::effective(input, root)?;
+
     super::auth::apply(auth.auth.as_ref(), &mut url, &mut headers, client, |id| {
         let variable = definitions
             .variables
@@ -219,6 +246,27 @@ pub fn prepare(
         || headers.len() > 1000
     {
         return Err("Authentication exceeds the URL or header size limits.".into());
+    }
+    // Anything present before defaults came from user data or authentication and stays masked.
+    let private_names: std::collections::HashSet<_> =
+        headers.keys().map(|key| key.to_string()).collect();
+    let pending_header = token.as_ref().and_then(super::tokens::Plan::pending_header);
+    for (name, value) in [
+        (
+            reqwest::header::USER_AGENT,
+            concat!("Fluxkit/", env!("CARGO_PKG_VERSION")),
+        ),
+        (reqwest::header::ACCEPT, "*/*"),
+    ] {
+        // Defaults must not override a token destined for one of these header names.
+        if !pending_header
+            .as_ref()
+            .is_some_and(|header| header.name.eq_ignore_ascii_case(name.as_str()))
+        {
+            headers
+                .entry(name)
+                .or_insert(HeaderValue::from_static(value));
+        }
     }
     let mut builder = client.request(method, url);
     match request.body.kind {
@@ -288,7 +336,49 @@ pub fn prepare(
         .headers(headers)
         .build()
         .map_err(|_| "Could not build the HTTP request. Check headers and body configuration.")?;
-    Ok(Prepared { request, token })
+    if request.headers().len() > 1000
+        || request
+            .headers()
+            .iter()
+            .map(|(name, value)| name.as_str().len() + value.as_bytes().len())
+            .sum::<usize>()
+            > 64 * 1024
+    {
+        return Err("Request headers including defaults exceed 64 KiB or 1,000 entries.".into());
+    }
+    let display_headers = request
+        .headers()
+        .iter()
+        .map(|(name, value)| super::model::RequestHeader {
+            name: manual_names
+                .get(name.as_str())
+                .cloned()
+                .unwrap_or_else(|| name.to_string()),
+            value: if private_names.contains(name.as_str()) {
+                "••••••••".into()
+            } else {
+                value.to_str().unwrap_or("[binary]").to_string()
+            },
+            source: if manual_names.contains_key(name.as_str()) {
+                "manual"
+            } else if private_names.contains(name.as_str()) {
+                "authentication"
+            } else {
+                "automatic"
+            },
+        })
+        .collect();
+    let header_names = request
+        .headers()
+        .keys()
+        .map(|name| name.to_string())
+        .collect();
+    Ok(Prepared {
+        request,
+        token,
+        display_headers,
+        header_names,
+    })
 }
 
 /// Metadata/renewal commands validate the same authoritative ancestry without needing a valid API URL.

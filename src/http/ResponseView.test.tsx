@@ -27,13 +27,16 @@ it('keeps the HTTP result visible when history recording fails', () => {
   expect(screen.getByText(/HTTP 200/)).toBeVisible();
   expect(screen.getByRole('tabpanel')).toHaveTextContent(response.text!);
 });
-it('shows unknown token expiry and known expiry as dispatch metadata without token values', () => {
+it('keeps dispatch metadata collapsed until requested and supports closing with Escape', async () => {
+  const user = userEvent.setup();
   const { rerender } = render(
     <ResponseView
       result={{ ...response, tokenStatus: { state: 'unknownExpiry', expiresAt: null } }}
       running={false}
     />,
   );
+  expect(screen.getByText('Authentication token at dispatch: Expiry unknown.')).not.toBeVisible();
+  await user.click(screen.getByText('Details'));
   expect(screen.getByText('Authentication token at dispatch: Expiry unknown.')).toBeVisible();
   rerender(
     <ResponseView
@@ -44,6 +47,8 @@ it('shows unknown token expiry and known expiry as dispatch metadata without tok
   expect(
     screen.getByText(/Authentication token at dispatch: Token available · expires/),
   ).toBeVisible();
+  await user.keyboard('{Escape}');
+  expect(screen.getByText(/Authentication token at dispatch: Token available/)).not.toBeVisible();
 });
 it('renders untrusted body and headers as inert text and supports keyboard tab navigation', async () => {
   const user = userEvent.setup();
@@ -80,5 +85,53 @@ it('shows timeout without inventing an HTTP status and labels truncated and bina
   expect(screen.getByText(/Preview is limited to 1 MiB/)).toBeVisible();
   expect(screen.getByRole('tabpanel')).toHaveTextContent(
     'Binary, compressed, or non-UTF-8 content',
+  );
+});
+
+it('selects JSON for each new formatted response, preserves manual selection and falls back for invalid JSON', async () => {
+  const user = userEvent.setup();
+  const json: ExecutionResult = {
+    ...response,
+    contentKind: 'json',
+    text: '{"ok":true}',
+    jsonText: '{\n  "ok": true\n}',
+  };
+  const { rerender } = render(
+    <ResponseView result={json} running={false} environmentLabel="Test" />,
+  );
+  expect(screen.getByRole('tab', { name: 'JSON' })).toHaveAttribute('aria-selected', 'true');
+  await user.click(screen.getByRole('tab', { name: 'Raw' }));
+  rerender(<ResponseView result={json} running={false} environmentLabel="Test" />);
+  expect(screen.getByRole('tab', { name: 'Raw' })).toHaveAttribute('aria-selected', 'true');
+  rerender(<ResponseView result={{ ...json }} running={false} environmentLabel="Test" />);
+  expect(screen.getByRole('tab', { name: 'JSON' })).toHaveAttribute('aria-selected', 'true');
+  expect(screen.getByText(/Environment at dispatch: Test/)).not.toBeVisible();
+  await user.click(screen.getByText('Details'));
+  expect(screen.getByText(/Environment at dispatch: Test/)).toBeVisible();
+  rerender(
+    <ResponseView
+      result={{ ...json, jsonText: null, text: '{"incomplete":', truncated: true }}
+      running={false}
+    />,
+  );
+  expect(screen.getByRole('tab', { name: 'Raw' })).toHaveAttribute('aria-selected', 'true');
+  expect(screen.getByRole('tab', { name: 'JSON' })).toBeDisabled();
+  expect(screen.getByText(/Formatted JSON is unavailable/)).toBeVisible();
+});
+it.each([
+  [200, 'success'],
+  [299, 'success'],
+  [302, 'redirect'],
+  [399, 'redirect'],
+  [400, 'error'],
+  [404, 'error'],
+  [500, 'error'],
+  [599, 'error'],
+  [101, 'neutral'],
+])('styles HTTP %i with a readable %s badge', (status, category) => {
+  render(<ResponseView result={{ ...response, status: status as number }} running={false} />);
+  expect(screen.getByText(`HTTP ${status}`)).toHaveClass(
+    'response-status',
+    `response-status-${category}`,
   );
 });

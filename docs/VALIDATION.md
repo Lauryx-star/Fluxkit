@@ -517,3 +517,467 @@ its normal identity. Accessibility tooling emitted stale bus-registration warnin
 preventing the test. This milestone's native behavior remains unchecked on macOS and Windows;
 release bundles and other Linux distributions remain unverified. Import/export remains the
 next milestone and has not been implemented as part of history.
+
+
+## Milestone 8 first slice — OpenAPI import (macOS, 2026-10-23)
+
+OpenAPI import was implemented on the macOS Apple Silicon host with Node.js 24.11.0,
+npm 11.6.1 and pinned Rust 1.92.0. The initial working tree was clean; existing milestone
+6/7 implementation and Linux validation were retained. This pass does not complete
+milestone 8: Postman import, OpenAPI YAML export and native export/import remain planned.
+The supported mapping and recovery contract is in [OPENAPI_IMPORT.md](OPENAPI_IMPORT.md).
+
+TypeScript, ESLint without warnings, Prettier, 55 frontend tests and the production UI build
+passed. The default native suite passed 66 tests with the two pre-existing explicit OS-store
+integration tests excluded by design; binary and doc targets passed. Rust formatting, Clippy
+with warnings denied, locked native build and the debug macOS bundle passed. An initial
+native doc-test pass conflicted with artifacts from a concurrently running Tauri build;
+the complete native checks were rerun sequentially and passed without disabling any check.
+Routine import credential tests use fake stores; the underlying OS adapter was not changed.
+
+The new native fixtures cover OpenAPI 3.0.x/3.1.x YAML and JSON, selected scalar/default/body
+mappings, path parameter encoding, operation overrides, tag folders, Basic/Bearer/API Key/
+OAuth2 configuration shapes, internal/escaped references, recursive schemas, unsupported
+security/serialization blockers, duplicate keys, unknown versions, external/broken/cyclic
+references, tagged/multi-document/oversized sources, metadata preservation and stable operation
+origins across request renames, and literal
+placeholder capture prevention. Storage tests cover new IDs/collision names, preview-before-write,
+definitions-only import without OS access, stale preview rejection, credential failure with
+visible partial definitions, retry without duplicate definitions, edited OS values remaining
+untouched, and symlink boundaries. Frontend tests cover compatibility/default/missing-value
+presentation, inert source text, blocked confirmation, explicit value policy, cancel/discard,
+partial error/retry, and preserving an open dirty request across import.
+
+The isolated bundled app Fluxkit Import Smoke used a separate app identifier and a fresh
+synthetic project. The native file picker opened the 3.1 JSON fixture. Its preview showed
+one request, one tag folder and three new variables (two available defaults, one missing
+credential). Cancel was verified to create no collection or environment definition file.
+A second preview was confirmed with OS-value storage disabled. The new collection/folder,
+URL/form placeholders and API Key configuration appeared through the real native bridge.
+Editing the imported request name and using Cmd+S preserved its OpenAPI metadata. The
+collection and definitions were separately inspected: three definitions, no imported default
+values in JSON, retained auth/form/schema data, and a normal saved request. No OS entry or
+API call was made in this desktop smoke test. The test app was closed afterwards, and the
+regular app was rebuilt with its normal identifier. The user's running Fluxkit session
+was not manipulated. No development server was started or left running for this pass.
+
+A controlled debug Rust mapping measurement processed 47,232 bytes and 500 synthetic
+operations in an observed 29 ms on this host, producing a 200-row preview and one shared
+base-URL definition. This is a single parsing/mapping observation, not startup or interaction
+latency and not a production speed guarantee. An isolated native debug-host RSS snapshot
+after importing, editing and saving the small fixture was 123,744 KiB (about 120.8 MiB),
+excluding WebView helper processes. It is not total app memory or a comparison to another
+client. GUI automation overhead was not treated as an interaction latency measurement.
+The uncompressed debug app bundle is approximately 38 MiB, not a release size guarantee.
+
+The lockfile adds serde-saphyr 2.0.0 plus ten transitive packages. Upstream MIT/Apache-2.0
+and additional encoding_rs BSD-3-Clause notices are preserved in assets/notices/openapi-import
+and included as bundle resources. A regeneration helper reads the pinned Cargo metadata;
+no new frontend dependency, hosted service, telemetry, parser include resolver or automatic
+reference fetch was introduced. Native preparations/commits are serialized, source/graph/work
+and preview rendering limits are explicit, and candidate values remain native in memory.
+
+Windows/Linux import integration and packaging have not been run in this pass. Existing
+Linux milestone 6/7 records remain valid as historical checks, not evidence for the new
+importer. The parser is not a full OpenAPI/JSON Schema validator; unsupported mappings,
+source preservation omissions, final-check/write races and multi-system partial recovery
+are documented rather than presented as lossless migration or an atomic transaction.
+
+## Milestone 8 second slice — Postman import (macOS, 2026-10-23)
+
+The next implemented slice adds Collection v2.1 JSON and separate environment JSON imports,
+with the user's explicit choice to associate environment source names with a previously
+imported collection. Existing OpenAPI work in the working tree was retained. The mapping,
+file compatibility, limits and partial-recovery contract is in
+[POSTMAN_IMPORT.md](POSTMAN_IMPORT.md). Milestone 8 remains in progress: OpenAPI YAML export
+and native Fluxkit backup export/import have not been implemented in this slice.
+
+TypeScript, warning-free ESLint, Prettier, all 59 frontend tests and the production UI build
+passed. The native suite passed 74 tests; the same two explicit real OS-store integration
+tests remain opt-in and were not executed. Rust formatting, warning-free Clippy, locked
+native build and the macOS debug desktop bundle passed. Checks were sequential around
+native compilation/bundling. The environment adapter itself is unchanged; import storage
+uses fake credential adapters in automated tests. An environment confirmation-label test
+initially failed and exposed a real UI label error; the label was fixed and the full frontend
+suite rerun. A formatting check also caught a newly added expression; rustfmt corrected it.
+No checks were weakened or disabled.
+
+Native fixtures cover Collection v2.1 JSON, explicit version rejection, strict JSON/duplicate
+keys, structured/raw URLs, encoded query/path values, protocol-variable rewriting, missing
+variables, hierarchy, disabled rows, raw JSON/text, URL-encoded/multipart text bodies, explicit
+file reselection, Basic/Bearer/API Key and OAuth configuration, auth inheritance, unsupported
+scripts/dynamic variables/auth/body/file fields, and source-value/response/script omission.
+Environment tests verify new project-wide identities, collection-default fallback, matching
+source-name identities, disabled/unused entries, two isolated environment imports, definitions
+only without OS access, stale preview rejection and partial OS failure followed by retry.
+Repeated collection imports use new names and identities. Frontend coverage adds source-to-local
+mapping, explicit environment association, disabled selection before any imported collection,
+the environment confirmation action and preservation of dirty drafts across Postman preview.
+
+An isolated Fluxkit Import Smoke bundle used a separate app identifier and a new temporary
+synthetic project. Native file dialogs selected the committed synthetic Collection v2.1 and
+environment fixtures. The collection preview showed five requests, two nested folders,
+18 variable definitions and script/runtime compatibility warnings. Cancellation created no
+collection or definitions file. A subsequent definitions-only import created the collection
+and displayed the folder/request tree through the native bridge.
+
+The environment picker offered the imported collection. Its preview showed a new project-wide
+environment, three mapped values, disabled-entry/unused-key notices and original-to-local
+variable names without candidate values. Definitions-only confirmation added one environment
+and one standalone variable (19 project variables total), retained the previous Defaults
+selection, and left the collection file byte-for-byte unchanged. The new environment appeared
+in the project selector and could be selected. Opening a migrated request showed Basic auth
+and its JSON body; changing its name and saving with Cmd+S retained all three Postman source
+variable associations. File inspection confirmed that source credentials, source environment
+values, saved responses and scripts were absent from persisted project JSON. No API call or
+OS credential write was made in the GUI smoke test. The preview was visually checked at a
+1320×900 window size with expanded variable mappings and visible confirmation controls.
+The isolated app was closed afterwards; the regular bundle was rebuilt with its normal identity.
+No development server was started or left running by this pass.
+
+A single controlled debug Rust parsing/mapping observation processed 38,468 bytes and 500
+synthetic requests in 30 ms on this macOS Apple Silicon host with warm build/filesystem caches,
+pinned Rust 1.92.0 and fake/no credential I/O. The preview contained 200 rows and one shared
+base variable. This measures mapper work, not startup, GUI latency or total application memory;
+it is not a production performance guarantee. No new dependency was added for this slice.
+
+Windows/Linux Postman integration and packaging have not been checked. Real credential-store
+permission prompts are covered by existing opt-in adapter integration workflows rather than
+claimed as part of this definitions-only desktop smoke. The importer intentionally does not
+reproduce the complete Postman runtime, scripts or all serialization/auth behaviors; the
+compatibility report and documented subset are the supported migration boundary.
+
+## Milestone 8 third slice — OpenAPI YAML export (macOS, 2026-10-23)
+
+The user selected OpenAPI 3.1.0 and saved-state-only export, with no OS value access.
+Request, folder-subtree, collection and project selection are implemented; project export
+creates a new directory with one document per non-empty collection. Existing import work
+was retained. [OPENAPI_EXPORT.md](OPENAPI_EXPORT.md) defines mapping, privacy, conflicts,
+metadata conversion, validation boundaries and file recovery. Native Fluxkit backup/export
+restoration remains the unfinished part of milestone 8.
+
+TypeScript, ESLint without warnings, Prettier, all 62 frontend tests and the production UI
+build passed. The full locked native suite passed 83 tests, with the same two opt-in real
+OS credential-store integration tests not run. Rust formatting, warning-free Clippy, locked
+native build and the macOS debug bundle passed. The separate desktop smoke instance and
+normal bundle were built sequentially with the tests. A schema-shape regression test caught
+an overly broad early type check that confused security-scheme types with JSON Schema types;
+the check was scoped to schemas, and all tests passed after correction. No checks were weakened.
+
+Nine new Rust tests cover values/payload exclusion, saved identities and all four selection
+scopes, inherited Basic/Bearer/API Key/OAuth descriptions, explicit None and manual overrides,
+Custom Login omission, duplicate/equivalent paths, unsupported methods and opaque URL shapes,
+metadata response/schema retention after rename, known 3.0 nullable/bound conversion, invalid
+response/reference blockers, deterministic 500-operation mapping, new-file/no-clobber writes,
+symlink targets and stale preview revisions. Three frontend tests cover selection identities,
+unsaved-state notices, blockers/retryable errors, native chooser cancellation and preserving
+an unsaved draft after a successful export.
+
+Independent validation used Python jsonschema 4.25.1, PyYAML 6.0.3 and the official OpenAPI
+3.1 schema dated 2022-10-07 in a separate temporary virtual environment. All six generated
+native-test examples and three desktop-generated documents passed its OpenAPI structure
+checks; retained component schemas also passed Draft 2020-12 schema checks. This validates
+the fixtures, not every possible dialect or arbitrary imported schema. The desktop app uses
+bounded structural/reference/round-trip checks rather than bundling this Python validator.
+
+To reproduce the independent check, create a temporary virtual environment, install those
+pinned validation packages, and obtain the official schema explicitly from
+`https://spec.openapis.org/oas/3.1/schema/2022-10-07`. The developer helper itself disables
+remote schema retrieval and prints no payloads. Set `FLUXKIT_EXPORT_FIXTURE_DIR` to a temporary
+directory while running `cargo test --manifest-path src-tauri/Cargo.toml --locked exports::tests`,
+then run the virtual environment's Python with
+`scripts/validate-openapi-export.py --schema <downloaded-schema.json> <fixture-directory>`.
+Use only synthetic fixtures in this workflow. These Python packages are not app/build dependencies.
+
+The isolated Fluxkit Import Smoke bundle used a separate app identifier and a new synthetic
+project with two collections, three saved requests, nested folders, Bearer inheritance and
+synthetic query/header/body canaries. A request name was changed without saving. Export
+showed the saved-state warning; cancelling the folder chooser retained the preview. Confirming
+project export created exactly two YAML files in a new folder and left the dirty draft open.
+All source JSON hashes remained identical. The output contained the original saved request
+name and excluded the unsaved name plus the query/header/body canaries. The project export
+preview was visually inspected at 1320×900, with readable file/mapping notices and controls.
+
+The test draft was reset to its original name without saving. The Request scope selector
+and native Save dialog then produced one standalone YAML file. All three GUI-created files
+passed the independent schema check. No OS value read/write, attachment read or API request
+was performed by export. The test app was closed, and the regular app was rebuilt with its
+normal identity. No development server was started or left running.
+
+A single controlled debug observation mapped and serialized 500 synthetic saved operations
+into 149,386 YAML bytes in 138 ms on this Apple Silicon host, pinned Rust 1.92.0, warm build/
+filesystem caches, no credential/network I/O. This includes bounded YAML round trips and
+preview counting; it is not startup, interactive latency, total memory or a release guarantee.
+The uncompressed debug bundle is about 40 MiB, not a release size claim. Serialization enables
+the existing serde-saphyr feature and adds only nohash-hasher 0.2.0 to the lockfile relative
+to the importer; both upstream MIT/Apache notices are present in the normal app resources.
+
+Windows/Linux export integration and packaging are unverified. The exporter intentionally
+uses synthetic OAuth/server configuration, omits payload examples and does not certify
+arbitrary schema dialect conversions. Multi-file destination failures can leave a partial
+new export folder; the UI/documentation report this instead of claiming transactionality.
+
+## Import compatibility fixes and persisted review (macOS, 2026-10-23)
+
+A user-reported OpenAPI 3.0.0 migration failed because missing/empty operation responses
+were rejected even though request execution does not require a response schema. Missing,
+null and empty response definitions now produce one compatibility warning and still create
+requests without invented response schemas. Malformed non-object definitions remain errors.
+Regression coverage exercises all three incomplete forms across 3.0.0, 3.0.4 and 3.1.2 and
+confirms definitions-only persistence.
+
+The user's Postman compatibility report identified dynamic variables, unsupported auth and
+multipart file fields. The user explicitly selected importing those requests with a mandatory
+review lock instead of rejecting the entire collection. Optional version-1 `importIssues`
+notes now persist this state; older readers reject the new field. Source dynamic variables
+have no generated values, source attachment paths are never opened and unsupported auth is
+inactive. Inherited review requirements propagate to descendant requests; unrelated sibling
+requests stay unlocked. Multipart file placeholders still need a local attachment or an
+explicit field/value change even after review acknowledgement. Other unsupported mappings
+continue to block import, with the reason beside the disabled confirmation button and a
+keyboard-accessible action to focus/scroll to the blocker report.
+
+The editor preserves notes while editing and requires **I reviewed and configured this
+request** plus successful Save. Native request preparation checks submitted and persisted
+review state before variable-value access, HTTP execution or token acquisition, so omitting
+the draft flag does not bypass a saved scoped request's lock. A regression test verifies zero
+credential reads for blocked preparation and checks token preparation and successful review
+persistence. Frontend coverage verifies the disabled action's accessible reason, focus on
+blockers, a failed review save retaining the lock and a successful save lifting it.
+
+All 64 frontend tests, TypeScript, lint, formatting and the production UI build passed.
+The full native suite passed 86 tests with the two existing opt-in real-store tests not run;
+Clippy with warnings denied, Rust formatting and locked native build passed. The underlying
+OS adapter was not changed and fake adapters cover review/value behavior.
+
+In a separate Fluxkit Import Smoke identity and synthetic project, the real native picker
+imported a 3.0.0 YAML operation with `responses: {}`. Its preview warned and allowed import;
+one GET request appeared, and file inspection confirmed no response definition was invented.
+A second synthetic Postman collection combined all three reported compatibility cases in
+one request plus one supported sibling. The preview allowed import and reported one locked
+request. Both requests appeared; the affected editor showed all three actionable notes and
+disabled Send and Send & save response. Its layout was visually checked at 1320×900.
+For this synthetic test, the URL was replaced by an explicit synthetic URL, the dynamic query
+and upload field deliberately disabled, and inactive auth was retained intentionally. Checking
+the review checkbox alone kept sending disabled; saving removed the notes and enabled the
+button. No API request was sent. Persisted JSON retained both requests, kept the sibling
+unlocked and excluded the synthetic source attachment path. Both imports were definitions
+only, with no OS value writes. The test app was closed; the normal app was rebuilt. No dev
+server was started. Windows/Linux integration remains unchecked for this change.
+
+## Response presentation (2026-10-23)
+
+New formatted JSON responses select JSON automatically; manual selection stays stable for
+the same result. Dispatch environment/token metadata is initially collapsed in Details,
+with keyboard activation and Escape to close. HTTP status badges distinguish 2xx, 3xx and
+4xx/5xx while preserving readable numeric codes. Errors and truncation remain visible.
+
+All 74 frontend tests passed, including new response-selection, disclosure and status-range
+coverage. TypeScript, lint, formatting and the production UI build passed. A debug macOS
+bundle was exercised under the separate Fluxkit Import Smoke identity against a loopback
+server with synthetic responses: JSON opened automatically, a manual Raw selection reset
+to JSON on the next send, text selected Raw, and 200/302/500 badges appeared green/yellow/red.
+Details opened as an overlay without consuming response space and closed with Escape.
+The test app and server were stopped. Native behavior was unchanged; native tests were not
+repeated for this UI change. Windows/Linux UI integration was not exercised.
+
+## Themed selection menus (2026-10-23)
+
+All application selects now use one themed combobox/listbox, including HTTP method, body,
+project/environment, authentication, import and export controls. The popup is positioned
+within the viewport, scrolls for long lists, and stays inside its dialog's accessibility
+scope. Focus remains on the trigger, including after a macOS mouse click. Arrow keys,
+Home/End, prefix search, Enter/Space, Escape, Tab, disabled options and outside dismissal
+are covered. A visually hidden native select preserves form values and required-field
+validation; only the first invalid control receives focus, and hidden controls are excluded
+from the dialog's focus trap. No dependency or native/storage contract was added.
+
+TypeScript, lint, formatting, all 79 frontend tests and the production UI build passed.
+Workflow tests now exercise real menu clicks; exclusion checks inspect open lists so that
+unsupported choices remain tested. Five component tests cover pointer/keyboard behavior,
+disabled/empty lists, dialog Escape handling, form values and required-field focus.
+In the separate macOS test app, the HTTP list displayed the dark theme without a native
+popup; clicking then using Down/Enter selected POST, and typing G/Enter selected GET.
+The body menu selected JSON by typing. An export menu inside a synthetic project's dialog
+was visually checked; Escape closed its menu while keeping the dialog open. No requests,
+exports or credential operations were performed. The test app was closed and the normal
+macOS app rebuilt. Native tests were not repeated for this frontend change; Windows/Linux
+UI integration remains untested.
+
+## Last active project restoration (2026-10-23)
+
+Desktop startup restores the last active project's saved definitions using a versioned,
+bounded `workspace.json` in OS app-data storage. Only an authorized open handle can update
+the target. Stored project identity and ordinary project validation are checked before
+accepting a restore. Missing or invalid project/settings data produces an actionable error
+without clearing the previous target or overwriting malformed settings. Writes are ordered,
+atomic, locally locked and recoverable through a previous valid copy. Explicitly closing
+the last project clears the startup target. Normal window closure waits for queued writes.
+
+All 85 frontend tests passed, including StrictMode restoration, pending-startup controls,
+missing-project recovery, activation/close persistence, settings-write failure and queued
+write ordering before a clean close. TypeScript, lint, formatting and production UI build
+passed. Rust formatting, Clippy with warnings denied, the locked native build and full test
+suite passed: 91 tests passed; the two existing opt-in real credential-store tests were not
+run. Five new native tests cover startup round trips/clear, invalid/oversized settings,
+unknown handles, replaced/missing projects, Unicode paths, symlinks and backup-write failure.
+
+In the separate macOS test identity, a synthetic project was created in a folder containing
+Unicode and spaces, with a saved Synthetic API collection. After quitting and relaunching,
+both project and collection appeared automatically. Temporarily moving only this synthetic
+folder produced the expected warning and usable empty workspace; restoring its original
+location allowed the next startup to reopen it, confirming the target survived the failure.
+Explicit Close project followed by quit/relaunch stayed empty. The temporary move was
+reversed and the test app closed. No API requests or credential operations were performed.
+The normal app was rebuilt. Windows/Linux startup integration remains untested.
+
+## Save before quitting (2026-10-23)
+
+Desktop Quit and window closure offer Cancel, Discard changes and Save & quit. Saving
+groups dirty request tabs by project and collection, preserves expected-revision checks,
+and then saves pending authentication/variable editor changes. Collection auth saves use
+the revision returned by request saves, avoiding overwrites or self-conflicts. Background
+editing is inert during the dialog, repeated quit requests cannot duplicate writes, and
+buttons are disabled while saving. Failure keeps the app open with an actionable error;
+successful partial saves remain clean and retry addresses the remaining edits. Cancel and
+Escape return to editing; a failed save restores keyboard focus to Cancel.
+
+TypeScript, lint, formatting, all 94 frontend tests and the production UI build passed.
+Nine added tests cover cancel/Escape/discard, delayed completion and repeated close events,
+all tabs in one collection, missing destinations, collection-auth revision ordering, invalid
+authentication, partial failure/retry, cloned collection IDs in separate projects, and
+pending definitions followed by an OS value save or a simulated credential-store failure.
+Routine value tests use only fake adapters and synthetic values. Native behavior/contracts
+were unchanged; the Rust suite was not repeated for this frontend change.
+
+In the separate macOS test app, Cmd+Q showed all three actions with Cancel initially
+focused. Escape retained both dirty requests. Save & quit saved both before closing;
+direct inspection of the synthetic collection and a relaunch confirmed both requests.
+Editing and then choosing Discard changes left both saved URLs unchanged. A synthetic
+external file edit produced a real revision conflict: Save & quit kept the app open,
+displayed the conflict and preserved the draft and external file contents. After exiting
+the test, the synthetic external edit was reversed using its original saved bytes. No
+API requests or OS credential operations occurred during the desktop test. The test app
+was closed and the regular macOS app rebuilt. Windows/Linux UI integration remains untested.
+
+
+## Readable OpenAPI imports (2026-10-23)
+
+OpenAPI imports create project variables only for distinct server URLs and authentication.
+Names are readable, existing project names are reserved, and numeric suffixes handle actual
+collisions. Normal primitive parameter/form examples and defaults stay in request files;
+optional rows remain disabled. Missing required values and unsafe source placeholders produce
+persistent request review locks. Preview renaming updates all executable references while
+preserving UUID credential associations, source metadata, and the plan on validation failure.
+
+TypeScript, lint, formatting, all 98 frontend tests and production UI build passed. Rust
+formatting, Clippy with warnings denied and all 95 routine tests passed; two explicit OS
+credential integration tests remained ignored. Native tests used synthetic data and fake
+credential adapters, with loopback servers for HTTP checks. New regression cases cover 60
+routes with only a shared server variable, collision suffixes, independent literal values,
+missing/unsafe fields, preview rename validation, stable auth IDs and bounded rename growth.
+UI tests cover preview rename/apply/rejection, pending edits and filtering beyond 100 entries.
+
+The separate macOS test app imported a synthetic 60-route document as definitions only.
+The preview showed one variable; renaming baseUrl to apiServer updated route URLs together.
+Direct inspection of live project files confirmed all 60 saved URLs, inline query/header/path
+examples, exactly one variable definition and the existing two-request collection. No API
+requests or OS credential operations occurred. The test app was closed and the regular
+macOS app rebuilt. Windows/Linux desktop integration remains untested.
+
+
+## Authentication tests, request assignment and header inspection (2026-10-23)
+
+Authentication tests use current editor settings and project-wide environment selection.
+Basic/Bearer/API Key use an explicit GET test URL; OAuth2/Custom Login acquire and discard a
+fresh token without reading or replacing stored token records. Settings, response payloads
+and history are not written by tests. Explicit header inspection is local and native,
+masking all manual/auth values and templated header names. Dispatch results carry a separate
+redacted snapshot after token placement. Defaults include versioned User-Agent and Accept;
+manual/auth fields take priority. Content-Type still follows the body type. Internal draft
+drops and a destination picker assign loose unsaved requests without writing until Save.
+
+Frontend validation passed with 109 tests, strict types, ESLint, formatting and production
+build. Added interaction coverage includes explicit GET vs token tests, safe status/error
+feedback, late registration cancellation, unmount cancellation, draft vs dispatch header
+views, parent-scope tests for unsaved inheritance, auth-method switches, assignment/save,
+cross-project guards and collection/folder drops. Rust validation includes fake-store login
+tests (success, rejection, timeout/cancel, no token record reads/writes), wire-level default
+and override checks, redaction and reserved token-header names. All 99 routine Rust tests,
+Clippy with warnings denied and Rust formatting passed. The two opt-in OS credential
+integration tests were not run; routine tests use synthetic values and isolated loopback
+servers. No real user credentials were accessed.
+
+A separate macOS test app opened a synthetic project, assigned a session request through the
+collection picker and verified immediate inherited Custom Login. Its test returned success;
+an unsaved collection login endpoint change to a rejecting local route reported HTTP 401
+without saving that change. Header inspection showed Fluxkit/0.1.0, Accept and a masked
+pending Authorization. Switching request auth to None left exactly one GET test; it reported
+HTTP 204. A separate actual send returned 204 and displayed its last-dispatch header table.
+Captured synthetic server requests confirmed versioned User-Agent and Accept on login and
+API calls. Project-file inspection confirmed the saved request and unchanged collection
+login endpoint. No OS credential entries were read or written in this desktop workflow.
+Drag-and-drop has interaction-test coverage; native mouse-drag behavior and Windows/Linux
+integration still require platform checks. The test app was closed and the local test server
+stopped before rebuilding the regular macOS app.
+
+## Saved request: Test → Prod → Test (2026-10-23)
+
+Reviewed environment selection propagation, native preparation, environment-specific variable
+resolution, token account identity and acquisition coalescing. No production-code change was
+needed. Added a saved-collection/request regression through native preparation, real loopback
+HTTP acquisition/dispatch and fake credential storage. It covers OAuth2 Client Credentials
+and Custom Login, each with successful or rejected Prod login, distinct Test/Prod client IDs,
+secrets, token/API URLs, and deliberately unusable shared defaults. Wire assertions verify
+both login credentials and each API's Authorization header. Returning to Test uses its stored
+record even with a fresh token manager; Prod failure leaves Test unchanged and sends no Prod
+API request. An old environment selection is rejected before variable/token reads.
+
+A second native regression overlaps Test and Prod acquisitions with one manager and confirms
+separate HTTP credentials, returned tokens and records. A frontend workflow sends the same
+saved inherited-OAuth request in Test, Prod and Test, verifies the three IPC environment scopes
+and confirms that no collection save is needed. All values are synthetic; no private projects,
+real OS credential entries or external Test/Prod APIs are accessed. These are automated UI
+interaction and native HTTP tests, not a new desktop or OS credential-store integration run.
+
+Validation passed: 110 frontend tests, TypeScript, ESLint, Prettier and production UI build;
+101 routine Rust tests, Rust formatting, Clippy with warnings denied and native macOS build.
+The two opt-in OS credential integration tests remained ignored. Application behavior and
+file/IPC contracts were unchanged; only regression tests and supporting documentation changed.
+
+## Saved request relocation and location picker (2026-10-23)
+
+Move… next to Save and the clickable breadcrumb location open one confirmation dialog for
+saved or unsaved requests. It shows full nested folder paths and destination authentication;
+Save & move persists open request edits and moves within the same project. Saved tree rows
+and request tabs can supply drag data to the same dialog. No file write occurs merely from
+choosing a destination or dropping. The main workspace is inert while the dialog is open;
+the dialog is outside that inert subtree and becomes inert when the quit dialog is shown.
+
+The new native move_request command validates project/source/target revisions, IDs, target
+folders, duplicate request UUIDs, sizes and schema-association compatibility under the
+project lock. Same-collection moves replace one file without reordering other requests.
+Cross-collection moves copy first, recheck the destination, then remove the source; source
+failure restores only the exact destination snapshot written by this operation. A competing
+external edit is preserved and receives an explicit partial-copy recovery message. This is
+not an atomic multi-file transaction; interrupted-move recovery is documented in FILE_FORMAT.
+Source metadata is retained; different OpenAPI documents require explicit association omission.
+
+All 114 frontend tests, strict TypeScript, ESLint, Prettier and production UI build passed.
+All 108 routine Rust tests, Rust formatting and Clippy with warnings denied passed; two opt-in
+OS credential integration tests remained ignored. Seven native relocation regressions cover
+same/different collections, stable identity/auth, edited content, backups, stale revisions,
+invalid folders/IDs, target collisions, source-write rollback, external target edits and
+OpenAPI association preservation/confirmation. UI regressions cover save/move, cancel, retry,
+full paths, inherited auth, native revision inputs, saved-tree drops, metadata confirmation
+and the modal's exclusion from the inert workspace. Other dirty drafts remain open.
+
+A separate macOS test app moved a saved synthetic request from Source API to Destination API
+/ Reports / 2026 and saved an edited URL in that operation. The UI showed its new path, saved
+state and destination auth. Clicking the breadcrumb and choosing Collection root successfully
+moved it again within the destination. Direct inspection of live project JSON confirmed the
+empty source, exactly one destination request, unchanged UUID, saved URL and root folder.
+No API requests or OS credential operations occurred. Native mouse-drag attempts through the
+UI automation did not reliably trigger a move dialog, so native drag behavior is unconfirmed;
+the location picker is the verified workflow. The test app was closed and the regular macOS
+app rebuilt. Windows/Linux integration and native mouse dragging require platform checks.

@@ -1,5 +1,7 @@
+mod exports;
 mod history;
 mod http;
+mod imports;
 mod projects;
 
 use http::commands::*;
@@ -28,6 +30,8 @@ pub fn run() {
     let application = tauri::Builder::default()
         .manage(ProjectState::default())
         .manage(HttpState::default())
+        .manage(imports::commands::ImportState::default())
+        .manage(exports::commands::ExportState::default())
         .setup(|app| {
             let state = history::HistoryState::new(
                 app.path()
@@ -67,17 +71,30 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            exports::commands::preview_openapi_export,
+            exports::commands::save_openapi_export,
+            exports::commands::discard_openapi_export,
+            imports::commands::choose_openapi_import,
+            imports::commands::rename_import_variable,
+            imports::commands::choose_postman_import,
+            imports::commands::commit_openapi_import,
+            imports::commands::discard_openapi_import,
             choose_project,
+            restore_last_project,
+            remember_project,
             reload_project,
             rename_project,
             save_project_auth,
             save_collection,
+            move_request,
             remove_collection,
             choose_attachment,
             close_project,
             environment_action,
             begin_http_request,
             execute_http_request,
+            preview_http_headers,
+            test_authentication,
             cancel_http_request,
             authentication_action,
             history::commands::history_action

@@ -79,6 +79,13 @@ impl Plan {
             placement,
         }))
     }
+    pub fn pending_header(&self) -> Option<super::model::RequestHeader> {
+        (self.placement.placement == KeyPlacement::Header).then(|| super::model::RequestHeader {
+            name: self.placement.name.clone(),
+            value: "•••••••• (token acquired on send)".into(),
+            source: "authentication",
+        })
+    }
     pub fn overridden(&self, url: &Url, headers: &HeaderMap) -> bool {
         match self.placement.placement {
             KeyPlacement::Header => headers.contains_key(&self.placement.name),
@@ -437,7 +444,7 @@ fn build<V: Values>(
         cache: HashMap::new(),
         cancel,
     };
-    let request = match &plan.config {
+    let mut request = match &plan.config {
         Auth::Oauth2 { config } => {
             let url = endpoint(&inputs.compose(&config.token_url)?)?;
             let id = inputs.variable(&config.client_id)?;
@@ -527,6 +534,17 @@ fn build<V: Values>(
         _ => return Err("Choose a token authentication method.".into()),
     }
     .map_err(|_| "Could not build the token request. Check its fields.")?;
+    request
+        .headers_mut()
+        .entry(reqwest::header::USER_AGENT)
+        .or_insert(HeaderValue::from_static(concat!(
+            "Fluxkit/",
+            env!("CARGO_PKG_VERSION")
+        )));
+    request
+        .headers_mut()
+        .entry(reqwest::header::ACCEPT)
+        .or_insert(HeaderValue::from_static("*/*"));
     if request.url().as_str().len() > 65_536
         || request.headers().len() > 1000
         || request
@@ -581,6 +599,33 @@ fn extract(
 fn lifetime(value: &str) -> Result<u64, String> {
     value.parse::<u64>().ok().filter(|v| *v > 0 && *v <= 315_360_000).ok_or("Extracted lifetime must be a positive integer number of seconds, at most ten years. Existing token was kept.".into())
 }
+/// Verify a fresh login without reading, replacing or retaining a stored token.
+pub async fn test<V: Values + Send + Sync + 'static>(
+    plan: Plan,
+    client: Client,
+    values: Arc<V>,
+    cancel: CancellationToken,
+    timeout: Duration,
+) -> Result<Status, String> {
+    struct ReadOnly<V>(Arc<V>);
+    impl<V: Values> Values for ReadOnly<V> {
+        fn get(&self, key: &str) -> Result<Option<String>, String> {
+            self.0.get(key)
+        }
+        fn set(&self, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn delete(&self, _: &str) -> Result<(), String> {
+            Err("Authentication tests cannot delete values.".into())
+        }
+    }
+    tokio::select! { biased;
+        _ = cancel.cancelled() => Err("Authentication test cancelled.".into()),
+        _ = tokio::time::sleep(timeout) => Err("Authentication test timed out.".into()),
+        record = acquire(plan, client, Arc::new(ReadOnly(values)), None, cancel.clone()) => record?.status_now(),
+    }
+}
+
 async fn acquire<V: Values + Send + Sync + 'static>(
     plan: Plan,
     client: Client,

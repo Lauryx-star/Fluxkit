@@ -83,6 +83,14 @@ Application rules must be testable without a running WebView or real credential 
 Use cohesive modules; separate crates or elaborate dependency-injection frameworks are
 not required to establish these boundaries.
 
+The initial OpenAPI import slice is defined in [docs/OPENAPI_IMPORT.md](docs/OPENAPI_IMPORT.md).
+Preserve its preview-before-write boundary, new-identity collision policy, internal-only
+references and discoverable partial definitions/values on failure. Postman collection/environment
+import follows [docs/POSTMAN_IMPORT.md](docs/POSTMAN_IMPORT.md), including explicit collection
+association, source-name mappings and project-wide environment scope. Export follows
+[docs/OPENAPI_EXPORT.md](docs/OPENAPI_EXPORT.md): saved snapshots, no OS value reads,
+previewed omissions/conflicts and new-file/no-clobber destinations.
+
 ## 3. Scope discipline
 
 - Implement the active request completely with the smallest cohesive change.

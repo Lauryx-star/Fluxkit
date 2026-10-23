@@ -16,6 +16,12 @@ export function getAppInfo(): Promise<AppInfo> {
 export async function chooseProject(name: string | null = null) {
   return invoke<import('./projects/types').ProjectView | null>('choose_project', { name });
 }
+export function restoreLastProject() {
+  return invoke<import('./projects/types').ProjectView | null>('restore_last_project');
+}
+export function rememberProject(handle: string | null) {
+  return invoke<void>('remember_project', { handle });
+}
 export function reloadProject(handle: string) {
   return invoke<import('./projects/types').ProjectView>('reload_project', { handle });
 }
@@ -89,4 +95,81 @@ export function saveProjectAuth(
     auth,
     expected,
   });
+}
+
+export function chooseOpenApiImport(handle: string) {
+  return invoke<import('./imports/types').ImportPreview | null>('choose_openapi_import', {
+    handle,
+  });
+}
+export function commitOpenApiImport(handle: string, id: string, storeValues: boolean) {
+  return invoke<import('./imports/types').ImportResult>('commit_openapi_import', {
+    handle,
+    id,
+    storeValues,
+  });
+}
+export function discardOpenApiImport(id: string) {
+  return invoke<void>('discard_openapi_import', { id });
+}
+
+export function choosePostmanImport(handle: string, collectionId: string | null = null) {
+  return invoke<import('./imports/types').ImportPreview | null>('choose_postman_import', {
+    handle,
+    collectionId,
+  });
+}
+
+export function previewOpenApiExport(
+  handle: string,
+  target: import('./exports/types').ExportTarget,
+) {
+  return invoke<import('./exports/types').ExportPreview>('preview_openapi_export', {
+    handle,
+    target,
+  });
+}
+export function saveOpenApiExport(handle: string, id: string) {
+  return invoke<boolean>('save_openapi_export', { handle, id });
+}
+export function discardOpenApiExport(id: string) {
+  return invoke<void>('discard_openapi_export', { id });
+}
+
+export function renameImportVariable(handle: string, id: string, oldName: string, name: string) {
+  return invoke<import('./imports/types').ImportPreview>('rename_import_variable', {
+    handle,
+    id,
+    oldName,
+    name,
+  });
+}
+
+export function previewHttpHeaders(id: string, input: import('./http/types').ExecutionInput) {
+  return invoke<import('./http/types').RequestHeader[]>('preview_http_headers', { id, input });
+}
+export interface AuthenticationTestResult {
+  success: boolean;
+  status: number | null;
+  message: string;
+}
+export function testAuthentication(
+  id: string,
+  input: import('./http/types').ExecutionInput,
+  tokenOnly: boolean,
+) {
+  return invoke<AuthenticationTestResult>('test_authentication', { id, input, tokenOnly });
+}
+
+export interface MoveRequestInput {
+  request: import('./projects/types').SavedRequest;
+  sourceCollectionId: string | null;
+  sourceRevision: string | null;
+  targetCollectionId: string;
+  targetRevision: string;
+  projectRevision: string;
+  allowMetadataLoss: boolean;
+}
+export function moveRequest(handle: string, input: MoveRequestInput) {
+  return invoke<import('./projects/types').CollectionView[]>('move_request', { handle, input });
 }

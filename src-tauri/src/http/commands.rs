@@ -421,3 +421,147 @@ pub async fn authentication_action(
         result = operation => result,
     }
 }
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthenticationTestResult {
+    pub success: bool,
+    pub status: Option<u16>,
+    pub message: String,
+}
+
+enum Inspection {
+    Request(Box<prepare::Prepared>),
+    Token(Box<tokens::Plan>),
+}
+async fn inspect(
+    app: &tauri::AppHandle,
+    projects: &State<'_, ProjectState>,
+    state: &State<'_, HttpState>,
+    input: ExecutionInput,
+    token_only: bool,
+    cancel: CancellationToken,
+) -> Result<(Client, Inspection), String> {
+    let settings = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Could not locate local settings.")?
+        .join("environment-selection");
+    let client_state = state.client.clone();
+    let preparation = run(projects, move |store| {
+        let client = client(&client_state)?;
+        let build = |root: Option<&std::path::Path>, project: &str| {
+            if token_only {
+                let root = root.ok_or("Open a project before testing token authentication.")?;
+                prepare::token_plan(&input, root, project, &settings)
+                    .map(|plan| Inspection::Token(Box::new(plan)))
+            } else {
+                prepare::prepare(
+                    &input, root, project, &settings, &client, &OsValues, &cancel,
+                )
+                .map(|prepared| Inspection::Request(Box::new(prepared)))
+            }
+        };
+        let result = if let Some(scope) = &input.scope {
+            store.with_environment(&scope.handle, |root, project| build(Some(root), project))?
+        } else {
+            build(None, "session")?
+        };
+        Ok((client, result))
+    });
+    preparation.await
+}
+
+/// Explicit inspection resolves active values locally; it never sends or acquires a token.
+#[tauri::command]
+pub async fn preview_http_headers(
+    app: tauri::AppHandle,
+    projects: State<'_, ProjectState>,
+    state: State<'_, HttpState>,
+    id: String,
+    input: ExecutionInput,
+) -> Result<Vec<super::model::RequestHeader>, String> {
+    let (cancel, _guard) = state.claim(&id)?;
+    let (_, inspection) = inspect(&app, &projects, &state, input, false, cancel.clone()).await?;
+    if cancel.is_cancelled() {
+        return Err("Header inspection cancelled.".into());
+    }
+    let Inspection::Request(prepared) = inspection else {
+        return Err("Invalid header inspection.".into());
+    };
+    let mut headers = prepared.header_summary();
+    if let Some(header) = prepared
+        .token
+        .as_ref()
+        .and_then(tokens::Plan::pending_header)
+    {
+        headers.push(header);
+    }
+    Ok(headers)
+}
+
+/// A test never saves settings, records history, or returns a response payload/credential.
+#[tauri::command]
+pub async fn test_authentication(
+    app: tauri::AppHandle,
+    projects: State<'_, ProjectState>,
+    state: State<'_, HttpState>,
+    id: String,
+    input: ExecutionInput,
+    token_only: bool,
+) -> Result<AuthenticationTestResult, String> {
+    let (cancel, _guard) = state.claim(&id)?;
+    let timeout = Duration::from_millis(input.timeout_ms);
+    if !token_only
+        && (input.request.method != "GET"
+            || !matches!(
+                input.request.body.kind,
+                crate::projects::model::BodyKind::None
+            )
+            || !input.request.headers.is_empty()
+            || !input.request.params.is_empty()
+            || input.save_response)
+    {
+        return Err(
+            "Authentication tests use GET with no body, manual headers, or download.".into(),
+        );
+    }
+    let preparation = inspect(&app, &projects, &state, input, token_only, cancel.clone());
+    let (client, inspection) = tokio::select! { biased;
+        _ = cancel.cancelled() => return Err("Authentication test cancelled.".into()),
+        result = preparation => result?,
+    };
+    match inspection {
+        Inspection::Token(plan) => {
+            tokens::test(*plan, client, Arc::new(OsValues), cancel, timeout).await?;
+            Ok(AuthenticationTestResult { success: true, status: None,
+                message: "Login succeeded and a usable token was extracted. The test token was discarded; settings and stored tokens were not changed.".into() })
+        }
+        Inspection::Request(prepared) => {
+            if prepared.token.is_some() {
+                return Err(
+                    "Test OAuth2 or Custom Login using its configured login endpoint.".into(),
+                );
+            }
+            let result = transfer::execute(&client, *prepared, timeout, &cancel, None).await;
+            let success = result.outcome == Outcome::Response
+                && result
+                    .status
+                    .is_some_and(|status| (200..300).contains(&status));
+            let message = if result.outcome != Outcome::Response {
+                result
+                    .message
+                    .unwrap_or_else(|| "Authentication test failed.".into())
+            } else if success {
+                "Test endpoint returned 2xx. Authentication is verified only if this endpoint requires it.".into()
+            } else {
+                "Test endpoint did not return 2xx. Check credentials, endpoint and permissions. No redirect or retry was sent.".into()
+            };
+            Ok(AuthenticationTestResult {
+                success,
+                status: result.status,
+                message,
+            })
+        }
+    }
+}

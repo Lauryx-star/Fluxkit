@@ -13,7 +13,13 @@ export interface ExecutionInput {
   timeoutMs: number;
   saveResponse: boolean;
 }
+export interface RequestHeader {
+  name: string;
+  value: string;
+  source: 'manual' | 'authentication' | 'automatic';
+}
 export interface ExecutionResult {
+  requestHeaders?: RequestHeader[];
   outcome: 'response' | 'cancelled' | 'timeout' | 'networkError' | 'invalidRequest' | 'saveError';
   status: number | null;
   elapsedMs: number | null;

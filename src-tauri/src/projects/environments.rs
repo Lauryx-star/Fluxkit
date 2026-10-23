@@ -132,7 +132,7 @@ impl Values for OsValues {
 fn key(project: &str, variable: &str, environment: Option<&str>) -> String {
     format!("{project}/{variable}/{}", environment.unwrap_or("default"))
 }
-fn definitions(root: &Path) -> Result<(Definitions, String), String> {
+pub(crate) fn definitions(root: &Path) -> Result<(Definitions, String), String> {
     let path = root.join(FILE);
     if path
         .symlink_metadata()

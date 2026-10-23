@@ -22,6 +22,10 @@ pub struct Collection {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<Auth>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_api: Option<OpenApiMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub postman: Option<PostmanMetadata>,
     pub folders: Vec<Folder>,
     pub requests: Vec<Request>,
 }
@@ -39,6 +43,8 @@ pub struct Folder {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub import_issues: Vec<String>,
     pub id: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -145,6 +151,45 @@ impl Collection {
         validate_id(&self.id)?;
         validate_name(&self.name)?;
         validate_auth(self.auth.as_ref())?;
+        if let Some(metadata) = &self.open_api {
+            if metadata.version.len() > 16
+                || !(metadata.version.starts_with("3.0.") || metadata.version.starts_with("3.1."))
+                || metadata.version[4..].parse::<u32>().is_err()
+                || metadata
+                    .document
+                    .get("openapi")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(metadata.version.as_str())
+                || !metadata.document.is_object()
+                || serde_json::to_vec(&metadata.document)
+                    .map_err(|_| "Invalid OpenAPI metadata.")?
+                    .len()
+                    > 4 * 1024 * 1024
+            {
+                return Err("Invalid or oversized OpenAPI metadata.".into());
+            }
+            for (id, pointer) in &metadata.operations {
+                validate_id(id)?;
+                let pointer = pointer
+                    .strip_prefix('#')
+                    .ok_or("Invalid imported operation reference.")?;
+                if pointer.len() > 65_536
+                    || !pointer.starts_with("/paths/")
+                    || metadata.document.pointer(pointer).is_none()
+                {
+                    return Err("Invalid imported operation reference.".into());
+                }
+            }
+        }
+        if let Some(metadata) = &self.postman {
+            if metadata.version != "2.1" || metadata.variables.len() > 1000 {
+                return Err("Invalid Postman mapping metadata.".into());
+            }
+            for (name, id) in &metadata.variables {
+                validate_name(name)?;
+                validate_id(id)?;
+            }
+        }
         if self.folders.len() + self.requests.len() > 10_000 {
             return Err("A collection can contain at most 10,000 folders and requests.".into());
         }
@@ -208,6 +253,14 @@ impl Request {
         validate_id(&self.id)?;
         validate_name(&self.name)?;
         validate_auth(self.auth.as_ref())?;
+        if self.import_issues.len() > 100
+            || self
+                .import_issues
+                .iter()
+                .any(|s| s.len() > 1000 || s.chars().any(char::is_control))
+        {
+            return Err("Invalid import review notes.".into());
+        }
         if let Some(id) = &self.folder_id {
             validate_id(id)?;
         }
@@ -331,4 +384,22 @@ impl Auth {
             Self::CustomLogin { config } => config.variable_ids(),
         }
     }
+}
+
+/// Sanitized imported schemas/descriptions; examples/default values and server values are excluded.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenApiMetadata {
+    pub version: String,
+    pub document: serde_json::Value,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub operations: std::collections::BTreeMap<String, String>,
+}
+
+/// Source variable names map to local identities for explicitly associated environment imports.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PostmanMetadata {
+    pub version: String,
+    pub variables: std::collections::BTreeMap<String, String>,
 }

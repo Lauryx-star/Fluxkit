@@ -1,0 +1,30 @@
+{
+  "openapi": "3.1.2",
+  "info": { "title": "Fixture Items", "version": "1" },
+  "servers": [{ "url": "http://fixture.example.test" }],
+  "paths": {
+    "/items": {
+      "post": {
+        "tags": ["Items"],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": { "name": { "type": "string", "default": "synthetic-item" } }
+              }
+            }
+          }
+        },
+        "security": [{ "key": [] }],
+        "responses": { "201": { "description": "Created" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": { "key": { "type": "apiKey", "in": "header", "name": "X-API-Key" } },
+    "schemas": { "a/b~c": { "type": ["string", "null"], "const": { "default": "constraint" } } }
+  },
+  "x-untrusted": "Do not execute this content"
+}

@@ -48,6 +48,15 @@ pub struct Header {
     pub value: String,
 }
 
+/// Redacted dispatch metadata; never contains resolved user header values.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestHeader {
+    pub name: String,
+    pub value: String,
+    pub source: &'static str,
+}
+
 /// Execution results are ephemeral UI data. Never log or persist this object.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +76,7 @@ pub struct ExecutionResult {
     pub token_status: Option<super::tokens::Status>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_warning: Option<String>,
+    pub request_headers: Vec<RequestHeader>,
 }
 impl ExecutionResult {
     pub fn failure(outcome: Outcome, message: &str) -> Self {
@@ -84,6 +94,7 @@ impl ExecutionResult {
             message: Some(message.into()),
             token_status: None,
             history_warning: None,
+            request_headers: vec![],
         }
     }
 }

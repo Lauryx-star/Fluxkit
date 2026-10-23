@@ -11,37 +11,81 @@ export function ResponseView({
   running: boolean;
   environmentLabel?: string;
 }) {
-  const [tab, setTab] = useState<'raw' | 'json' | 'headers'>('raw');
+  type Tab = 'raw' | 'json' | 'headers';
+  const defaultTab: Tab = result?.jsonText ? 'json' : 'raw';
+  const [selection, setSelection] = useState<{ result: ExecutionResult | null; tab: Tab }>(() => ({
+    result,
+    tab: defaultTab,
+  }));
+  if (selection.result !== result) {
+    setSelection({ result, tab: defaultTab });
+  }
+  const tab = selection.result === result ? selection.tab : defaultTab;
   const active = tab === 'json' && !result?.jsonText ? 'raw' : tab;
+  function setTab(tab: Tab) {
+    setSelection({ result, tab });
+  }
+  const status = result?.status;
+  const statusClass =
+    status !== null && status !== undefined
+      ? status >= 200 && status < 300
+        ? 'success'
+        : status >= 300 && status < 400
+          ? 'redirect'
+          : status >= 400 && status < 600
+            ? 'error'
+            : 'neutral'
+      : 'neutral';
   return (
     <section className="response-section" aria-label="Response">
       <div className="response-heading">
-        <span>Response</span>
+        <div className="response-title">
+          <span>Response</span>
+          {(environmentLabel || result?.tokenStatus) && (
+            <details
+              className="response-details"
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.currentTarget.open = false;
+                  event.currentTarget.querySelector('summary')?.focus();
+                }
+              }}
+            >
+              <summary>Details</summary>
+              <div className="response-dispatch-details">
+                {environmentLabel && (
+                  <p>
+                    Environment at dispatch: {environmentLabel}. Results belong to the last send of
+                    this draft.
+                  </p>
+                )}
+                {result?.tokenStatus && (
+                  <p>
+                    Authentication token at dispatch: {tokenStatusLabel(result.tokenStatus)}
+                    {result.tokenStatus.expiresAt !== null
+                      ? ` · expires ${new Date(result.tokenStatus.expiresAt * 1000).toISOString()}`
+                      : ''}
+                    .
+                  </p>
+                )}
+              </div>
+            </details>
+          )}
+        </div>
         <span className="response-meta">
-          {result?.status !== null && result?.status !== undefined ? `HTTP ${result.status}` : '—'}
-          <span>·</span>
+          {status !== null && status !== undefined ? (
+            <span className={`response-status response-status-${statusClass}`}>HTTP {status}</span>
+          ) : (
+            '—'
+          )}
+          <span className="response-divider">·</span>
           {result?.elapsedMs !== null && result?.elapsedMs !== undefined
             ? `${result.elapsedMs} ms`
             : '— ms'}
-          <span>·</span>
+          <span className="response-divider">·</span>
           {result ? `${result.byteCount.toLocaleString('en-US')} B` : '— B'}
         </span>
       </div>
-      {environmentLabel && (
-        <p className="response-notice">
-          Environment at dispatch: {environmentLabel}. Results belong to the last send of this
-          draft.
-        </p>
-      )}
-      {result?.tokenStatus && (
-        <p className="response-notice">
-          Authentication token at dispatch: {tokenStatusLabel(result.tokenStatus)}
-          {result.tokenStatus.expiresAt !== null
-            ? ` · expires ${new Date(result.tokenStatus.expiresAt * 1000).toISOString()}`
-            : ''}
-          .
-        </p>
-      )}
       {result?.historyWarning && (
         <p className="response-notice" role="status">
           {result.historyWarning}

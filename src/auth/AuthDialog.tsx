@@ -3,9 +3,13 @@ import { Modal } from '../projects/Dialogs';
 import type { Auth } from './types';
 import type { Definition } from '../environments/types';
 import { AuthEditor } from './AuthEditor';
+import { AuthTest } from './AuthTest';
+import type { ExecutionInput } from '../http/types';
 import { validAuth } from './rules';
 export function AuthDialog({
   title,
+  testInput,
+  inheritedAuth,
   initial,
   root,
   inherited,
@@ -15,17 +19,21 @@ export function AuthDialog({
   onSave,
   onCancel,
   onDirty,
+  onRegisterSave,
 }: {
   title: string;
+  testInput?: ExecutionInput | null;
+  inheritedAuth?: Auth | null;
   initial: Auth | null;
   root: boolean;
   inherited: string;
   variables: Definition[];
   busy: boolean;
   error: string | null;
-  onSave: (auth: Auth | null) => void;
+  onSave: (auth: Auth | null) => Promise<boolean>;
   onCancel: (dirty: boolean) => void;
   onDirty: (dirty: boolean) => void;
+  onRegisterSave?: (save: (() => Promise<boolean>) | null) => void;
 }) {
   const [value, setValue] = useState(initial);
   const dirty = JSON.stringify(value) !== JSON.stringify(initial);
@@ -33,6 +41,12 @@ export function AuthDialog({
     onDirty(dirty);
     return () => onDirty(false);
   }, [dirty, onDirty]);
+  useEffect(() => {
+    onRegisterSave?.(
+      async () => !dirty || (!busy && validAuth(value, variables) && (await onSave(value))),
+    );
+    return () => onRegisterSave?.(null);
+  }, [onRegisterSave, dirty, busy, value, variables, onSave]);
   return (
     <Modal label={title}>
       <form
@@ -58,6 +72,14 @@ export function AuthDialog({
           root={root}
           disabled={busy}
         />
+        {testInput && (
+          <AuthTest
+            key={JSON.stringify([value, testInput.scope])}
+            input={{ ...testInput, request: { ...testInput.request, auth: value } }}
+            tokenOnly={['oauth2', 'customLogin'].includes((value ?? inheritedAuth)?.kind ?? '')}
+            disabled={busy || !validAuth(value, variables)}
+          />
+        )}
         {error && <p role="alert">{error}</p>}
         <div className="dialog-actions">
           <button

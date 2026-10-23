@@ -13,6 +13,7 @@
     "windows": [
       {
         "label": "main",
+        "dragDropEnabled": false,
         "title": "Fluxkit",
         "width": 1320,
         "height": 880,
@@ -36,6 +37,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../assets/notices/openapi-import/": "notices/openapi-import/"
+    }
   }
 }

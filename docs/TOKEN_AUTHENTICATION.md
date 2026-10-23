@@ -165,3 +165,19 @@ The already locked `base64` 0.22.1 crate is now a direct dependency (MIT/Apache-
 no new package version. Routine tests use fake stores and controlled loopback servers. The
 separate ignored `os_token_roundtrip` test creates and removes random synthetic variable/token
 entries and must be run explicitly for each platform before claiming integration there.
+
+## Switching environments on a saved request
+
+The same saved request can be sent with Test, then Prod, then Test again without editing
+or saving its authentication. Each send captures the selected environment. Credential
+variables and the token endpoint use that environment's slots (with the documented shared
+variable-default fallback), while acquired tokens have no cross-environment/default fallback.
+A usable token already stored for that environment is reused; otherwise only that
+configuration/environment acquires a token. Returning to Test can reuse its still-valid token.
+
+A failed Prod login must block its API dispatch rather than substitute a Test token.
+Overlapping acquisitions for Test and Prod remain separate even when their auth definition,
+owner and variable IDs match. A request carrying an outdated selection is rejected during
+preparation before credential reads; an already prepared request retains its dispatch scope.
+This isolation applies to OAuth2 Client Credentials and Custom Login. Explicit manually set
+headers/query fields retain their documented priority over configured authentication.

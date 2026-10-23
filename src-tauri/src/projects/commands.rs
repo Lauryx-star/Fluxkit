@@ -34,6 +34,37 @@ pub async fn environment_action(
 #[derive(Default)]
 pub struct ProjectState(Arc<Mutex<ProjectStore>>);
 
+#[tauri::command]
+pub async fn restore_last_project(
+    app: tauri::AppHandle,
+    state: State<'_, ProjectState>,
+) -> Result<Option<ProjectView>, String> {
+    let settings = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Could not locate local workspace settings.")?;
+    run(&state, move |store| {
+        super::workspace::restore(&settings, store)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn remember_project(
+    app: tauri::AppHandle,
+    state: State<'_, ProjectState>,
+    handle: Option<String>,
+) -> Result<(), String> {
+    let settings = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Could not locate local workspace settings.")?;
+    run(&state, move |store| {
+        super::workspace::remember(&settings, store, handle.as_deref())
+    })
+    .await
+}
+
 pub(crate) async fn run<T: Send + 'static>(
     state: &State<'_, ProjectState>,
     operation: impl FnOnce(&mut ProjectStore) -> Result<T, String> + Send + 'static,
@@ -164,6 +195,19 @@ pub async fn save_project_auth(
 ) -> Result<ProjectView, String> {
     run(&state, move |store| {
         store.save_auth(&handle, auth, &expected)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn move_request(
+    state: State<'_, ProjectState>,
+    handle: String,
+    input: super::moving::MoveInput,
+) -> Result<Vec<CollectionView>, String> {
+    let owner = handle.clone();
+    run(&state, move |store| {
+        store.with_environment(&handle, |root, _| super::moving::apply(root, &owner, input))
     })
     .await
 }

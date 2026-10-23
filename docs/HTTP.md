@@ -87,6 +87,12 @@ The stream is still drained to EOF for accurate full size/time, subject to cance
 the deadline. Formatting may be unavailable when expanded JSON exceeds the preview bound.
 No response payload is put into browser storage, logs, or project JSON.
 
+Each new response opens the JSON tab when a formatted preview is available; otherwise it
+opens Raw. Manual tab selection is preserved while inspecting the same result. Dispatch
+environment and token metadata are available in the initially collapsed Details disclosure;
+errors and truncation notices remain visible. HTTP status badges use green for 2xx, yellow
+for 3xx, red for 4xx/5xx, and a neutral style for other codes.
+
 Text previews support UTF-8 text, JSON, XML, and common textual media types. Binary media,
 attachment responses, compressed content, and invalid/non-UTF-8 text have no text preview.
 Empty bodies are explicitly identified. Non-ASCII response header bytes are displayed using
@@ -150,3 +156,31 @@ Routine Rust tests use fake credential values, temporary folders, and controlled
 servers. Their local bind permission must be available; the restricted agent sandbox blocks
 those ports, so the suite is run with local-network access. Native OS-store integration is
 separate. Windows/Linux packaging and integration require their own platform checks.
+
+## Request header inspection
+
+API and token/login requests default to `User-Agent: Fluxkit/<application version>` and
+`Accept: */*`; explicit headers take priority. Content-Type follows the selected body type
+as described above, and is omitted for an empty body unless explicitly configured.
+No automatic Origin, Referer, cookies, or compression negotiation is added.
+
+In the request Headers tab, **Automatic and sent headers** offers an explicit local
+**Inspect headers** action. Rust prepares and validates the current draft without network
+I/O or token acquisition. It reads only active request/auth variable values, never preloads
+an environment, and returns redacted metadata. A pending acquired token is represented by
+a masked header description. Query-placed authentication does not add a header.
+
+After actual dispatch, `ExecutionResult.requestHeaders` contains a redacted header snapshot
+from the prepared request after token placement. The UI distinguishes **Draft at inspection**
+from **Last dispatch**; inspecting again refreshes a draft snapshot after edits. A dispatch
+snapshot describes an attempted send and does not prove delivery to the server. Multipart
+boundaries can differ between inspection and dispatch. HTTP Host/authority and transport
+framing generated later by the HTTP implementation are explicitly outside this list.
+
+All manual and authentication header values are masked, including nonstandard API key
+names, Cookie, variable-derived values and manual overrides of defaults. Variable-derived
+header names are masked too. Only generated default values are shown in clear. The rows
+include `name`, `value` and `source` (`manual`, `authentication`, `automatic`). These snapshots
+remain in bounded UI response memory, with no history, diagnostics or portable-file writes.
+`preview_http_headers(id, input)` consumes a cancellable reservation and returns these rows.
+Its custom permission, like `test_authentication`, is limited to the bundled main window.

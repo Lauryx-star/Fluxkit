@@ -20,6 +20,11 @@ local project files, and migration from existing API clients.
 The hierarchy is project, collection, nested folders, and requests. A collection usually
 represents an API application. Requests can live directly in a collection or in folders.
 
+On desktop startup, reopen the last active project if its saved files and identity remain
+valid. Keep its path only in local app-data settings. An unavailable project produces a
+recoverable warning; explicitly closing the last project leaves the next startup empty.
+This restores saved project definitions, not unsaved request drafts or response payloads.
+
 Environments belong to a project and apply to all its collections and requests. Each
 project selects its own environment independently. The same variable can hold different
 values for environments such as Testserver and Prodserver. A missing environment value
@@ -183,8 +188,13 @@ Preserve meaningful imported schemas and metadata needed for later export. Resol
 references within documented file-access boundaries. Remote reference retrieval must be
 explicit; importing a file must not silently make network calls or execute requests.
 
-Specify and test supported OpenAPI versions before implementation. Unsupported versions
-must produce an actionable error rather than a misleading partial success.
+The initial implemented slice accepts OpenAPI 3.0.x/3.1.x and internal JSON Pointer references
+only. New imports use new collections and variable identities rather than overwriting existing
+ones. Only server URLs and authentication produce project variables, using readable names
+and numeric suffixes for conflicts. Primitive query/header/path/form examples remain editable
+request literals. Missing required values require review before sending. Preview renaming
+updates all imported references together. [OPENAPI_IMPORT.md](OPENAPI_IMPORT.md) defines the mapping subset, preview, compatibility
+blockers, stored metadata and partial-failure recovery. Unsupported versions receive an error.
 
 ### Postman migration
 
@@ -197,7 +207,9 @@ Fluxkit's project model. Imported scripts must not execute. Report tests, pre-re
 scripts, dynamic variables, auth flows, and other unsupported behavior explicitly.
 Do not claim to translate Postman scripts into Custom Login automatically.
 
-Specify supported collection versions and environment formats before implementation.
+The implemented slice accepts Collection v2.1 JSON and environment JSON with an explicit
+environment scope marker. [POSTMAN_IMPORT.md](POSTMAN_IMPORT.md) defines identity mappings,
+project-wide environment association, compatibility limits and partial-failure recovery.
 Migration fixtures must cover real format shapes using synthetic values. Bulk archives
 and live account integrations are not assumed to be part of the initial importer.
 
@@ -221,7 +233,9 @@ Custom Login automation, and environment value storage do not have a lossless st
 mapping. Preview omissions and transformations. Do not infer an authoritative response
 schema merely from a single observed response.
 
-Choose and validate an explicit OpenAPI output version before implementing export.
+The implemented export uses OpenAPI 3.1.0 YAML and the saved project state only.
+[OPENAPI_EXPORT.md](OPENAPI_EXPORT.md) defines synthetic placeholders, excluded values,
+compatibility blockers, metadata conversion, validation boundaries and destination recovery.
 
 ### Native Fluxkit export
 
