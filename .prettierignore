@@ -1,0 +1,12 @@
+node_modules
+dist
+src-tauri/target
+src-tauri/gen
+src-tauri/icons
+Cargo.lock
+package-lock.json
+*.rs
+
+# Preserve the independently maintained planning documents.
+AGENTS.md
+docs/

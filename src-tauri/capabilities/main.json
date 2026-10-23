@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Project-scoped native operations for the bundled main window.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-app-info",
+    "allow-choose-project",
+    "allow-reload-project",
+    "allow-rename-project",
+    "allow-save-project-auth",
+    "allow-save-collection",
+    "allow-remove-collection",
+    "allow-choose-attachment",
+    "allow-close-project",
+    "allow-environment-action",
+    "allow-begin-http-request",
+    "allow-execute-http-request",
+    "allow-cancel-http-request",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-destroy"
+  ]
+}
