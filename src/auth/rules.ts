@@ -1,11 +1,27 @@
 import type { Definition } from '../environments/types';
 import type { Collection, ProjectView } from '../projects/types';
 
-import type { Auth } from './types';
+import type { Auth, Composition, LoginRequest, TokenStatus } from './types';
+
+export const tokenStatusLabel = (status: TokenStatus): string =>
+  ({
+    missing: 'No local token',
+    valid: 'Token available',
+    unknownExpiry: 'Expiry unknown',
+    renewalDue: 'Renewal due before sending',
+    expired: 'Token expired',
+  })[status.state];
 
 export function authLabel(auth: Auth | null | undefined): string {
   return auth
-    ? { none: 'None', basic: 'Basic', bearer: 'Bearer', apiKey: 'API Key' }[auth.kind]
+    ? {
+        none: 'None',
+        basic: 'Basic',
+        bearer: 'Bearer',
+        apiKey: 'API Key',
+        oauth2: 'OAuth2 Client Credentials',
+        customLogin: 'Custom Login',
+      }[auth.kind]
     : 'None';
 }
 /** Presentation only. Native execution reloads and resolves the authoritative ancestry. */
@@ -52,6 +68,43 @@ export function validAuth(value: Auth | null, variables: Definition[]): boolean 
   if (value.kind === 'bearer') {
     return exists(value.token);
   }
+  const composition = (value: Composition, renewal = false) =>
+    value.parts.every((part) =>
+      part.kind === 'variable' ? exists(part.id) : part.kind === 'literal' || renewal,
+    );
+  if (value.kind === 'oauth2') {
+    return (
+      exists(value.config.clientId) &&
+      exists(value.config.clientSecret) &&
+      composition(value.config.tokenUrl) &&
+      composition(value.config.scope)
+    );
+  }
+  if (value.kind === 'customLogin') {
+    const request = (r: LoginRequest, renewal: boolean) => {
+      const expressions = [
+        r.url,
+        ...r.headers.map((v) => v.value),
+        ...r.params.map((v) => v.value),
+        ...(r.body.kind === 'urlEncoded'
+          ? r.body.fields.map((v) => v.value)
+          : r.body.kind === 'none'
+            ? []
+            : [r.body.value]),
+      ];
+      return (
+        expressions.every((v) => composition(v, renewal)) &&
+        r.successStatuses.length > 0 &&
+        r.successStatuses.every((s) => s >= 200 && s <= 599) &&
+        (r.lifetimeSeconds === null || (r.lifetimeSeconds >= 1 && r.lifetimeSeconds <= 315360000))
+      );
+    };
+    return (
+      !!value.config.placement.name.trim() &&
+      request(value.config.login, false) &&
+      (!value.config.renewal || request(value.config.renewal, true))
+    );
+  }
   return !!value.name.trim() && exists(value.value);
 }
 
@@ -60,11 +113,17 @@ export function manualAuthHint(
   auth: Auth | null | undefined,
   request: Pick<import('../projects/types').SavedRequest, 'headers' | 'params' | 'url'>,
 ): string | null {
-  if (auth?.kind === 'apiKey' && auth.placement === 'query') {
+  const placement =
+    auth?.kind === 'customLogin'
+      ? auth.config.placement
+      : auth?.kind === 'apiKey'
+        ? auth
+        : { name: 'Authorization', placement: 'header' };
+  if (placement.placement === 'query') {
     const query = request.url.split('?')[1]?.split('#')[0] ?? '';
     if (
-      new URLSearchParams(query).has(auth.name) ||
-      request.params.some((row) => row.enabled && row.key === auth.name)
+      new URLSearchParams(query).has(placement.name) ||
+      request.params.some((row) => row.enabled && row.key === placement.name)
     ) {
       return 'Manual query parameter takes priority';
     }
@@ -76,7 +135,7 @@ export function manualAuthHint(
     }
     return null;
   }
-  const name = auth?.kind === 'apiKey' ? auth.name : 'Authorization';
+  const name = placement.name;
   if (request.headers.some((row) => row.enabled && row.key.toLowerCase() === name.toLowerCase())) {
     return `Manual ${name} header takes priority`;
   }

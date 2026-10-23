@@ -1,3 +1,4 @@
+mod history;
 mod http;
 mod projects;
 
@@ -27,6 +28,17 @@ pub fn run() {
     let application = tauri::Builder::default()
         .manage(ProjectState::default())
         .manage(HttpState::default())
+        .setup(|app| {
+            let state = history::HistoryState::new(
+                app.path()
+                    .app_data_dir()
+                    .ok()
+                    .map(|root| root.join("history")),
+            );
+            state.start_cleanup();
+            app.manage(state);
+            Ok(())
+        })
         .menu(|app| {
             let menu = tauri::menu::Menu::default(app)?;
             #[cfg(target_os = "macos")]
@@ -66,7 +78,9 @@ pub fn run() {
             environment_action,
             begin_http_request,
             execute_http_request,
-            cancel_http_request
+            cancel_http_request,
+            authentication_action,
+            history::commands::history_action
         ])
         .build(tauri::generate_context!());
     match application {

@@ -14,6 +14,8 @@ fn main() {
             "begin_http_request",
             "execute_http_request",
             "cancel_http_request",
+            "authentication_action",
+            "history_action",
         ]),
     ))
     .expect("failed to generate Tauri build metadata");

@@ -142,8 +142,9 @@ background calls as ordinary user-request history entries.
 
 A URL is potentially sensitive: do not persist the executed URL verbatim. Prefer the
 unresolved request template with sensitive components removed. Variable-derived values
-must remain placeholders. Decide how literal query and path values are redacted before
-implementing the feature; do not promise that arbitrary literal URLs contain no secrets.
+remain placeholders. Preserve literal hosts, including internal hostnames, locally.
+Redact all literal path and query content, including query names; strip embedded credentials
+and fragments and mask literal ports. See [HISTORY.md](HISTORY.md) for the agreed rules.
 
 When no HTTP response exists, do not fabricate a status code. Use a clear absent-status
 representation for failed or cancelled attempts. History must not silently trigger
@@ -160,9 +161,10 @@ visible history detail. Prune expired entries on startup, before displaying hist
 and when inserting entries. Run expiration cleanup while the app is open; when it is
 closed, cleanup resumes on the next launch.
 
-Provide a history recording toggle and Clear history per project. Disabling recording
-stops new entries; existing entries still expire and can be cleared. Removing a project
-also removes its history. Keep the count and age limits fixed in the first release;
+Provide a history recording toggle and Clear history per project. Recording starts disabled.
+Disabling recording stops new entries; existing entries still expire and can be cleared.
+Close project preserves history, including across restarts. Only explicit Clear history
+deletes entries apart from retention cleanup. Keep the count and age limits fixed in the first release;
 user-configurable limits are deferred.
 
 ## Import and export
@@ -249,7 +251,7 @@ on each before claiming release support. A build on one host does not prove anot
 ## Decisions before the relevant milestone
 
 - Manual header/query conflicts are resolved in favor of the manual field; see [AUTHENTICATION.md](AUTHENTICATION.md).
-- Literal query and path value redaction for history URLs.
+- History retains literal hosts and masks literal path/query content; see [HISTORY.md](HISTORY.md).
 - Exact import versions, external reference policy, and collision resolution.
 - OpenAPI output version and native export package format.
 

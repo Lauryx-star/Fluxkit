@@ -63,6 +63,10 @@ pub struct ExecutionResult {
     pub truncated: bool,
     pub saved: bool,
     pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_status: Option<super::tokens::Status>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_warning: Option<String>,
 }
 impl ExecutionResult {
     pub fn failure(outcome: Outcome, message: &str) -> Self {
@@ -78,6 +82,8 @@ impl ExecutionResult {
             truncated: false,
             saved: false,
             message: Some(message.into()),
+            token_status: None,
+            history_warning: None,
         }
     }
 }

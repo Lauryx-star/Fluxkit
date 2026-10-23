@@ -62,7 +62,9 @@ Creating or renaming projects, collections, and folders is an immediate structur
 Removing a folder also removes its descendant requests after confirmation. The collection's
 previous snapshot remains in `.fluxkit/backups/`. Removed collections move to `.fluxkit/trash/`.
 Close project only removes it from the current workspace; its files remain on disk.
-Closing a project does not permanently delete its folder or credential-store values.
+Closing a project does not permanently delete its folder, credential-store values, or
+local history. History is managed separately through Clear history and bounded retention;
+see [HISTORY.md](HISTORY.md).
 Variable/environment removal explicitly confirms deletion of the associated local values;
 see ENVIRONMENTS.md for non-transactional failure recovery.
 
@@ -109,7 +111,9 @@ Future incompatible changes must introduce a documented migration and recovery p
 Request definitions, selected attachments, and optional environment/variable definitions
 are saved here. Authentication configuration is an optional `auth` field on project, collection, folder, and
 request objects; see [AUTHENTICATION.md](AUTHENTICATION.md) for reference-only shapes,
-inheritance, and compatibility with older readers. History and recent-project settings remain
+inheritance, and compatibility with older readers. OAuth2/Custom Login definitions and local
+token ownership are in [TOKEN_AUTHENTICATION.md](TOKEN_AUTHENTICATION.md). Minimal history lives
+in application-data storage as defined in [HISTORY.md](HISTORY.md); recent-project settings remain
 planned. Reusable values are stored exclusively in the OS credential store. Credentials should use placeholders when drafting;
 request fields are plain JSON, not a secret store. Personal settings and resolved reusable
 values must stay outside portable files as their features are added.

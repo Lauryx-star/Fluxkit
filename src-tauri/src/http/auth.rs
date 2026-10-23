@@ -11,11 +11,13 @@ use std::path::Path;
 
 /// Reload only the selected ancestry under the caller's project lock. No UI-supplied
 /// inherited credentials are trusted, and stale configuration blocks dispatch.
-pub(super) fn effective(
-    input: &ExecutionInput,
-    root: Option<&Path>,
-) -> Result<Option<Auth>, String> {
+pub(super) struct Effective {
+    pub auth: Option<Auth>,
+    pub owner: String,
+}
+pub(super) fn effective(input: &ExecutionInput, root: Option<&Path>) -> Result<Effective, String> {
     let mut inherited = None;
+    let mut owner = format!("request/{}", input.request.id);
     if let Some(scope) = &input.scope {
         let root = root.ok_or("Open the authentication project's folder before sending.")?;
         let (project, bytes) = store::load_project(root)?;
@@ -25,6 +27,7 @@ pub(super) fn effective(
             );
         }
         inherited = project.auth;
+        owner = "project".into();
         if let Some(id) = &scope.collection_id {
             validate_id(id)?;
             store::safe(&root.join("collections"), true)?;
@@ -41,6 +44,7 @@ pub(super) fn effective(
             }
             if collection.auth.is_some() {
                 inherited = collection.auth;
+                owner = format!("collection/{id}");
             }
             let mut ancestors = Vec::new();
             let mut parent = input.request.folder_id.as_deref();
@@ -59,6 +63,7 @@ pub(super) fn effective(
             for folder in ancestors.into_iter().rev() {
                 if folder.auth.is_some() {
                     inherited = folder.auth.clone();
+                    owner = format!("folder/{}", folder.id);
                 }
             }
         } else if input.request.folder_id.is_some() || scope.collection_revision.is_some() {
@@ -67,7 +72,13 @@ pub(super) fn effective(
     } else if input.request.folder_id.is_some() {
         return Err("Open this request's project before sending.".into());
     }
-    Ok(input.request.auth.clone().or(inherited))
+    if input.request.auth.is_some() {
+        owner = format!("request/{}", input.request.id);
+    }
+    Ok(Effective {
+        auth: input.request.auth.clone().or(inherited),
+        owner,
+    })
 }
 
 /// Manual fields win. Do not even read credentials for an overridden authentication field.

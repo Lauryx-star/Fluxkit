@@ -3,7 +3,8 @@
 The first release delivers the scope in [the product plan](PRODUCT.md). Milestones are
 implementation order, not permission to omit later confirmed features. Milestones 1 through 5 have
 been implemented and validated on macOS; see [validation results](VALIDATION.md) for the
-exact native and automated checks and their limits. Milestones 6 through 9 remain planned.
+exact native and automated checks and their limits. Milestones 6 and 7 are implemented with Linux
+validation recorded there; milestones 8 and 9 remain planned.
 
 ## Milestone 1 Desktop foundation
 
@@ -85,6 +86,10 @@ Acceptance criteria:
 
 ## Milestone 6 Token acquisition and Custom Login
 
+Status: implemented. Configuration, OS-token ownership, expiry, renewal, failure recovery,
+and compatibility are defined in [TOKEN_AUTHENTICATION.md](TOKEN_AUTHENTICATION.md).
+See [validation](VALIDATION.md) for executed Linux checks and remaining platform limits.
+
 Implement OAuth2 Client Credentials and the bounded Custom Login scope. No browser login
 or callback listener is part of this milestone.
 
@@ -101,8 +106,12 @@ Acceptance criteria:
 
 ## Milestone 7 Minimal history
 
-Define literal URL redaction before implementing the four-field history. Use the
-confirmed limits of 100 entries per project and seven days, persisted across restarts.
+Status: implemented. [HISTORY.md](HISTORY.md) defines the approved literal-host policy,
+redaction, local storage, controls, retention, and failure recovery. See [validation](VALIDATION.md)
+for executed Linux checks and remaining platform limits.
+
+Use four-field history with limits of 100 entries per project and seven days,
+persisted across restarts.
 
 Acceptance criteria:
 
@@ -113,8 +122,8 @@ Acceptance criteria:
 - History survives restarts and enforces both the 100-entry and seven-day limits.
 - Oldest entries are removed first; expired entries are pruned before display and on
   startup and insertion, with cleanup continuing while the app is open.
-- Recording can be disabled and history can be cleared per project. Deleting a project
-  removes its history. Disabling recording does not prevent expiration or clearing.
+- Recording starts disabled and history can be cleared per project. Close project
+  preserves history; deletion requires explicit Clear history. Disabling recording does not prevent expiration or clearing.
 - An internal UTC timestamp supports expiration without storing additional request details.
 - Retention tests control time deterministically and cover count and age boundaries.
 

@@ -5,8 +5,9 @@
 **Send** executes the active draft without saving it. Project requests use that project's
 selected environment, including shared-default fallback. Session requests can send literal
 HTTP/HTTPS URLs without a project; placeholders require project definitions. Inherited
-authentication is not implemented yet; manually configured headers, including Authorization
-and Cookie, can use variable placeholders.
+authentication follows [AUTHENTICATION.md](AUTHENTICATION.md). Manually configured headers,
+including Authorization and Cookie, can use variable placeholders. Token acquisition precedes
+API dispatch; its separate deadline and lifecycle are in [TOKEN_AUTHENTICATION.md](TOKEN_AUTHENTICATION.md).
 
 The UI captures the draft, project identity, environment ID, and definition revision at
 Send. Rust validates that scope, resolves only active fields, and opens required attachments
@@ -95,7 +96,9 @@ complete code point rather than misclassifying otherwise valid text as binary.
 At most eight response-detail sets are retained in UI memory, each with bounded preview
 and headers. Older details are released with a visible notice while status/size metadata
 can remain for open drafts. Closing a draft releases its details; restarting loses all
-responses. This is not the persistent request-history feature planned for milestone 7.
+responses. Separately, opt-in [request history](HISTORY.md) persists only sanitized URL,
+method, status, and elapsed time. Execution results may include an optional `historyWarning`
+when metadata storage fails; the original HTTP result remains visible and is never retried.
 
 ## Explicit downloads and failure recovery
 

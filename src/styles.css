@@ -1284,7 +1284,7 @@ svg {
   width: 100%;
   min-height: 36px;
   padding: 7px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: #181c19;
   color: #e2e9e2;
@@ -1328,4 +1328,132 @@ svg {
 }
 .auth-override {
   color: #d8c59b;
+}
+
+.token-auth-fields {
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.token-composition,
+.token-request,
+.token-controls {
+  min-width: 0;
+  padding: 12px;
+  margin: 12px 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.token-composition legend,
+.token-request legend {
+  font-size: 12px;
+  color: #c0e9b4;
+}
+.token-part {
+  padding: 8px 0;
+}
+.auth-editor textarea {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  resize: vertical;
+  padding: 8px;
+  color: #e2e9e2;
+  background: #181c19;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.token-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+  font-size: 12px;
+}
+.token-checkbox input {
+  width: auto;
+  min-height: 0;
+}
+.token-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.token-entries summary,
+.token-composition summary {
+  padding: 10px 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+.token-controls {
+  font-size: 12px;
+}
+.editor-panel:has(.token-auth-fields),
+.editor-panel:has(.token-controls) {
+  height: 260px;
+  max-height: 38vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 12px;
+}
+.auth-editor select {
+  appearance: none;
+  padding-right: 32px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #b2bcb3 50%),
+    linear-gradient(135deg, #b2bcb3 50%, transparent 50%);
+  background-position:
+    calc(100% - 15px) 15px,
+    calc(100% - 10px) 15px;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.modal:has(.history-panel) {
+  width: min(900px, calc(100vw - 40px));
+  max-height: calc(100dvh - 50px);
+  overflow-y: auto;
+}
+.history-help {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.project-history-button {
+  margin: 0 16px 8px;
+}
+.history-recording {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 18px 0;
+  font-size: 13px;
+}
+.history-table-scroll {
+  max-height: 380px;
+  overflow: auto;
+}
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+.history-table th,
+.history-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.history-table th {
+  position: sticky;
+  top: 0;
+  background: #181e19;
+}
+.history-table th:first-child,
+.history-table th:nth-child(3),
+.history-table th:nth-child(4) {
+  width: 82px;
 }

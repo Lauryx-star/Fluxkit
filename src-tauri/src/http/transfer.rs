@@ -178,6 +178,12 @@ pub async fn execute(
     cancel: &CancellationToken,
     mut download: Option<Download>,
 ) -> ExecutionResult {
+    if prepared.token.is_some() {
+        return ExecutionResult::failure(
+            Outcome::InvalidRequest,
+            "Acquire the configured token before API dispatch.",
+        );
+    }
     let start = Instant::now();
     let mut result = ExecutionResult::failure(Outcome::Response, "");
     result.message = None;

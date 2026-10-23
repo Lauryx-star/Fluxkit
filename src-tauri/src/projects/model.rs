@@ -259,6 +259,12 @@ pub enum Auth {
         value: String,
         placement: KeyPlacement,
     },
+    Oauth2 {
+        config: Box<super::token_config::OAuth2>,
+    },
+    CustomLogin {
+        config: Box<super::token_config::CustomLogin>,
+    },
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -274,6 +280,8 @@ pub fn validate_auth(auth: Option<&Auth>) -> Result<(), String> {
             validate_id(password)
         }
         Some(Auth::Bearer { token }) => validate_id(token),
+        Some(Auth::Oauth2 { config }) => config.validate(),
+        Some(Auth::CustomLogin { config }) => config.validate(),
         Some(Auth::ApiKey {
             name,
             value,
@@ -319,6 +327,8 @@ impl Auth {
             Self::Basic { username, password } => vec![username, password],
             Self::Bearer { token } => vec![token],
             Self::ApiKey { value, .. } => vec![value],
+            Self::Oauth2 { config } => config.variable_ids(),
+            Self::CustomLogin { config } => config.variable_ids(),
         }
     }
 }

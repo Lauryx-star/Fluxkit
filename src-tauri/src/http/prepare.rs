@@ -19,6 +19,7 @@ use tokio_util::{io::ReaderStream, sync::CancellationToken};
 /// Only a worker creates this snapshot; no project lock is held during network I/O.
 pub struct Prepared {
     pub request: reqwest::Request,
+    pub token: Option<super::tokens::Plan>,
 }
 struct CachedValues<'a, V> {
     source: &'a V,
@@ -193,7 +194,7 @@ pub fn prepare(
         headers.append(name, value);
     }
     let auth = super::auth::effective(input, root)?;
-    super::auth::apply(auth.as_ref(), &mut url, &mut headers, client, |id| {
+    super::auth::apply(auth.auth.as_ref(), &mut url, &mut headers, client, |id| {
         let variable = definitions
             .variables
             .iter()
@@ -201,6 +202,14 @@ pub fn prepare(
             .ok_or("An authentication variable is missing. Update authentication settings.")?;
         resolve(&format!("{{{{{}}}}}", variable.name))
     })?;
+    let token = super::tokens::Plan::new(
+        auth.auth.as_ref(),
+        &auth.owner,
+        project,
+        environment,
+        &definitions,
+    )?
+    .filter(|plan| !plan.overridden(&url, &headers));
     if url.as_str().len() > 65_536
         || headers
             .iter()
@@ -279,5 +288,45 @@ pub fn prepare(
         .headers(headers)
         .build()
         .map_err(|_| "Could not build the HTTP request. Check headers and body configuration.")?;
-    Ok(Prepared { request })
+    Ok(Prepared { request, token })
+}
+
+/// Metadata/renewal commands validate the same authoritative ancestry without needing a valid API URL.
+pub fn token_plan(
+    input: &ExecutionInput,
+    root: &Path,
+    project: &str,
+    settings: &Path,
+) -> Result<super::tokens::Plan, String> {
+    input.request.validate()?;
+    if !(1_000..=300_000).contains(&input.timeout_ms)
+        || serde_json::to_vec(&input.request)
+            .map_err(|_| "Invalid request data.")?
+            .len()
+            > 8 * 1024 * 1024
+    {
+        return Err("Invalid token operation timeout or request size.".into());
+    }
+    let view = environments::load(root, settings, project)?;
+    let scope = input
+        .scope
+        .as_ref()
+        .ok_or("Token acquisition requires a project.")?;
+    if view.selection_missing
+        || view.selected_environment != scope.environment
+        || view.revision != scope.revision
+    {
+        return Err(
+            "Project variables or environment changed. Reload variables before continuing.".into(),
+        );
+    }
+    let auth = super::auth::effective(input, Some(root))?;
+    super::tokens::Plan::new(
+        auth.auth.as_ref(),
+        &auth.owner,
+        project,
+        view.selected_environment.as_deref(),
+        &view.data,
+    )?
+    .ok_or("Choose OAuth2 Client Credentials or Custom Login first.".into())
 }

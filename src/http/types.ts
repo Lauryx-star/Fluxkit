@@ -25,4 +25,6 @@ export interface ExecutionResult {
   truncated: boolean;
   saved: boolean;
   message: string | null;
+  tokenStatus?: import('../auth/types').TokenStatus;
+  historyWarning?: string;
 }

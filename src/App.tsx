@@ -1,5 +1,7 @@
 import { AuthEditor } from './auth/AuthEditor';
 import { AuthDialog } from './auth/AuthDialog';
+import { TokenControls } from './auth/TokenControls';
+import { HistoryPanel } from './history/HistoryPanel';
 import type { Auth, AuthTarget } from './auth/types';
 import { authLabel, effectiveAuth, manualAuthHint } from './auth/rules';
 import brandMark from '../assets/fluxkit.svg';
@@ -8,7 +10,7 @@ import { Icon } from './components/Icon';
 import { KeyValueEditor } from './components/KeyValueEditor';
 import { environmentAction, getAppInfo, isDesktop } from './native';
 import { useWorkspace } from './projects/useWorkspace';
-import { isDirty } from './projects/types';
+import { isDirty, requestData } from './projects/types';
 import { useHttp } from './http/useHttp';
 import { ResponseView } from './http/ResponseView';
 import { ProjectTree } from './projects/ProjectTree';
@@ -37,6 +39,7 @@ export default function App() {
     message: string;
   } | null>(null);
   const [authChanges, setAuthChanges] = useState(false);
+  const [historyHandle, setHistoryHandle] = useState<string | null>(null);
   const [authDialog, setAuthDialog] = useState<{
     handle: string;
     target: AuthTarget;
@@ -44,6 +47,7 @@ export default function App() {
     initial: Auth | null;
   } | null>(null);
   const workspace = useWorkspace(variableChanges || authChanges);
+  const historyProject = workspace.projects.find((item) => item.handle === historyHandle);
   const { drafts, activeId, setActiveId, draft, project, busy, updateDraft, closeDraft } =
     workspace;
   const checkResult =
@@ -88,23 +92,24 @@ export default function App() {
     (!authProject || executionEnvironment !== null) &&
     timeoutSeconds >= 1 &&
     timeoutSeconds <= 300;
+  const executionScope =
+    authProject && executionEnvironment && draft
+      ? {
+          handle: authProject.handle,
+          projectRevision: authProject.revision,
+          collectionId: draft.collectionId,
+          collectionRevision:
+            authProject.collections.find((item) => item.data.id === draft.collectionId)?.revision ??
+            null,
+          environment: executionEnvironment.selectedEnvironment,
+          revision: executionEnvironment.revision,
+        }
+      : null;
   function send(saveResponse = false) {
     if (!draft || !canSend) {
       return;
     }
-    const scope =
-      authProject && executionEnvironment
-        ? {
-            handle: authProject.handle,
-            projectRevision: authProject.revision,
-            collectionId: draft.collectionId,
-            collectionRevision:
-              authProject.collections.find((item) => item.data.id === draft.collectionId)
-                ?.revision ?? null,
-            environment: executionEnvironment.selectedEnvironment,
-            revision: executionEnvironment.revision,
-          }
-        : null;
+    const scope = executionScope;
     const environmentLabel =
       executionEnvironment?.data.environments.find((item) => item.id === scope?.environment)
         ?.name ?? (authProject ? 'Defaults' : 'Session');
@@ -150,14 +155,20 @@ export default function App() {
     function onSave(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
         event.preventDefault();
-        if (!workspace.nameDialog && !workspace.confirmation && !variablesOpen && !authDialog) {
+        if (
+          !workspace.nameDialog &&
+          !workspace.confirmation &&
+          !variablesOpen &&
+          !authDialog &&
+          !historyProject
+        ) {
           workspace.saveDraft();
         }
       }
     }
     window.addEventListener('keydown', onSave);
     return () => window.removeEventListener('keydown', onSave);
-  }, [workspace, variablesOpen, authDialog]);
+  }, [workspace, variablesOpen, authDialog, historyProject]);
 
   return (
     <VariableContext.Provider value={variableContext}>
@@ -223,6 +234,13 @@ export default function App() {
                 onClick={() => editAuthentication()}
               >
                 Project authentication
+              </button>
+              <button
+                className="secondary-button project-history-button"
+                disabled={busy}
+                onClick={() => setHistoryHandle(project.handle)}
+              >
+                Request history
               </button>
               <div className="sidebar-section collections-heading">
                 <span>COLLECTIONS</span>
@@ -652,11 +670,26 @@ export default function App() {
                     <BodyEditor draft={draft} onChange={updateDraft} onFile={workspace.attach} />
                   )}
                   {editorTab === 'Auth' && (
-                    <AuthEditor
-                      value={draft.auth ?? null}
-                      onChange={(auth) => updateDraft({ auth })}
-                      variables={authProject ? (executionEnvironment?.data.variables ?? []) : []}
-                    />
+                    <>
+                      {(effective.auth?.kind === 'oauth2' ||
+                        effective.auth?.kind === 'customLogin') && (
+                        <TokenControls
+                          key={JSON.stringify([draft.id, effective, executionScope])}
+                          input={{
+                            request: requestData(draft),
+                            scope: executionScope,
+                            timeoutMs: timeoutSeconds * 1000,
+                            saveResponse: false,
+                          }}
+                          disabled={!canSend || !executionScope}
+                        />
+                      )}
+                      <AuthEditor
+                        value={draft.auth ?? null}
+                        onChange={(auth) => updateDraft({ auth })}
+                        variables={authProject ? (executionEnvironment?.data.variables ?? []) : []}
+                      />
+                    </>
                   )}
                 </div>
                 <p className="draft-notice">
@@ -684,6 +717,16 @@ export default function App() {
             </span>
           </footer>
         </div>
+        {historyProject && (
+          <HistoryPanel
+            key={historyProject.handle}
+            handle={historyProject.handle}
+            name={historyProject.data.name}
+            refresh={http.states}
+            ask={workspace.ask}
+            onClose={() => setHistoryHandle(null)}
+          />
+        )}
         {authDialog && (
           <AuthDialog
             key={`${authDialog.handle}-${authDialog.target.collectionId}-${authDialog.target.folderId}`}

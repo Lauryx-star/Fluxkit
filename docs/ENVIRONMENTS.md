@@ -108,6 +108,11 @@ is blocked before OS deletion; replace/remove those settings first. See
 [AUTHENTICATION.md](AUTHENTICATION.md). Removing an environment continues to remove only
 its explicitly confirmed values.
 
+Acquired tokens are separate records owned by effective auth configuration and environment.
+Environment/variable removal does not automatically delete those records. Use Forget local
+token before removing its configuration/environment when cleanup is desired; see
+[token ownership and recovery](TOKEN_AUTHENTICATION.md).
+
 ## Highlighting, completion, and hover preview
 
 URL, query/header keys and values, form fields, and text/JSON body editors highlight

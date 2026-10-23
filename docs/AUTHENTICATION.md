@@ -1,8 +1,9 @@
 # Authentication and inheritance
 
 Milestone 5 adds None, Inherit, Basic, manual Bearer/JWT, and API Key authentication.
-OAuth2 Client Credentials and Custom Login/token acquisition remain milestone 6. A manually
-provided bearer token does not acquire or renew itself.
+Milestone 6 adds OAuth2 Client Credentials and Custom Login; see
+[token acquisition and lifecycle](TOKEN_AUTHENTICATION.md). A manually provided bearer token
+does not acquire or renew itself.
 
 ## Editing and ownership
 

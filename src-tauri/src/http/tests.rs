@@ -30,7 +30,7 @@ impl Values for Fake {
         Ok(())
     }
 }
-fn client() -> Client {
+pub(super) fn client() -> Client {
     Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -38,7 +38,7 @@ fn client() -> Client {
         .build()
         .unwrap()
 }
-fn input(url: &str) -> ExecutionInput {
+pub(super) fn input(url: &str) -> ExecutionInput {
     ExecutionInput {
         request: Request {
             auth: None,
@@ -61,7 +61,7 @@ fn input(url: &str) -> ExecutionInput {
         save_response: false,
     }
 }
-async fn server(
+pub(super) async fn server(
     response: Vec<u8>,
     delay: Duration,
 ) -> (
@@ -102,7 +102,7 @@ async fn server(
     });
     (format!("http://{address}"), rx, task)
 }
-fn response(status: &str, headers: &str, body: &[u8]) -> Vec<u8> {
+pub(super) fn response(status: &str, headers: &str, body: &[u8]) -> Vec<u8> {
     let mut bytes = format!(
         "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n",
         body.len()
@@ -886,4 +886,60 @@ fn auth_rejects_invalid_credentials_without_leaking_values_or_reading_overrides(
         placement: KeyPlacement::Header
     }))
     .is_err());
+}
+
+#[tokio::test]
+async fn history_keeps_transfer_status_and_timing_without_network_payloads() {
+    use crate::history::{Candidate, Store};
+    let (url, captured, task) = server(
+        response(
+            "202 Accepted",
+            "X-Private: private-response-header\r\n",
+            b"private-response-body",
+        ),
+        Duration::ZERO,
+    )
+    .await;
+    let settings = tempdir().unwrap();
+    let project = Uuid::new_v4().to_string();
+    let history_root = settings.path().join("history");
+    let history = Store::new(history_root.clone());
+    let now = 1_800_000_000;
+    history.set_recording(&project, true, now).unwrap();
+    let request = input(&format!("{url}/private-path?private-key=private-value"));
+    let ticket = history
+        .begin(
+            &project,
+            Candidate::new(&request.request.method, &request.request.url),
+            now,
+        )
+        .unwrap()
+        .unwrap();
+    let result = send(
+        &request,
+        &client(),
+        None,
+        &project,
+        settings.path(),
+        &Fake(HashMap::new()),
+        None,
+    )
+    .await;
+    history
+        .finish(ticket, result.status, result.elapsed_ms, now)
+        .unwrap();
+    let entry = history.view(&project, now).unwrap().entries.remove(0);
+    assert_eq!(entry.status, Some(202));
+    assert_eq!(entry.elapsed_ms, result.elapsed_ms);
+    assert!(entry.elapsed_ms.is_some());
+    assert_eq!(
+        entry.url,
+        "http://127.0.0.1:[redacted]/[redacted]?[redacted]=[redacted]"
+    );
+    let raw = std::fs::read_to_string(history_root.join(format!("{project}.json"))).unwrap();
+    assert!(!raw.contains("private-"));
+    assert!(String::from_utf8(captured.await.unwrap())
+        .unwrap()
+        .contains("private-path"));
+    task.await.unwrap();
 }

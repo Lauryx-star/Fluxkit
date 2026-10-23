@@ -17,6 +17,8 @@
     "allow-begin-http-request",
     "allow-execute-http-request",
     "allow-cancel-http-request",
+    "allow-authentication-action",
+    "allow-history-action",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:window:allow-destroy"

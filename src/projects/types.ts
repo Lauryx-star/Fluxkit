@@ -91,7 +91,7 @@ export function fromRequest(
   projectHandle: string,
   collectionId: string,
 ): Draft {
-  return {
+  const draft: Draft = {
     id,
     requestId: request.id,
     auth: request.auth,
@@ -107,8 +107,12 @@ export function fromRequest(
     projectHandle,
     collectionId,
     folderId: request.folderId,
-    savedSnapshot: JSON.stringify(request),
+    savedSnapshot: null,
   };
+  // Native serialization and hand-authored JSON may place auth after other fields.
+  // Compare snapshots in the editor's field order so opening a saved request stays clean.
+  draft.savedSnapshot = JSON.stringify(requestData(draft));
+  return draft;
 }
 export function emptyDraft(
   id: number,

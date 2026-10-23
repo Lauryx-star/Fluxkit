@@ -16,6 +16,35 @@ const response: ExecutionResult = {
   saved: false,
   message: null,
 };
+it('keeps the HTTP result visible when history recording fails', () => {
+  render(
+    <ResponseView
+      result={{ ...response, historyWarning: 'History could not be recorded.' }}
+      running={false}
+    />,
+  );
+  expect(screen.getByText('History could not be recorded.')).toBeVisible();
+  expect(screen.getByText(/HTTP 200/)).toBeVisible();
+  expect(screen.getByRole('tabpanel')).toHaveTextContent(response.text!);
+});
+it('shows unknown token expiry and known expiry as dispatch metadata without token values', () => {
+  const { rerender } = render(
+    <ResponseView
+      result={{ ...response, tokenStatus: { state: 'unknownExpiry', expiresAt: null } }}
+      running={false}
+    />,
+  );
+  expect(screen.getByText('Authentication token at dispatch: Expiry unknown.')).toBeVisible();
+  rerender(
+    <ResponseView
+      result={{ ...response, tokenStatus: { state: 'valid', expiresAt: 1792756800 } }}
+      running={false}
+    />,
+  );
+  expect(
+    screen.getByText(/Authentication token at dispatch: Token available · expires/),
+  ).toBeVisible();
+});
 it('renders untrusted body and headers as inert text and supports keyboard tab navigation', async () => {
   const user = userEvent.setup();
   const { container } = render(<ResponseView result={response} running={false} />);

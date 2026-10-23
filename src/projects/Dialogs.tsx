@@ -4,7 +4,7 @@ export function Modal({ children, label }: { children: ReactNode; label: string 
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const previous = document.activeElement;
-    ref.current?.querySelector<HTMLElement>('input, button')?.focus();
+    ref.current?.querySelector<HTMLElement>('input:not(:disabled), button:not(:disabled)')?.focus();
     return () => {
       if (previous instanceof HTMLElement && document.contains(previous)) {
         previous.focus();

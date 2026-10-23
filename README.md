@@ -4,8 +4,8 @@ A local, open-source desktop API client built with Rust, Tauri, React, and TypeS
 
 ## Current state
 
-Milestones 1 through 5 provide desktop editing, local projects, environments, native HTTP execution,
-and inherited authentication.
+Milestones 1 through 7 provide desktop editing, local projects, environments, native HTTP execution,
+inherited authentication, OAuth2 Client Credentials, Custom Login, and minimal local history.
 Create or open project folders, organize collections and nested folders, and edit requests
 with parameters, headers, text/JSON/form bodies, and portable file attachments.
 
@@ -28,12 +28,18 @@ See [environments and OS values](docs/ENVIRONMENTS.md) for syntax, limits, and d
 **Send** executes the active draft with Cancel, a 60-second default timeout, and Raw/JSON/
 Headers response views. **Send & save response…** streams a new request's response to a
 chosen file. Previews are limited to 1 MiB. See [HTTP behavior and downloads](docs/HTTP.md).
-Configure Basic, Bearer/JWT, or API Key in the request **Auth** tab or through project, collection,
+Configure Basic, Bearer/JWT, API Key, OAuth2 Client Credentials, or Custom Login in the request **Auth** tab or through project, collection,
 and folder authentication settings. Credential fields reference project variables; manual headers
 and query parameters take priority. See [authentication and inheritance](docs/AUTHENTICATION.md).
-Token acquisition, history, and exchange formats remain planned in
+Token acquisition, expiry, manual renewal, and local token removal are described in
+[token authentication](docs/TOKEN_AUTHENTICATION.md). Exchange formats remain planned in
 [the product plan](docs/PRODUCT.md) and [milestones](docs/MILESTONES.md).
 Browser preview supports draft editing; native sending and project files require the desktop app.
+
+Open **Request history** for a project and enable **Record request history** to opt in.
+History stores up to 100 entries for seven days, with literal hosts visible locally and
+path/query content redacted. Closing a project preserves history; **Clear history** explicitly
+clears it. Bodies, headers, and resolved values are excluded. See [the history contract](docs/HISTORY.md).
 
 ## Requirements
 

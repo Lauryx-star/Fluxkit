@@ -67,6 +67,18 @@ export function cancelHttpRequest(id: string) {
   return invoke<void>('cancel_http_request', { id });
 }
 
+export function authenticationAction(
+  id: string,
+  input: import('./http/types').ExecutionInput,
+  action: 'status' | 'renew' | 'forget',
+) {
+  return invoke<import('./auth/types').TokenStatus>('authentication_action', { id, input, action });
+}
+
+export function historyAction(handle: string, action: import('./history/types').HistoryAction) {
+  return invoke<import('./history/types').HistoryView>('history_action', { handle, action });
+}
+
 export function saveProjectAuth(
   handle: string,
   auth: import('./auth/types').Auth | null,

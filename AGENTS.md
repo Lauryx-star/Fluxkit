@@ -66,8 +66,9 @@ The implementation includes React request editing, project commands, validated l
 storage, native file dialogs, project environments, and an OS credential adapter.
 Native HTTP execution, bounded response previews, and explicit streamed downloads are
 implemented; their behavior is defined in [docs/HTTP.md](docs/HTTP.md). Authentication
-inheritance is implemented for Basic, Bearer, and API Key; its precedence and reference
-ownership are defined in [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md). Environment syntax,
+inheritance is implemented for Basic, Bearer, API Key, OAuth2 Client Credentials, and Custom
+Login; precedence and reference ownership are defined in [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md)
+and token lifecycle in [docs/TOKEN_AUTHENTICATION.md](docs/TOKEN_AUTHENTICATION.md). Environment syntax,
 value ownership, and recovery rules are defined in [docs/ENVIRONMENTS.md](docs/ENVIRONMENTS.md).
 
 ```text
@@ -193,10 +194,11 @@ choices, validation results, and remaining work. Do not claim unexecuted checks 
   bodies, or response payloads in history. Keep history outside portable project files.
 - Persist history locally across application restarts with at most 100 entries per
   project and a maximum age of seven days. Both limits apply; remove oldest entries first.
-- Provide a history recording toggle and per-project clearing; removing a project also
-  removes its history. Keep a UTC timestamp as internal retention metadata.
-- Define literal URL redaction before implementing history. Never assume a URL is free
-  of sensitive data.
+- Provide a history recording toggle and per-project clearing. Close project preserves
+  history; only explicit Clear history deletes it, apart from retention cleanup. Keep a
+  UTC timestamp as internal retention metadata.
+- Preserve literal hosts locally; redact literal path/query content, credentials, ports,
+  and fragments. Keep unresolved variable placeholders. See docs/HISTORY.md.
 - Do not persist resolved request/response payloads in caches, crash reports, or exports
   by default. Any such feature needs explicit storage and privacy requirements.
 - Keep reusable values out of localStorage, sessionStorage, IndexedDB, and settings files.

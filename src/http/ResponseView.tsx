@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { ExecutionResult } from './types';
+import { tokenStatusLabel } from '../auth/rules';
 
 export function ResponseView({
   result,
@@ -30,6 +31,20 @@ export function ResponseView({
         <p className="response-notice">
           Environment at dispatch: {environmentLabel}. Results belong to the last send of this
           draft.
+        </p>
+      )}
+      {result?.tokenStatus && (
+        <p className="response-notice">
+          Authentication token at dispatch: {tokenStatusLabel(result.tokenStatus)}
+          {result.tokenStatus.expiresAt !== null
+            ? ` · expires ${new Date(result.tokenStatus.expiresAt * 1000).toISOString()}`
+            : ''}
+          .
+        </p>
+      )}
+      {result?.historyWarning && (
+        <p className="response-notice" role="status">
+          {result.historyWarning}
         </p>
       )}
       {running && (

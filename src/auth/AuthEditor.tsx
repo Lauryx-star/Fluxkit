@@ -1,5 +1,7 @@
 import type { Auth } from './types';
 import type { Definition } from '../environments/types';
+import { TokenAuthEditor } from './TokenAuthEditor';
+import { literal, loginRequest } from './defaults';
 
 export function AuthEditor({
   value,
@@ -49,15 +51,39 @@ export function AuthEditor({
           onChange={(event) => {
             const kind = event.target.value;
             onChange(
-              kind === 'inherit'
-                ? null
-                : kind === 'basic'
-                  ? { kind, username: '', password: '' }
-                  : kind === 'bearer'
-                    ? { kind, token: '' }
-                    : kind === 'apiKey'
-                      ? { kind, name: 'X-API-Key', value: '', placement: 'header' }
-                      : { kind: 'none' },
+              kind === 'oauth2'
+                ? {
+                    kind,
+                    config: {
+                      tokenUrl: literal(),
+                      clientId: '',
+                      clientSecret: '',
+                      scope: literal(),
+                      clientAuthentication: 'basic',
+                    },
+                  }
+                : kind === 'customLogin'
+                  ? {
+                      kind,
+                      config: {
+                        login: loginRequest(),
+                        renewal: null,
+                        placement: {
+                          name: 'Authorization',
+                          placement: 'header',
+                          prefix: 'Bearer ',
+                        },
+                      },
+                    }
+                  : kind === 'inherit'
+                    ? null
+                    : kind === 'basic'
+                      ? { kind, username: '', password: '' }
+                      : kind === 'bearer'
+                        ? { kind, token: '' }
+                        : kind === 'apiKey'
+                          ? { kind, name: 'X-API-Key', value: '', placement: 'header' }
+                          : { kind: 'none' },
             );
           }}
         >
@@ -66,6 +92,8 @@ export function AuthEditor({
           <option value="basic">Basic</option>
           <option value="bearer">Bearer / JWT</option>
           <option value="apiKey">API Key</option>
+          <option value="oauth2">OAuth2 Client Credentials</option>
+          <option value="customLogin">Custom Login</option>
         </select>
       </label>
       {value?.kind === 'basic' && (
@@ -109,6 +137,14 @@ export function AuthEditor({
           </label>
           {variable('API key variable', value.value, (id) => onChange({ ...value, value: id }))}
         </>
+      )}
+      {(value?.kind === 'oauth2' || value?.kind === 'customLogin') && (
+        <TokenAuthEditor
+          value={value}
+          onChange={onChange}
+          variables={variables}
+          disabled={disabled}
+        />
       )}
       <p className="auth-help">
         Credentials use project variables and the selected environment, with shared defaults as
