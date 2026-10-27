@@ -61,6 +61,13 @@ can be stored as new OS variable values or imported as definitions only. Interna
 are supported; external references are blocked without network access. See
 [OpenAPI import and partial-failure recovery](docs/OPENAPI_IMPORT.md).
 
+An initial self-hosted server foundation is available under [server/](server/README.md):
+ASP.NET Core with PostgreSQL, local account registration and admin approval, personal/team
+project access, revision-checked project snapshots, and per-user encrypted-secret envelopes.
+It is not yet connected to the desktop client. OIDC, local-to-server migration, offline
+snapshot handling, and end-to-end server mode remain in progress; see
+[the server architecture and API notes](docs/SELF_HOSTED_BACKEND.md).
+
 Only OpenAPI server URLs and authentication create project variables, with readable names
 such as `baseUrl`. Normal parameter values remain editable at each request. The variable
 list explains their origins. Use
@@ -147,6 +154,15 @@ with `npm run tauri -- icon assets/fluxkit.svg`.
 - `src-tauri/`: Rust host, validated local storage, native dialogs, commands, and security setup.
 - `docs/`: agreed product scope and milestones.
 - `AGENTS.md`: engineering rules and required checks.
+
+## Self-hosted backend
+
+An initial ASP.NET Core and PostgreSQL backend foundation is in `server/`. To configure
+Docker Compose, copy `server/.env.example` to `server/.env`, replace all placeholder values,
+and follow [the server setup guide](server/README.md). The desktop client can configure a server,
+register/sign in to local accounts, upload a saved local project copy, and open server snapshots
+in read-only mode with offline cache fallback. Online editing and ongoing sync are still in
+progress. See [the backend scope and remaining work](docs/SELF_HOSTED_BACKEND.md).
 
 Native project commands accept session handles issued by the folder chooser or validated
 last-project restoration; the frontend

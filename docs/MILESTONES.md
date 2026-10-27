@@ -166,3 +166,31 @@ Acceptance criteria:
 - Startup, memory use, and interaction responsiveness are measured with stated conditions.
 - Setup, storage, migration limits, supported formats, and known limitations are documented.
 - Signing, publishing, and automatic updates proceed only under their own explicit scope.
+
+## Milestone 10 Optional self-hosted server
+
+Status: in progress; implementation handoff and ordered remaining work are in
+[SELF_HOSTED_BACKEND.md](SELF_HOSTED_BACKEND.md#handoff-status-2026-10-27). The initial
+ASP.NET Core/PostgreSQL server project provides local registration and admin approval, personal
+projects, team project membership, project snapshot revision checks, and per-user encrypted-secret
+envelope storage. See [server setup](../server/README.md).
+
+Acceptance criteria:
+
+- The desktop can select local or server mode and authenticate against the configured server.
+- Local account and OIDC modes are mutually exclusive server configurations; pending users
+  cannot read project data before administrator approval.
+- Approved users automatically receive a private personal project; team projects grant data
+  access through explicit membership only.
+- Team members can read and change every collection in their project; administrators manage
+  memberships without gaining personal-project access.
+- Local-to-server upload previews the data and creates a server copy. Original local project files
+  remain available after a verified successful upload.
+- The client keeps a read-only local snapshot for offline access and never queues offline
+  writes. History remains local in both modes.
+- Ordinary values are visible to project members. Secrets are encrypted client-side with
+  Argon2id-derived wrapping keys and authenticated encryption; each user can decrypt only
+  their own values. Forgotten master passwords without recovery permanently lose access.
+- PostgreSQL migrations, account administration, backups, restore, and TLS deployment are
+  documented and validated.
+- OIDC client secrets remain server-side and identities use stable issuer/subject keys.
