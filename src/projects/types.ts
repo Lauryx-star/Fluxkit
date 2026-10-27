@@ -55,6 +55,8 @@ export interface ProjectView {
   handle: string;
   directory: string;
   revision: string;
+  readOnly?: boolean;
+  serverSync?: boolean;
   data: { schemaVersion: number; id: string; name: string; auth?: Auth | null };
   collections: CollectionView[];
 }

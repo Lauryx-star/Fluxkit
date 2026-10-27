@@ -149,15 +149,18 @@ async fn sends_method_query_headers_body_and_resolves_values_before_dispatch() {
         environments: vec![Definition {
             id: environment.clone(),
             name: "Testserver".into(),
+            secret: None,
         }],
         variables: vec![
             Definition {
                 id: variable.clone(),
                 name: "baseUrl".into(),
+                secret: None,
             },
             Definition {
                 id: token_var.clone(),
                 name: "token".into(),
+                secret: None,
             },
         ],
     };
@@ -619,14 +622,17 @@ async fn inherited_authentication_uses_variable_ids_and_manual_fields_win() {
             Definition {
                 id: user.clone(),
                 name: "renamedUsername".into(),
+                secret: None,
             },
             Definition {
                 id: password.clone(),
                 name: "password".into(),
+                secret: None,
             },
             Definition {
                 id: token.clone(),
                 name: "token".into(),
+                secret: None,
             },
         ],
     };

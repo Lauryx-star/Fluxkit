@@ -36,6 +36,7 @@ import { ProjectTree } from './projects/ProjectTree';
 import { BodyEditor } from './projects/BodyEditor';
 import { NameDialog, ConfirmDialog, QuitDialog } from './projects/Dialogs';
 import { EnvironmentControls } from './environments/EnvironmentControls';
+import { ServerConnection } from './server/ServerConnection';
 import { VariableContext } from './environments/VariableContext';
 import { VariableInput } from './environments/VariableInput';
 import type { EnvironmentView } from './environments/types';
@@ -58,6 +59,7 @@ export default function App() {
     setEnvironmentState((items) => ({ ...items, [handle]: view }));
   }, []);
   const [variablesOpen, setVariablesOpen] = useState(false);
+  const [serverConnectionOpen, setServerConnectionOpen] = useState(false);
   const [checkingVariables, setCheckingVariables] = useState(false);
   const [variableCheck, setVariableCheck] = useState<{
     requestId: string;
@@ -444,6 +446,10 @@ export default function App() {
           </div>
           <div className="workspace-label">YOUR WORKSPACE</div>
           <div className="project-controls">
+            <button className="secondary-button" disabled={!workspace.desktop || busy}
+              onClick={() => setServerConnectionOpen(true)}>
+              Server connection
+            </button>
             <button
               className="secondary-button"
               disabled={!workspace.desktop || busy}
@@ -479,7 +485,7 @@ export default function App() {
                 </Select>
               </div>
               <div className="project-actions">
-                <button disabled={busy} onClick={workspace.renameProject}>
+                <button disabled={busy || project.readOnly} onClick={workspace.renameProject}>
                   Rename
                 </button>
                 <button disabled={busy} onClick={() => void workspace.reloadProject()}>
@@ -491,7 +497,7 @@ export default function App() {
               </div>
               <button
                 className="secondary-button project-auth-button"
-                disabled={busy || !activeEnvironmentView}
+                disabled={busy || project.readOnly || !activeEnvironmentView}
                 onClick={() => editAuthentication()}
               >
                 Project authentication
@@ -505,14 +511,14 @@ export default function App() {
               </button>
               <button
                 className="secondary-button project-auth-button"
-                disabled={busy || variablesOpen || !!authDialog}
+                disabled={busy || project.readOnly || variablesOpen || !!authDialog}
                 onClick={() => void chooseImport()}
               >
                 {choosingImport ? 'Reading file…' : 'Import OpenAPI…'}
               </button>
               <button
                 className="secondary-button project-auth-button"
-                disabled={busy || variablesOpen || !!authDialog}
+                disabled={busy || project.readOnly || variablesOpen || !!authDialog}
                 onClick={() => setPostmanPicker(true)}
               >
                 Import Postman…
@@ -534,7 +540,7 @@ export default function App() {
                 <button
                   className="icon-button"
                   aria-label="Create collection"
-                  disabled={busy}
+                  disabled={busy || project.readOnly}
                   onClick={workspace.createCollection}
                 >
                   <Icon name="plus" />
@@ -546,6 +552,7 @@ export default function App() {
               <ProjectTree
                 collections={project.collections}
                 busy={busy}
+                readOnly={project.readOnly}
                 onAuth={(id, folder) => editAuthentication(id, folder?.id ?? null)}
                 projectHandle={project.handle}
                 onDropDraft={chooseMove}
@@ -609,8 +616,20 @@ export default function App() {
           <div className="sidebar-note">
             <span className="tiny-orbit" />
             <div>
-              <strong>Local by design.</strong>
-              <p>Your workspace. Your machine.</p>
+              <strong>
+                {project?.readOnly
+                  ? 'Server snapshot.'
+                  : project?.serverSync
+                    ? 'Server workspace.'
+                    : 'Local by design.'}
+              </strong>
+              <p>
+                {project?.readOnly
+                  ? 'Read-only copy cached on this machine.'
+                  : project?.serverSync
+                    ? 'Changes stay here until you sync from Server connection.'
+                    : 'Your workspace. Your machine.'}
+              </p>
             </div>
           </div>
           <div className="sidebar-footer">
@@ -665,6 +684,11 @@ export default function App() {
                 </button>
               </div>
             )}
+            {project?.readOnly && (
+              <div className="operation-status" role="status">
+                Read-only server snapshot. Changes are disabled in this workspace.
+              </div>
+            )}
             {busy && (
               <div className="operation-status" role="status">
                 Working with local files…
@@ -715,7 +739,15 @@ export default function App() {
               >
                 <Icon name="plus" />
               </button>
-              <span className="session-label">{project ? 'LOCAL PROJECT' : 'SESSION ONLY'}</span>
+              <span className="session-label">
+                {project?.readOnly
+                  ? 'SERVER SNAPSHOT · READ ONLY'
+                  : project
+                    ? project.serverSync
+                      ? 'SERVER WORKSPACE · SYNC MANUALLY'
+                      : 'LOCAL PROJECT'
+                    : 'SESSION ONLY'}
+              </span>
             </div>
 
             {!draft ? (
@@ -810,7 +842,7 @@ export default function App() {
                   <div className="save-controls">
                     <button
                       className="secondary-button"
-                      disabled={!project || busy}
+                      disabled={!project || project.readOnly || busy}
                       title={requestLocation(
                         authProject ?? project,
                         draft.collectionId,
@@ -886,7 +918,7 @@ export default function App() {
                     </button>
                     <button
                       className="secondary-button"
-                      disabled={!workspace.desktop || busy || !isDirty(draft)}
+                      disabled={!workspace.desktop || project?.readOnly || busy || !isDirty(draft)}
                       onClick={workspace.saveDraft}
                     >
                       Save
@@ -1303,6 +1335,13 @@ export default function App() {
           saving={workspace.quitSaving}
           error={workspace.quitError}
           onChoose={(choice) => void workspace.finishQuit(choice)}
+        />
+      )}
+      {serverConnectionOpen && (
+        <ServerConnection
+          localProjects={workspace.projects}
+          onOpenProject={workspace.openServerProject}
+          onClose={() => setServerConnectionOpen(false)}
         />
       )}
     </VariableContext.Provider>

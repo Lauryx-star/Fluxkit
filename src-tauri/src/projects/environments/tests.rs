@@ -43,6 +43,7 @@ fn definition(name: &str) -> Definition {
     Definition {
         id: Uuid::new_v4().to_string(),
         name: name.into(),
+        secret: None,
     }
 }
 fn fixture() -> Definitions {

@@ -640,6 +640,7 @@ fn sixty_routes_keep_only_server_variables_and_independent_parameter_literals() 
     let existing = environments::Definition {
         id: uuid::Uuid::new_v4().to_string(),
         name: "baseUrl".into(),
+        secret: None,
     };
     definitions.variables.push(existing.clone());
     let bytes = serde_json::to_vec(&source).unwrap();

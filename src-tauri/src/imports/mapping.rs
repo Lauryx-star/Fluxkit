@@ -135,6 +135,7 @@ impl Mapper<'_> {
             definition: Definition {
                 id: id.clone(),
                 name,
+                secret: None,
             },
             value,
             environment: None,

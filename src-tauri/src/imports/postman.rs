@@ -114,6 +114,7 @@ impl Mapper {
         let definition = Definition {
             id: Uuid::new_v4().to_string(),
             name: format!("{}_{}_{}", self.prefix, self.variables.len() + 1, slug),
+            secret: None,
         };
         let id = definition.id.clone();
         self.variables.push(ImportedVariable {
@@ -853,6 +854,7 @@ pub fn environment(
     definitions.environments.push(Definition {
         id: env_id.clone(),
         name: name.clone(),
+        secret: None,
     });
     let mut mapper = Mapper {
         bindings: metadata.variables.clone(),

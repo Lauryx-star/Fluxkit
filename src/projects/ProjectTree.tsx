@@ -5,6 +5,7 @@ import type { CollectionView, Folder, SavedRequest } from './types';
 interface Props {
   collections: CollectionView[];
   busy: boolean;
+  readOnly?: boolean;
   projectHandle?: string;
   onDropRequest?: (
     handle: string,
@@ -40,7 +41,7 @@ export function ProjectTree(props: Props) {
     return {
       onDragOver: (event: React.DragEvent) => {
         if (
-          !props.busy &&
+          !props.busy && !props.readOnly &&
           event.dataTransfer.types.some((type) =>
             ['application/x-fluxkit-draft', 'application/x-fluxkit-request'].includes(type),
           )
@@ -52,7 +53,7 @@ export function ProjectTree(props: Props) {
       onDrop: (event: React.DragEvent) => {
         event.preventDefault();
         event.stopPropagation();
-        if (props.busy) {
+        if (props.busy || props.readOnly) {
           return;
         }
         if (event.dataTransfer.types.includes('application/x-fluxkit-request')) {
@@ -84,7 +85,7 @@ export function ProjectTree(props: Props) {
           return;
         }
         const id = Number(event.dataTransfer.getData('application/x-fluxkit-draft'));
-        if (!props.busy && Number.isSafeInteger(id) && id > 0) {
+        if (!props.busy && !props.readOnly && Number.isSafeInteger(id) && id > 0) {
           props.onDropDraft?.(id, collectionId, folderId);
         }
       },
@@ -114,7 +115,7 @@ export function ProjectTree(props: Props) {
                 </button>
                 <div className="tree-actions">
                   <button
-                    disabled={props.busy}
+                    disabled={props.busy || props.readOnly}
                     className="auth-tree-button"
                     aria-label={`Authentication for folder ${folder.name}`}
                     onClick={() => props.onAuth(collection.data.id, folder)}
@@ -122,28 +123,28 @@ export function ProjectTree(props: Props) {
                     Auth
                   </button>
                   <button
-                    disabled={props.busy}
+                    disabled={props.busy || props.readOnly}
                     aria-label={`New request in ${folder.name}`}
                     onClick={() => props.onNew(collection.data.id, folder.id)}
                   >
                     +
                   </button>
                   <button
-                    disabled={props.busy}
+                    disabled={props.busy || props.readOnly}
                     aria-label={`Actions for ${folder.name}`}
                     onClick={() => props.onRename(collection.data.id, folder)}
                   >
                     ✎
                   </button>
                   <button
-                    disabled={props.busy}
+                    disabled={props.busy || props.readOnly}
                     aria-label={`New subfolder in ${folder.name}`}
                     onClick={() => props.onFolder(collection.data.id, folder.id)}
                   >
                     <Icon name="folder" size={11} />
                   </button>
                   <button
-                    disabled={props.busy}
+                    disabled={props.busy || props.readOnly}
                     aria-label={`Remove folder ${folder.name}`}
                     onClick={() => props.onRemove(collection.data.id, folder)}
                   >
@@ -161,9 +162,9 @@ export function ProjectTree(props: Props) {
               <button
                 className="tree-label"
                 aria-label={`${request.method} ${request.name}`}
-                draggable={!props.busy && !!props.projectHandle}
+                draggable={!props.busy && !props.readOnly && !!props.projectHandle}
                 onDragStart={(event) => {
-                  if (props.busy || !props.projectHandle) {
+                  if (props.busy || props.readOnly || !props.projectHandle) {
                     event.preventDefault();
                     return;
                   }
@@ -186,7 +187,7 @@ export function ProjectTree(props: Props) {
               </button>
               <div className="tree-actions">
                 <button
-                  disabled={props.busy}
+                  disabled={props.busy || props.readOnly}
                   aria-label={`Remove request ${request.name}`}
                   onClick={() => props.onRemove(collection.data.id, undefined, request)}
                 >
@@ -216,7 +217,7 @@ export function ProjectTree(props: Props) {
             </button>
             <div className="tree-actions">
               <button
-                disabled={props.busy}
+                disabled={props.busy || props.readOnly}
                 className="auth-tree-button"
                 aria-label={`Authentication for collection ${collection.data.name}`}
                 onClick={() => props.onAuth(collection.data.id)}
@@ -224,28 +225,28 @@ export function ProjectTree(props: Props) {
                 Auth
               </button>
               <button
-                disabled={props.busy}
+                disabled={props.busy || props.readOnly}
                 aria-label={`New request in ${collection.data.name}`}
                 onClick={() => props.onNew(collection.data.id, null)}
               >
                 +
               </button>
               <button
-                disabled={props.busy}
+                disabled={props.busy || props.readOnly}
                 aria-label={`Rename collection ${collection.data.name}`}
                 onClick={() => props.onRename(collection.data.id)}
               >
                 ✎
               </button>
               <button
-                disabled={props.busy}
+                disabled={props.busy || props.readOnly}
                 aria-label={`New folder in ${collection.data.name}`}
                 onClick={() => props.onFolder(collection.data.id, null)}
               >
                 <Icon name="folder" size={11} />
               </button>
               <button
-                disabled={props.busy}
+                disabled={props.busy || props.readOnly}
                 aria-label={`Remove collection ${collection.data.name}`}
                 onClick={() => props.onRemove(collection.data.id)}
               >

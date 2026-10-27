@@ -11,6 +11,7 @@ pub fn commit(
     store_values: bool,
 ) -> Result<CommitResult, String> {
     let handle = plan.handle.clone();
+    store.ensure_writable(&handle)?;
     store.with_environment(&handle, |root, project| {
         let result = apply(root, project, plan, store_values, &environments::OsValues);
         Ok(CommitResult {

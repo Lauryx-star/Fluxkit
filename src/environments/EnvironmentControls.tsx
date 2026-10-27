@@ -139,6 +139,7 @@ function EnvironmentManager({
 }: ManagerProps) {
   const [kind, setKind] = useState<'variables' | 'environments'>('variables');
   const [name, setName] = useState('');
+  const [secret, setSecret] = useState(true);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [variable, setVariable] = useState('');
   const [environment, setEnvironment] = useState(view?.selectedEnvironment ?? '');
@@ -175,7 +176,14 @@ function EnvironmentManager({
       ? view.data[kind].map((item) =>
           item.id === renaming ? { ...item, name: name.trim() } : item,
         )
-      : [...view.data[kind], { id: crypto.randomUUID(), name: name.trim() }];
+      : [
+          ...view.data[kind],
+          {
+            id: crypto.randomUUID(),
+            name: name.trim(),
+            ...(kind === 'variables' ? { secret } : {}),
+          },
+        ];
     const reply = await act({
       kind: 'save',
       data: { ...view.data, [kind]: entries },
@@ -183,6 +191,7 @@ function EnvironmentManager({
     });
     if (reply) {
       setName('');
+      setSecret(true);
       setRenaming(null);
     }
     return reply;
@@ -286,7 +295,12 @@ function EnvironmentManager({
                 <ul className="definition-list">
                   {view?.data[group].map((item) => (
                     <li key={item.id}>
-                      <span>{item.name}</span>
+                      <span>
+                        {item.name}
+                        {group === 'variables' && (
+                          <small> · {(item.secret ?? true) ? 'Secret' : 'Ordinary value'}</small>
+                        )}
+                      </span>
                       <button
                         aria-label={`Rename ${item.name}`}
                         onClick={() => {
@@ -334,6 +348,16 @@ function EnvironmentManager({
               value={name}
               onChange={(event) => setName(event.target.value)}
             />
+            {kind === 'variables' && !renaming && (
+              <label>
+                <input
+                  type="checkbox"
+                  checked={secret}
+                  onChange={(event) => setSecret(event.target.checked)}
+                />
+                Secret (stored only in this user’s OS credential store)
+              </label>
+            )}
             <button type="submit" className="secondary-button" disabled={!view || !name.trim()}>
               {renaming ? 'Save name' : 'Add definition'}
             </button>

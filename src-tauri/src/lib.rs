@@ -3,6 +3,7 @@ mod history;
 mod http;
 mod imports;
 mod projects;
+mod server;
 
 use http::commands::*;
 use projects::commands::*;
@@ -71,6 +72,26 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            server::server_connection_get,
+            server::server_connection_set,
+            server::server_register,
+            server::server_login,
+            server::server_logout,
+            server::server_projects,
+            server::server_open_project,
+            server::server_project_snapshot,
+            server::server_save_project_snapshot,
+            server::server_sync_project,
+            server::server_upload_local_project,
+            server::server_project_members,
+            server::server_add_project_member,
+            server::server_update_project_member,
+            server::server_remove_project_member,
+            server::server_account,
+            server::server_admin_users,
+            server::server_admin_approve_user,
+            server::server_admin_set_user_status,
+            server::server_create_team_project,
             exports::commands::preview_openapi_export,
             exports::commands::save_openapi_export,
             exports::commands::discard_openapi_export,

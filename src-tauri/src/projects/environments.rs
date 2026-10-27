@@ -17,6 +17,9 @@ const STORE_ERROR: &str = "The OS credential store could not be accessed. Unlock
 pub struct Definition {
     pub id: String,
     pub name: String,
+    /// `None` is the legacy representation and is treated as secret for variables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

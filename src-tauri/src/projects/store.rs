@@ -1,5 +1,5 @@
 use super::model::{validate_id, validate_name, Attachment, Collection, Project, SCHEMA_VERSION};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -30,13 +30,23 @@ pub struct ProjectView {
     pub handle: String,
     pub directory: String,
     pub revision: String,
+    pub read_only: bool,
+    pub server_sync: bool,
     pub data: Project,
     pub collections: Vec<CollectionView>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ServerWorkspaceMarker {
+    pub server_url: String,
+    pub server_project_id: Uuid,
+    pub revision: i64,
+}
+
 #[derive(Default)]
 pub struct ProjectStore {
-    roots: BTreeMap<String, (PathBuf, String)>,
+    roots: BTreeMap<String, (PathBuf, String, bool)>,
 }
 
 fn io<T>(result: std::io::Result<T>) -> Result<T, String> {
@@ -162,6 +172,76 @@ pub(crate) fn replace(
 }
 
 impl ProjectStore {
+    pub fn snapshot(&self, handle: &str) -> Result<(String, String, String), String> {
+        let root = self.root(handle)?;
+        let _lock = lock(&root)?;
+        let view = load(&root, handle)?;
+        let project_id = view.data.id.clone();
+        let name = view.data.name.clone();
+        if view.collections.iter().any(|collection| {
+            collection.data.requests.iter().any(|request| {
+                request.body.file.is_some()
+                    || request.body.fields.iter().any(|field| field.file.is_some())
+            })
+        }) {
+            return Err(
+                "Projects with local file attachments cannot be uploaded to a server yet."
+                    .into(),
+            );
+        }
+        let (environments, _) = super::environments::definitions(&root)?;
+        let value = serde_json::json!({
+            "project": view.data,
+            "collections": view.collections.into_iter().map(|collection| collection.data).collect::<Vec<_>>(),
+            "environments": environments,
+        });
+        let snapshot = serde_json::to_string(&value)
+            .map_err(|_| "Could not serialize the project snapshot.".to_string())?;
+        if snapshot.len() > 32 * 1024 * 1024 {
+            return Err("Project snapshot exceeds the 32 MiB server limit.".into());
+        }
+        Ok((project_id, name, snapshot))
+    }
+
+    pub(crate) fn server_workspace_marker(
+        &self,
+        handle: &str,
+    ) -> Result<ServerWorkspaceMarker, String> {
+        let root = self.ensure_writable(handle)?;
+        let path = root.join(".fluxkit/server-workspace.json");
+        safe(&path, false)?;
+        let marker: ServerWorkspaceMarker = decode(&read(&path)?)?;
+        if marker.revision < 1 || marker.server_project_id.to_string() != load_project(&root)?.0.id {
+            return Err("Server workspace metadata does not match the local project.".into());
+        }
+        Ok(marker)
+    }
+
+    pub(crate) fn update_server_workspace_revision(
+        &self,
+        handle: &str,
+        server_url: &str,
+        project_id: Uuid,
+        revision: i64,
+    ) -> Result<(), String> {
+        let root = self.root(handle)?;
+        let path = root.join(".fluxkit/server-workspace.json");
+        safe(&path, false)?;
+        let current: ServerWorkspaceMarker = decode(&read(&path)?)?;
+        if current.server_url != server_url || current.server_project_id != project_id {
+            return Err("Server workspace metadata changed. Reload the project before syncing.".into());
+        }
+        if revision <= current.revision {
+            return Err("The server returned an invalid project revision.".into());
+        }
+        let bytes = serde_json::to_vec_pretty(&ServerWorkspaceMarker {
+            revision,
+            ..current
+        })
+        .map_err(|_| "Could not update server workspace metadata.".to_string())?;
+        atomic(&path, &bytes, false)
+    }
+
     /// Authorizes the project handle and holds its advisory lock for local value operations.
     pub fn with_environment<T>(
         &self,
@@ -192,31 +272,72 @@ impl ProjectStore {
             auth: None,
         };
         atomic(&root.join(PROJECT_FILE), &encode(&project)?, true)?;
-        self.register(root)
+        self.register(root, false, false)
     }
 
     pub fn open(&mut self, selected: &Path) -> Result<ProjectView, String> {
         // A selected root can itself be a link; authorize its canonical target once.
         let root = io(selected.canonicalize())?;
         let _lock = lock(&root)?;
-        self.register(root)
+        let marker = root.join(".fluxkit/server-cache.json");
+        let workspace_marker = root.join(".fluxkit/server-workspace.json");
+        let read_only = match fs::symlink_metadata(&marker) {
+            Ok(_) => {
+                safe(&marker, false)?;
+                true
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return Err(IO_ERROR.into()),
+        };
+        let server_sync = match fs::symlink_metadata(&workspace_marker) {
+            Ok(_) => {
+                safe(&workspace_marker, false)?;
+                let marker: ServerWorkspaceMarker = decode(&read(&workspace_marker)?)?;
+                if marker.revision < 1 || marker.server_project_id.to_string() != load_project(&root)?.0.id {
+                    return Err("Server workspace metadata does not match the local project.".into());
+                }
+                true
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return Err(IO_ERROR.into()),
+        };
+        self.register(root, read_only || server_sync, server_sync)
     }
 
-    fn register(&mut self, root: PathBuf) -> Result<ProjectView, String> {
+    pub(crate) fn open_server_workspace(
+        &mut self,
+        selected: &Path,
+    ) -> Result<ProjectView, String> {
+        let root = io(selected.canonicalize())?;
+        let _lock = lock(&root)?;
+        let marker = root.join(".fluxkit/server-workspace.json");
+        safe(&marker, false)?;
+        let workspace: ServerWorkspaceMarker = decode(&read(&marker)?)?;
+        if workspace.revision < 1
+            || workspace.server_project_id.to_string() != load_project(&root)?.0.id
+        {
+            return Err("Server workspace metadata does not match the local project.".into());
+        }
+        self.register(root, false, true)
+    }
+
+    fn register(&mut self, root: PathBuf, read_only: bool, server_sync: bool) -> Result<ProjectView, String> {
         let (project, _) = load_project(&root)?;
         let handle = self
             .roots
             .iter()
-            .find(|(_, (path, id))| *path == root && *id == project.id)
+            .find(|(_, (path, id, _))| *path == root && *id == project.id)
             .map(|(id, _)| id.clone())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let view = load(&root, &handle)?;
-        self.roots.insert(handle, (root, project.id));
+        let mut view = load(&root, &handle)?;
+        view.read_only = read_only;
+        view.server_sync = server_sync && !read_only;
+        self.roots.insert(handle, (root, project.id, read_only));
         Ok(view)
     }
 
     fn root(&self, handle: &str) -> Result<PathBuf, String> {
-        let (root, project_id) = self
+        let (root, project_id, _) = self
             .roots
             .get(handle)
             .ok_or("Project is not open. Open it with the folder chooser first.")?;
@@ -229,10 +350,21 @@ impl ProjectStore {
         Ok(root.clone())
     }
 
+    pub fn ensure_writable(&self, handle: &str) -> Result<PathBuf, String> {
+        let root = self.root(handle)?;
+        if self.roots.get(handle).is_some_and(|(_, _, read_only)| *read_only) {
+            return Err("This server project is read-only in the local snapshot.".into());
+        }
+        Ok(root)
+    }
+
     pub fn reload(&self, handle: &str) -> Result<ProjectView, String> {
         let root = self.root(handle)?;
         let _lock = lock(&root)?;
-        load(&root, handle)
+        let mut view = load(&root, handle)?;
+        view.read_only = self.roots.get(handle).is_some_and(|(_, _, read_only)| *read_only);
+        view.server_sync = self.server_workspace_marker(handle).is_ok() && !view.read_only;
+        Ok(view)
     }
 
     pub fn rename(
@@ -242,7 +374,7 @@ impl ProjectStore {
         expected: &str,
     ) -> Result<ProjectView, String> {
         validate_name(&name)?;
-        let root = self.root(handle)?;
+        let root = self.ensure_writable(handle)?;
         let _lock = lock(&root)?;
         let mut view = load(&root, handle)?;
         view.data.name = name;
@@ -263,7 +395,7 @@ impl ProjectStore {
         expected: &str,
     ) -> Result<ProjectView, String> {
         super::model::validate_auth(auth.as_ref())?;
-        let root = self.root(handle)?;
+        let root = self.ensure_writable(handle)?;
         let _lock = lock(&root)?;
         let mut view = load(&root, handle)?;
         view.data.auth = auth;
@@ -284,7 +416,7 @@ impl ProjectStore {
         expected: Option<String>,
     ) -> Result<CollectionView, String> {
         collection.validate()?;
-        let root = self.root(handle)?;
+        let root = self.ensure_writable(handle)?;
         let _lock = lock(&root)?;
         let current = load(&root, handle)?;
         let dir = root.join("collections");
@@ -319,7 +451,7 @@ impl ProjectStore {
 
     pub fn remove_collection(&self, handle: &str, id: &str, expected: &str) -> Result<(), String> {
         validate_id(id)?;
-        let root = self.root(handle)?;
+        let root = self.ensure_writable(handle)?;
         let _lock = lock(&root)?;
         safe(&root.join("collections"), true)?;
         let path = root.join(format!("collections/{id}.json"));
@@ -335,7 +467,7 @@ impl ProjectStore {
     }
 
     pub fn attachment(&self, handle: &str, selected: &Path) -> Result<Attachment, String> {
-        let root = self.root(handle)?;
+        let root = self.ensure_writable(handle)?;
         let _lock = lock(&root)?;
         load_project(&root)?;
         let dir = root.join("attachments");
@@ -412,6 +544,8 @@ pub(crate) fn load(root: &Path, handle: &str) -> Result<ProjectView, String> {
         handle: handle.into(),
         directory: root.to_string_lossy().into(),
         revision: revision(&bytes),
+        read_only: false,
+        server_sync: false,
         data: project,
         collections,
     })

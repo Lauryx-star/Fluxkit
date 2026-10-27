@@ -79,7 +79,21 @@ export function useWorkspace(
     }
     let disposed = false;
     // StrictMode replays effects: reuse the same native restore instead of registering twice.
-    startup.current ??= native.restoreLastProject();
+    startup.current ??= native.restoreLastProject().then(async (view) => {
+      if (!view?.readOnly) {
+        return view;
+      }
+      try {
+        const refreshed = await native.openServerProject(view.data.id);
+        if (refreshed.handle !== view.handle) {
+          await native.closeProject(view.handle);
+        }
+        return refreshed;
+      } catch (reason) {
+        await native.closeProject(view.handle);
+        throw reason;
+      }
+    });
     void startup.current
       .then(
         (view) => {
@@ -250,6 +264,10 @@ export function useWorkspace(
         acceptProject(view);
       }
     });
+  }
+  async function openServerProject(projectId: string) {
+    const view = await native.openServerProject(projectId);
+    acceptProject(view);
   }
   function renameProject() {
     if (!project) {
@@ -823,6 +841,7 @@ export function useWorkspace(
     desktop,
     createProject,
     openProject,
+    openServerProject,
     renameProject,
     reloadProject,
     closeProject,

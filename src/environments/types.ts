@@ -1,6 +1,8 @@
 export interface Definition {
   id: string;
   name: string;
+  /** Missing in legacy files; legacy variables are treated as secrets. */
+  secret?: boolean;
 }
 export interface Definitions {
   schemaVersion: number;

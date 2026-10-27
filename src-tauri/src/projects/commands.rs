@@ -18,6 +18,9 @@ pub async fn environment_action(
         .map_err(|_| "Could not locate local application settings.")?
         .join("environment-selection");
     run(&state, move |store| {
+        if matches!(&action, super::environments::Action::Save { .. } | super::environments::Action::SetValue { .. }) {
+            store.ensure_writable(&handle)?;
+        }
         store.with_environment(&handle, |root, project| {
             super::environments::apply(
                 root,
@@ -207,6 +210,7 @@ pub async fn move_request(
 ) -> Result<Vec<CollectionView>, String> {
     let owner = handle.clone();
     run(&state, move |store| {
+        store.ensure_writable(&handle)?;
         store.with_environment(&handle, |root, _| super::moving::apply(root, &owner, input))
     })
     .await

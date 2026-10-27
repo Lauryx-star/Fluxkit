@@ -5,6 +5,117 @@ export interface AppInfo {
   version: string;
 }
 
+export interface ServerConnection {
+  serverUrl: string;
+  authenticated: boolean;
+}
+
+export interface ServerProject {
+  id: string;
+  name: string;
+  kind: string;
+  revision: number;
+  canManageMembers?: boolean;
+  canEdit?: boolean;
+}
+
+export interface ServerProjectSnapshot extends ServerProject {
+  snapshot: string;
+}
+
+export interface ServerProjectMember {
+  id: string;
+  username: string;
+  role: 'member' | 'projectAdmin';
+}
+
+export interface ServerAccount {
+  id: string;
+  username: string;
+  isServerAdmin: boolean;
+}
+
+export interface ServerAccountAdminView extends ServerAccount {
+  status: 'pending' | 'active' | 'disabled';
+}
+
+export function getServerConnection() {
+  return invoke<ServerConnection>('server_connection_get');
+}
+export function setServerConnection(serverUrl: string) {
+  return invoke<ServerConnection>('server_connection_set', { serverUrl });
+}
+export function registerServerAccount(username: string, password: string) {
+  return invoke<void>('server_register', { username, password });
+}
+export function loginToServer(username: string, password: string) {
+  return invoke<ServerConnection>('server_login', { username, password });
+}
+export function logoutFromServer() {
+  return invoke<ServerConnection>('server_logout');
+}
+export function listServerProjects() {
+  return invoke<ServerProject[]>('server_projects');
+}
+export function getServerProjectSnapshot(projectId: string) {
+  return invoke<ServerProjectSnapshot>('server_project_snapshot', { projectId });
+}
+export function openServerProject(projectId: string) {
+  return invoke<import('./projects/types').ProjectView>('server_open_project', { projectId });
+}
+export function saveServerProjectSnapshot(
+  projectId: string,
+  revision: number,
+  snapshot: string,
+) {
+  return invoke<ServerProjectSnapshot>('server_save_project_snapshot', {
+    projectId,
+    revision,
+    snapshot,
+  });
+}
+export function uploadLocalProjectToServer(handle: string) {
+  return invoke<ServerProjectSnapshot>('server_upload_local_project', { handle });
+}
+export function syncServerProject(handle: string) {
+  return invoke<ServerProjectSnapshot>('server_sync_project', { handle });
+}
+export function listServerProjectMembers(projectId: string) {
+  return invoke<ServerProjectMember[]>('server_project_members', { projectId });
+}
+export function addServerProjectMember(
+  projectId: string,
+  username: string,
+  role: ServerProjectMember['role'],
+) {
+  return invoke<void>('server_add_project_member', { projectId, username, role });
+}
+export function updateServerProjectMember(
+  projectId: string,
+  userId: string,
+  role: ServerProjectMember['role'],
+) {
+  return invoke<void>('server_update_project_member', { projectId, userId, role });
+}
+export function removeServerProjectMember(projectId: string, userId: string) {
+  return invoke<void>('server_remove_project_member', { projectId, userId });
+}
+export function getServerAccount() {
+  return invoke<ServerAccount>('server_account');
+}
+export function listServerAdminUsers() {
+  return invoke<ServerAccountAdminView[]>('server_admin_users');
+}
+export function approveServerUser(userId: string) {
+  return invoke<void>('server_admin_approve_user', { userId });
+}
+export function setServerUserStatus(userId: string, status: 'active' | 'disabled') {
+  return invoke<void>('server_admin_set_user_status', { userId, status });
+}
+export function createServerTeamProject(name: string) {
+  return invoke<ServerProjectSnapshot>('server_create_team_project', { name });
+}
+
 export function isDesktop(): boolean {
   return isTauri();
 }
