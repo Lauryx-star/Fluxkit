@@ -236,6 +236,8 @@ pub fn prepare(
         environment,
         &definitions,
     )?
+    .map(|plan| plan.scoped(root))
+    .transpose()?
     .filter(|plan| !plan.overridden(&url, &headers));
     if url.as_str().len() > 65_536
         || headers
@@ -418,5 +420,6 @@ pub fn token_plan(
         view.selected_environment.as_deref(),
         &view.data,
     )?
-    .ok_or("Choose OAuth2 Client Credentials or Custom Login first.".into())
+    .ok_or_else(|| "Choose OAuth2 Client Credentials or Custom Login first.".to_string())?
+    .scoped(Some(root))
 }

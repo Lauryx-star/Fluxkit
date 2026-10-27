@@ -231,3 +231,21 @@ schema association is not added to the target. Original metadata remains in the 
 collection for recoverability, including orphaned operation associations as allowed by the
 import contract. Postman collection/environment mappings stay with their original collection;
 project variable references in the moved request remain valid.
+
+## Machine-local server workspaces
+
+Server mode does not change the portable project schema. Its app-data cache is scoped by
+verified server URL and account UUID under `server-accounts/<SHA-256>/`. Each cached revision
+has a `.fluxkit/server-cache.json` owner marker; editable workspace generations instead have
+`.fluxkit/server-workspace.json` with `serverUrl`, `accountId`, `serverProjectId` and `revision`.
+An atomic per-project UUID pointer selects the current generation. These markers and pointers
+are machine-local metadata, excluded from project snapshot uploads.
+
+Explicit conflict recovery retains the previous workspace files and adds a
+`.fluxkit/server-recovery` marker. It opens that generation read-only and creates a separate
+current workspace for manual merge/retry. `ProjectView.serverOwned` identifies server data;
+`serverRecovery` identifies retained edits, independently of online status. Recovery copies
+remain identifiable after restart. Native access verifies account ownership even through
+previous handles or the ordinary folder chooser. Legacy server markers without `accountId`
+are preserved but rejected rather than adopted by a different account. See
+[server account isolation and recovery](SELF_HOSTED_BACKEND.md#account-isolation-and-workspace-recovery).

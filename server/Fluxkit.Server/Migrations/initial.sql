@@ -144,3 +144,33 @@ VALUES ('20261026072628_InitialSchema', '10.0.13');
 
 COMMIT;
 
+START TRANSACTION;
+ALTER TABLE "Projects" ADD "SharedValues" jsonb NOT NULL DEFAULT '[]';
+
+ALTER TABLE "Projects" ADD "SharedValuesRevision" bigint NOT NULL DEFAULT 0;
+
+CREATE TABLE "AccountVaults" (
+    "UserId" uuid NOT NULL,
+    "Revision" bigint NOT NULL,
+    "Profile" jsonb NOT NULL,
+    CONSTRAINT "PK_AccountVaults" PRIMARY KEY ("UserId"),
+    CONSTRAINT "FK_AccountVaults_AspNetUsers_UserId" FOREIGN KEY ("UserId") REFERENCES "AspNetUsers" ("Id") ON DELETE CASCADE
+);
+
+CREATE TABLE "ProjectSecrets" (
+    "ProjectId" uuid NOT NULL,
+    "UserId" uuid NOT NULL,
+    "Revision" bigint NOT NULL,
+    "Values" jsonb NOT NULL,
+    CONSTRAINT "PK_ProjectSecrets" PRIMARY KEY ("ProjectId", "UserId"),
+    CONSTRAINT "FK_ProjectSecrets_AspNetUsers_UserId" FOREIGN KEY ("UserId") REFERENCES "AspNetUsers" ("Id") ON DELETE CASCADE,
+    CONSTRAINT "FK_ProjectSecrets_Projects_ProjectId" FOREIGN KEY ("ProjectId") REFERENCES "Projects" ("Id") ON DELETE CASCADE
+);
+
+CREATE INDEX "IX_ProjectSecrets_UserId" ON "ProjectSecrets" ("UserId");
+
+INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+VALUES ('20261027075315_SharedValuesAndAccountVault', '10.0.13');
+
+COMMIT;
+

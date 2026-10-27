@@ -48,9 +48,17 @@ beforeEach(() => {
     return { view: structuredClone(view), value };
   });
 });
-async function open() {
+async function open(serverOwned = false) {
   const user = userEvent.setup();
-  render(<EnvironmentControls handle="project" ask={ask} onDirty={onDirty} onOpen={onOpen} />);
+  render(
+    <EnvironmentControls
+      handle="project"
+      serverOwned={serverOwned}
+      ask={ask}
+      onDirty={onDirty}
+      onOpen={onOpen}
+    />,
+  );
   await waitFor(() => expect(screen.getByLabelText('Project environment')).toBeEnabled());
   await user.click(screen.getByRole('button', { name: 'Variables' }));
   return user;
@@ -172,4 +180,46 @@ it('saves pending definitions and then the edited value with the new revision fo
   );
   expect(view.data.variables.some((variable) => variable.name === 'otherVariable')).toBe(true);
   expect(screen.getByLabelText('Variable value')).toHaveValue('');
+});
+
+it('changes legacy classification only after explicit confirmation and retains the UUID and local values', async () => {
+  values.set('var/null', 'Synthetic local secret');
+  const user = await open();
+  ask.mockResolvedValueOnce(false);
+  await user.click(screen.getByRole('button', { name: 'Mark baseUrl as ordinary' }));
+  expect(view.data.variables[0]!.secret).toBeUndefined();
+  await user.click(screen.getByRole('button', { name: 'Mark baseUrl as ordinary' }));
+  await waitFor(() => expect(view.data.variables[0]!.secret).toBe(false));
+  expect(view.data.variables[0]!.id).toBe('var');
+  expect(values.get('var/null')).toBe('Synthetic local secret');
+  expect(environmentAction).not.toHaveBeenCalledWith(
+    'project',
+    expect.objectContaining({ kind: 'reveal' }),
+  );
+  expect(environmentAction).not.toHaveBeenCalledWith(
+    'project',
+    expect.objectContaining({ kind: 'setValue' }),
+  );
+});
+
+it('submits the loaded shared-value revision and preserves editor input after a conflict', async () => {
+  view.data.variables[0]!.secret = false;
+  view.serverValues = { shared: 7, secrets: 3 };
+  const implementation = vi.mocked(environmentAction).getMockImplementation()!;
+  vi.mocked(environmentAction).mockImplementation(async (handle, action) => {
+    if (action.kind === 'setValue') {
+      throw 'Synchronized values changed. Reload variables before saving.';
+    }
+    return implementation(handle, action);
+  });
+  const user = await open(true);
+  await selectOption(user, screen.getByLabelText('Value variable'), 'var');
+  await user.type(screen.getByLabelText('Variable value'), 'Synthetic shared replacement');
+  await user.click(screen.getByRole('button', { name: 'Save value' }));
+  expect(environmentAction).toHaveBeenLastCalledWith(
+    'project',
+    expect.objectContaining({ kind: 'setValue', expectedValueRevision: 7 }),
+  );
+  expect(await screen.findByRole('alert')).toHaveTextContent('Synchronized values changed');
+  expect(screen.getByLabelText('Variable value')).toHaveValue('Synthetic shared replacement');
 });

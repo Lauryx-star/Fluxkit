@@ -446,8 +446,11 @@ export default function App() {
           </div>
           <div className="workspace-label">YOUR WORKSPACE</div>
           <div className="project-controls">
-            <button className="secondary-button" disabled={!workspace.desktop || busy}
-              onClick={() => setServerConnectionOpen(true)}>
+            <button
+              className="secondary-button"
+              disabled={!workspace.desktop || busy}
+              onClick={() => setServerConnectionOpen(true)}
+            >
               Server connection
             </button>
             <button
@@ -480,6 +483,7 @@ export default function App() {
                   {workspace.projects.map((item) => (
                     <option key={item.handle} value={item.handle}>
                       {item.data.name}
+                      {item.serverRecovery ? ' (Recovery copy)' : ''}
                     </option>
                   ))}
                 </Select>
@@ -617,11 +621,13 @@ export default function App() {
             <span className="tiny-orbit" />
             <div>
               <strong>
-                {project?.readOnly
-                  ? 'Server snapshot.'
-                  : project?.serverSync
-                    ? 'Server workspace.'
-                    : 'Local by design.'}
+                {project?.serverRecovery
+                  ? 'Recovery copy.'
+                  : project?.readOnly
+                    ? 'Server snapshot.'
+                    : project?.serverSync
+                      ? 'Server workspace.'
+                      : 'Local by design.'}
               </strong>
               <p>
                 {project?.readOnly
@@ -656,6 +662,7 @@ export default function App() {
             </div>
             {project ? (
               <EnvironmentControls
+                serverOwned={project?.serverOwned}
                 key={`${project.handle}-${importRefresh[project.handle] ?? 0}`}
                 handle={project.handle}
                 ask={workspace.ask}
@@ -686,7 +693,9 @@ export default function App() {
             )}
             {project?.readOnly && (
               <div className="operation-status" role="status">
-                Read-only server snapshot. Changes are disabled in this workspace.
+                {project.serverRecovery
+                  ? 'Read-only recovery copy. Your saved edits are preserved here. Copy desired changes into the current server workspace before syncing.'
+                  : 'Read-only server snapshot. Changes are disabled in this workspace.'}
               </div>
             )}
             {busy && (
@@ -1181,6 +1190,10 @@ export default function App() {
         )}
         {importDialog && (
           <ImportDialog
+            serverOwned={
+              workspace.projects.find((project) => project.handle === importDialog.handle)
+                ?.serverOwned
+            }
             preview={importDialog.preview}
             projectName={importDialog.projectName}
             busy={importBusy}
@@ -1341,6 +1354,7 @@ export default function App() {
         <ServerConnection
           localProjects={workspace.projects}
           onOpenProject={workspace.openServerProject}
+          onRefreshProject={workspace.refreshServerProject}
           onClose={() => setServerConnectionOpen(false)}
         />
       )}

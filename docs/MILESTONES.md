@@ -173,7 +173,14 @@ Status: in progress; implementation handoff and ordered remaining work are in
 [SELF_HOSTED_BACKEND.md](SELF_HOSTED_BACKEND.md#handoff-status-2026-10-27). The initial
 ASP.NET Core/PostgreSQL server project provides local registration and admin approval, personal
 projects, team project membership, project snapshot revision checks, and per-user encrypted-secret
-envelope storage. See [server setup](../server/README.md).
+envelope storage. The desktop includes account-scoped caches and workspaces, explicit sync,
+atomic server revision replacement, and refresh with a retained recovery copy for manual
+merge/retry. Shared values, explicit local-to-server transfer preview and client-side secret
+encryption with account-key wrapping are implemented; see [SERVER_VALUES.md](SERVER_VALUES.md).
+OIDC browser login, issuer/subject mapping and administrator approval are implemented; see
+[OIDC.md](OIDC.md). Full deployment/platform validation and explicit existing-account linking
+remain open. A reproducible [Keycloak/HTTPS E2E suite](../server/e2e/README.md) validates the
+real browser/provider/API path and native encrypted-value protocol. See [server setup](../server/README.md).
 
 Acceptance criteria:
 

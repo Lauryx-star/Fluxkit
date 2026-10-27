@@ -6,7 +6,7 @@ use super::{
 use crate::history::{self, Candidate, HistoryState};
 use crate::projects::{
     commands::{run, ProjectState},
-    environments::OsValues,
+    environments::{OsValues, ScopedValues},
     model::validate_id,
 };
 use reqwest::Client;
@@ -205,8 +205,9 @@ pub async fn execute_http_request(
         };
         let history_store = history.store();
         let registration = run(&projects, move |store| {
-            store.with_environment(&handle, |_, project| {
-                history_store?.begin(project, Candidate::new(&method, &url), history::now()?)
+            store.with_environment(&handle, |root, project| {
+                let project = crate::projects::store::local_state_id(root, project)?;
+                history_store?.begin(&project, Candidate::new(&method, &url), history::now()?)
             })
         });
         tokio::select! { biased;
@@ -244,6 +245,16 @@ async fn execute(
     cancel: CancellationToken,
     guard: &Guard,
 ) -> Result<ExecutionResult, String> {
+    let value_state = if let Some(scope) = &input.scope {
+        tokio::select! { biased;
+            _ = cancel.cancelled() => return Ok(ExecutionResult::failure(Outcome::Cancelled, "Cancelled before dispatch.")),
+            result = crate::server::values::prepare(app, projects, &scope.handle) => result?,
+        }
+    } else {
+        app.state::<crate::server::values::ValueState>()
+            .inner()
+            .clone()
+    };
     let settings = app
         .path()
         .app_data_dir()
@@ -256,15 +267,17 @@ async fn execute(
     let token = cancel.clone();
     let preparation = run(projects, move |store| {
         let client = client(&client_state)?;
+        let mut values = ScopedValues::for_root(OsValues, None)?;
         let prepared = if let Some(handle) = handle {
             store.with_environment(&handle, |root, project| {
+                values = crate::server::values::adapter(&value_state, root)?;
                 prepare::prepare(
                     &input,
                     Some(root),
                     project,
                     &settings,
                     &client,
-                    &OsValues,
+                    &values,
                     &token,
                 )
             })?
@@ -273,9 +286,9 @@ async fn execute(
                 &input, None, "session", &settings, &client, &OsValues, &token,
             )?
         };
-        Ok((client, prepared))
+        Ok((client, prepared, values))
     });
-    let (client, mut prepared) = tokio::select! { biased;
+    let (client, mut prepared, values) = tokio::select! { biased;
         _ = cancel.cancelled() => return Ok(ExecutionResult::failure(Outcome::Cancelled, "Cancelled before dispatch. No HTTP request was sent.")),
         result = preparation => match result {
             Ok(prepared) => prepared,
@@ -326,7 +339,7 @@ async fn execute(
             .ensure(
                 &plan,
                 &client,
-                Arc::new(OsValues),
+                Arc::new(values),
                 false,
                 &cancel,
                 Duration::from_millis(timeout),
@@ -382,6 +395,16 @@ pub async fn authentication_action(
 ) -> Result<tokens::Status, String> {
     let (cancel, _guard) = state.claim(&id)?;
     let timeout = Duration::from_millis(input.timeout_ms.clamp(1_000, 300_000));
+    let scope_handle = input
+        .scope
+        .as_ref()
+        .ok_or("Open a project before token operations.")?
+        .handle
+        .clone();
+    let value_state = tokio::select! { biased;
+        _ = cancel.cancelled() => return Err(tokens::CANCELLED.into()),
+        result = crate::server::values::prepare(&app, &projects, &scope_handle) => result?,
+    };
     let settings = app
         .path()
         .app_data_dir()
@@ -393,25 +416,28 @@ pub async fn authentication_action(
             .scope
             .as_ref()
             .ok_or("Token acquisition requires an open project.")?;
-        let plan = store.with_environment(&scope.handle, |root, project| {
-            prepare::token_plan(&input, root, project, &settings)
+        let (plan, values) = store.with_environment(&scope.handle, |root, project| {
+            Ok((
+                prepare::token_plan(&input, root, project, &settings)?,
+                crate::server::values::adapter(&value_state, root)?,
+            ))
         })?;
-        Ok((client(&client_state)?, plan))
+        Ok((client(&client_state)?, plan, Arc::new(values)))
     });
-    let (client, plan) = tokio::select! { biased;
+    let (client, plan, values) = tokio::select! { biased;
         _ = cancel.cancelled() => return Err(tokens::CANCELLED.into()),
         result = preparation => result?,
     };
     let operation = async {
         match action {
-            TokenAction::Status => state.tokens.status(&plan, Arc::new(OsValues)).await,
-            TokenAction::Forget => state.tokens.forget(&plan, Arc::new(OsValues)).await,
+            TokenAction::Status => state.tokens.status(&plan, values.clone()).await,
+            TokenAction::Forget => state.tokens.forget(&plan, values.clone()).await,
             TokenAction::Renew => {
                 state
                     .tokens
-                    .ensure(&plan, &client, Arc::new(OsValues), true, &cancel, timeout)
+                    .ensure(&plan, &client, values.clone(), true, &cancel, timeout)
                     .await?;
-                state.tokens.status(&plan, Arc::new(OsValues)).await
+                state.tokens.status(&plan, values.clone()).await
             }
         }
     };
@@ -432,7 +458,7 @@ pub struct AuthenticationTestResult {
 
 enum Inspection {
     Request(Box<prepare::Prepared>),
-    Token(Box<tokens::Plan>),
+    Token(Box<tokens::Plan>, ScopedValues<OsValues>),
 }
 async fn inspect(
     app: &tauri::AppHandle,
@@ -442,6 +468,16 @@ async fn inspect(
     token_only: bool,
     cancel: CancellationToken,
 ) -> Result<(Client, Inspection), String> {
+    let value_state = if let Some(scope) = &input.scope {
+        tokio::select! { biased;
+            _ = cancel.cancelled() => return Err("Inspection cancelled.".into()),
+            result = crate::server::values::prepare(app, projects, &scope.handle) => result?,
+        }
+    } else {
+        app.state::<crate::server::values::ValueState>()
+            .inner()
+            .clone()
+    };
     let settings = app
         .path()
         .app_data_dir()
@@ -453,11 +489,23 @@ async fn inspect(
         let build = |root: Option<&std::path::Path>, project: &str| {
             if token_only {
                 let root = root.ok_or("Open a project before testing token authentication.")?;
-                prepare::token_plan(&input, root, project, &settings)
-                    .map(|plan| Inspection::Token(Box::new(plan)))
+                Ok(Inspection::Token(
+                    Box::new(prepare::token_plan(&input, root, project, &settings)?),
+                    crate::server::values::adapter(&value_state, root)?,
+                ))
             } else {
                 prepare::prepare(
-                    &input, root, project, &settings, &client, &OsValues, &cancel,
+                    &input,
+                    root,
+                    project,
+                    &settings,
+                    &client,
+                    &if let Some(root) = root {
+                        crate::server::values::adapter(&value_state, root)?
+                    } else {
+                        ScopedValues::for_root(OsValues, None)?
+                    },
+                    &cancel,
                 )
                 .map(|prepared| Inspection::Request(Box::new(prepared)))
             }
@@ -532,8 +580,8 @@ pub async fn test_authentication(
         result = preparation => result?,
     };
     match inspection {
-        Inspection::Token(plan) => {
-            tokens::test(*plan, client, Arc::new(OsValues), cancel, timeout).await?;
+        Inspection::Token(plan, values) => {
+            tokens::test(*plan, client, Arc::new(values), cancel, timeout).await?;
             Ok(AuthenticationTestResult { success: true, status: None,
                 message: "Login succeeded and a usable token was extracted. The test token was discarded; settings and stored tokens were not changed.".into() })
         }

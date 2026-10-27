@@ -20,6 +20,8 @@ public sealed class ProjectRecord
     public string Kind { get; set; } = "personal";
     public string Snapshot { get; set; } = "{}";
     public long Revision { get; set; } = 1;
+    public string SharedValues { get; set; } = "[]";
+    public long SharedValuesRevision { get; set; }
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
@@ -46,9 +48,25 @@ public sealed class EncryptedSecretRecord
     public string KdfParameters { get; set; } = "";
 }
 
+public sealed class AccountVault
+{
+    public Guid UserId { get; set; }
+    public long Revision { get; set; } = 1;
+    public string Profile { get; set; } = "{}";
+}
+public sealed class ProjectSecrets
+{
+    public Guid ProjectId { get; set; }
+    public Guid UserId { get; set; }
+    public long Revision { get; set; } = 1;
+    public string Values { get; set; } = "[]";
+}
+
 public sealed class FluxkitDb(DbContextOptions<FluxkitDb> options)
     : IdentityDbContext<FluxkitUser, IdentityRole<Guid>, Guid>(options)
 {
+    public DbSet<AccountVault> AccountVaults => Set<AccountVault>();
+    public DbSet<ProjectSecrets> ProjectSecrets => Set<ProjectSecrets>();
     public DbSet<ProjectRecord> Projects => Set<ProjectRecord>();
     public DbSet<ProjectMembership> Memberships => Set<ProjectMembership>();
     public DbSet<EncryptedSecretRecord> EncryptedSecrets => Set<EncryptedSecretRecord>();
@@ -62,8 +80,24 @@ public sealed class FluxkitDb(DbContextOptions<FluxkitDb> options)
             entity.HasKey(project => project.Id);
             entity.Property(project => project.Name).HasMaxLength(200).IsRequired();
             entity.Property(project => project.Kind).HasMaxLength(16).IsRequired();
+            entity.Property(project => project.SharedValues).HasColumnType("jsonb").HasDefaultValue("[]");
             entity.Property(project => project.Snapshot).HasColumnType("jsonb").IsRequired();
             entity.HasIndex(project => project.OwnerId);
+        });
+        builder.Entity<AccountVault>(entity =>
+        {
+            entity.HasKey(vault => vault.UserId);
+            entity.Property(vault => vault.Profile).HasColumnType("jsonb");
+            entity.Property(vault => vault.Revision).IsConcurrencyToken();
+            entity.HasOne<FluxkitUser>().WithMany().HasForeignKey(vault => vault.UserId).OnDelete(DeleteBehavior.Cascade);
+        });
+        builder.Entity<ProjectSecrets>(entity =>
+        {
+            entity.HasKey(values => new { values.ProjectId, values.UserId });
+            entity.Property(values => values.Values).HasColumnType("jsonb");
+            entity.Property(values => values.Revision).IsConcurrencyToken();
+            entity.HasOne<ProjectRecord>().WithMany().HasForeignKey(values => values.ProjectId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<FluxkitUser>().WithMany().HasForeignKey(values => values.UserId).OnDelete(DeleteBehavior.Cascade);
         });
         builder.Entity<ProjectMembership>(entity =>
         {
@@ -114,7 +148,8 @@ public sealed class FluxkitDbFactory : IDesignTimeDbContextFactory<FluxkitDb>
 public sealed record RegisterInput(string Username, string Password);
 public sealed record LoginInput(string Username, string Password);
 public sealed record TakeoverInput(
-    string Name, string Kind, string Snapshot, List<SecretEnvelope> EncryptedSecrets);
+    string Name, string Kind, string Snapshot, List<SecretEnvelope> EncryptedSecrets,
+    List<SharedValue>? SharedValues = null, List<CipherValue>? VaultValues = null);
 public sealed record UpdateProjectInput(string Snapshot);
 public sealed record CreateTeamProjectInput(string Name);
 public sealed record MembershipInput(string Username, string Role);

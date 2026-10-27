@@ -30,6 +30,9 @@ fn app_info() -> AppInfo {
 pub fn run() {
     let application = tauri::Builder::default()
         .manage(ProjectState::default())
+        .manage(server::oidc::OidcState::default())
+        .manage(server::values::ValueState::default())
+        .manage(server::transfer::TransferState::default())
         .manage(HttpState::default())
         .manage(imports::commands::ImportState::default())
         .manage(exports::commands::ExportState::default())
@@ -72,17 +75,25 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            server::values::server_vault_action,
             server::server_connection_get,
             server::server_connection_set,
             server::server_register,
             server::server_login,
+            server::oidc::server_auth_mode,
+            server::oidc::server_oidc_login,
+            server::oidc::server_oidc_cancel,
             server::server_logout,
             server::server_projects,
             server::server_open_project,
             server::server_project_snapshot,
             server::server_save_project_snapshot,
             server::server_sync_project,
-            server::server_upload_local_project,
+            server::server_refresh_project,
+            server::transfer::server_preview_transfer,
+            server::transfer::server_prepare_transfer,
+            server::transfer::server_commit_transfer,
+            server::transfer::server_discard_transfer,
             server::server_project_members,
             server::server_add_project_member,
             server::server_update_project_member,

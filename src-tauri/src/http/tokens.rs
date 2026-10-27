@@ -41,6 +41,17 @@ pub struct Plan {
     placement: TokenPlacement,
 }
 impl Plan {
+    pub fn scoped(mut self, root: Option<&std::path::Path>) -> Result<Self, String> {
+        if let Some(identity) = root
+            .map(crate::projects::store::server_owner)
+            .transpose()?
+            .flatten()
+        {
+            self.key = format!("server/{}/{}", identity.namespace(), self.key);
+        }
+        Ok(self)
+    }
+
     pub fn new(
         auth: Option<&Auth>,
         owner: &str,

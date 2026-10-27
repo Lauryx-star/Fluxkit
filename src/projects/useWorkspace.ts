@@ -80,7 +80,7 @@ export function useWorkspace(
     let disposed = false;
     // StrictMode replays effects: reuse the same native restore instead of registering twice.
     startup.current ??= native.restoreLastProject().then(async (view) => {
-      if (!view?.readOnly) {
+      if (!view?.readOnly || view.serverRecovery) {
         return view;
       }
       try {
@@ -268,6 +268,31 @@ export function useWorkspace(
   async function openServerProject(projectId: string) {
     const view = await native.openServerProject(projectId);
     acceptProject(view);
+  }
+  async function refreshServerProject(handle: string) {
+    if (
+      busy ||
+      additionalBusy ||
+      additionalChanges ||
+      drafts.some((item) => item.projectHandle === handle && isDirty(item))
+    ) {
+      throw new Error(
+        'Save or close unsaved editors before loading the server version. Your changes remain open.',
+      );
+    }
+    setBusy(true);
+    try {
+      const result = await native.refreshServerProject(handle);
+      setProjects((items) => [
+        ...items.filter((item) => item.handle !== result.recovery.handle),
+        result.recovery,
+        result.workspace,
+      ]);
+      setActiveHandle(result.workspace.handle);
+      setActiveId(null);
+    } finally {
+      setBusy(false);
+    }
   }
   function renameProject() {
     if (!project) {
@@ -842,6 +867,7 @@ export function useWorkspace(
     createProject,
     openProject,
     openServerProject,
+    refreshServerProject,
     renameProject,
     reloadProject,
     closeProject,

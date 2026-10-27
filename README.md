@@ -64,8 +64,9 @@ are supported; external references are blocked without network access. See
 An initial self-hosted server foundation is available under [server/](server/README.md):
 ASP.NET Core with PostgreSQL, local account registration and admin approval, personal/team
 project access, revision-checked project snapshots, and per-user encrypted-secret envelopes.
-It is not yet connected to the desktop client. OIDC, local-to-server migration, offline
-snapshot handling, and end-to-end server mode remain in progress; see
+The desktop includes account-scoped server workspaces, explicit sync and offline snapshots.
+Shared values, explicit transfer preview and client-encrypted personal secrets are implemented.
+Local and OIDC login modes are available; full deployment/platform validation remains open. See
 [the server architecture and API notes](docs/SELF_HOSTED_BACKEND.md).
 
 Only OpenAPI server URLs and authentication create project variables, with readable names
@@ -136,6 +137,11 @@ portable attachments, recovery copies, filesystem boundaries, and HTTP exchanges
 controlled local servers (including redirects, failures, upload, and streamed downloads).
 Rust HTTP tests require permission to bind loopback ports.
 
+Run `npm run test:server:e2e` for the isolated Keycloak/HTTPS browser and native-protocol
+suite. It builds disposable containers, validates approval/access/revisions and encrypted values,
+and cleans up without host trust changes. See [the E2E guide](server/e2e/README.md) for prerequisites
+and exact coverage.
+
 Build the host desktop executable, including the frontend:
 
 ```sh
@@ -161,8 +167,13 @@ An initial ASP.NET Core and PostgreSQL backend foundation is in `server/`. To co
 Docker Compose, copy `server/.env.example` to `server/.env`, replace all placeholder values,
 and follow [the server setup guide](server/README.md). The desktop client can configure a server,
 register/sign in to local accounts, upload a saved local project copy, and open server snapshots
-in read-only mode with offline cache fallback. Online editing and ongoing sync are still in
-progress. See [the backend scope and remaining work](docs/SELF_HOSTED_BACKEND.md).
+with offline cache fallback. Authorized online workspaces support editing and explicit sync.
+After a conflict, **Load server version** retains saved edits in a read-only recovery copy for
+manual merge and retry. Close server projects before switching accounts or signing out.
+Use [shared values, transfer preview and the encrypted vault](docs/SERVER_VALUES.md) to
+choose which values to synchronize. [OIDC setup](docs/OIDC.md) supports browser sign-in as an
+alternative to local accounts. Full deployment/platform validation remains open.
+See [the backend scope and remaining work](docs/SELF_HOSTED_BACKEND.md).
 
 Native project commands accept session handles issued by the folder chooser or validated
 last-project restoration; the frontend

@@ -6,3 +6,7 @@ server/**/bin
 server/**/obj
 server/.dotnet-home
 server/.tools
+
+.env
+**/.env
+server/e2e/node_modules

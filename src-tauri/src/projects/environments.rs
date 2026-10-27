@@ -95,6 +95,8 @@ pub struct View {
     pub data: Definitions,
     pub selected_environment: Option<String>,
     pub selection_missing: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_values: Option<crate::server::values::ValueRevisions>,
 }
 
 /// Only this adapter accesses platform credentials. Errors never include provider details or values.
@@ -129,6 +131,68 @@ impl Values for OsValues {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(_) => Err(STORE_ERROR.into()),
         }
+    }
+}
+/// Server accounts get an independent OS-store namespace, including acquired tokens.
+/// Local projects retain their existing keys; no values are migrated implicitly.
+pub struct ScopedValues<V> {
+    source: V,
+    namespace: Option<String>,
+    remote: Option<crate::server::values::ValueAccess>,
+}
+impl<V> ScopedValues<V> {
+    pub fn for_root(source: V, root: Option<&Path>) -> Result<Self, String> {
+        let namespace = root
+            .map(store::server_owner)
+            .transpose()?
+            .flatten()
+            .map(|identity| identity.namespace());
+        Ok(Self {
+            source,
+            namespace,
+            remote: None,
+        })
+    }
+    pub fn with_remote(mut self, remote: crate::server::values::ValueAccess) -> Self {
+        self.remote = Some(remote);
+        self
+    }
+    fn remote_variable(&self, key: &str) -> bool {
+        self.namespace.is_some() && key.split('/').count() == 3
+    }
+    fn scoped_key(&self, key: &str) -> String {
+        match &self.namespace {
+            Some(namespace) => format!("server/{namespace}/{key}"),
+            None => key.to_string(),
+        }
+    }
+}
+impl<V: Values> Values for ScopedValues<V> {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        if self.remote_variable(key) {
+            return self
+                .remote
+                .as_ref()
+                .ok_or("Load synchronized server values first.")?
+                .get(key);
+        }
+        self.source.get(&self.scoped_key(key))
+    }
+    fn set(&self, key: &str, value: &str) -> Result<(), String> {
+        if self.remote_variable(key) {
+            return Err("Server values must be saved through their authorized server API. Import definitions only, then configure values.".into());
+        }
+        self.source.set(&self.scoped_key(key), value)
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        if self.remote_variable(key) {
+            return self
+                .remote
+                .as_ref()
+                .ok_or("Load synchronized values first.")?
+                .check_removal(key);
+        }
+        self.source.delete(&self.scoped_key(key))
     }
 }
 /// The tuple is an implicit value reference, independent of display names and file paths.
@@ -199,13 +263,14 @@ fn write_selection(
 }
 pub fn load(root: &Path, settings: &Path, project: &str) -> Result<View, String> {
     let (data, revision) = definitions(root)?;
-    let saved = selected(settings, project)?;
+    let saved = selected(settings, &store::local_state_id(root, project)?)?;
     let selection_missing = data.environment(saved.as_deref()).is_err();
     Ok(View {
         revision,
         data,
         selected_environment: if selection_missing { None } else { saved },
         selection_missing,
+        server_values: None,
     })
 }
 
@@ -225,6 +290,8 @@ pub enum Action {
         environment: Option<String>,
         value: Option<String>,
         expected: String,
+        #[serde(default)]
+        expected_value_revision: Option<i64>,
     },
     Reveal {
         variable: String,
@@ -261,11 +328,32 @@ pub fn apply(
         Action::Load => {}
         Action::Select { environment } => {
             current.environment(environment.as_deref())?;
-            write_selection(settings, project, environment.as_deref())?;
+            write_selection(
+                settings,
+                &store::local_state_id(root, project)?,
+                environment.as_deref(),
+            )?;
         }
         Action::Save { data, expected } => {
             data.validate()?;
             check_revision(&revision, &expected)?;
+            if store::server_owner(root)?.is_some() {
+                for variable in &current.variables {
+                    if data.variables.iter().any(|new| {
+                        new.id == variable.id
+                            && new.secret.unwrap_or(true) != variable.secret.unwrap_or(true)
+                    }) {
+                        for environment in std::iter::once(None).chain(
+                            current
+                                .environments
+                                .iter()
+                                .map(|environment| Some(environment.id.as_str())),
+                        ) {
+                            values.delete(&key(project, &variable.id, environment))?;
+                        }
+                    }
+                }
+            }
             let removing = current
                 .variables
                 .iter()
@@ -292,16 +380,16 @@ pub fn apply(
                     let removed_environment =
                         environment.is_some_and(|id| !data.environments.iter().any(|e| e.id == id));
                     if removed_variable || removed_environment {
-                        values.delete(&key(project, &variable.id, environment)).map_err(|_| "Could not finish deleting OS values. Definitions were kept; some values may already be removed. Unlock the credential store and retry the removal.".to_string())?;
+                        values.delete(&key(project, &variable.id, environment)).map_err(|error| if store::server_owner(root).ok().flatten().is_some() { error } else { "Could not finish deleting OS values. Definitions were kept; some values may already be removed. Unlock the credential store and retry the removal.".to_string() })?;
                     }
                 }
             }
             let write_result = (|| {
-                if selected(settings, project)?
+                if selected(settings, &store::local_state_id(root, project)?)?
                     .as_deref()
                     .is_some_and(|id| !data.environments.iter().any(|e| e.id == id))
                 {
-                    write_selection(settings, project, None)?;
+                    write_selection(settings, &store::local_state_id(root, project)?, None)?;
                 }
                 let path = root.join(FILE);
                 if revision == "missing" {
@@ -310,7 +398,7 @@ pub fn apply(
                     store::replace(root, &path, &expected, &bytes, "environments.json")
                 }
             })();
-            if removing {
+            if removing && store::server_owner(root)?.is_none() {
                 write_result.map_err(|_| "Definitions could not be saved after OS value deletion. Associated values may already be removed. Reload environments and retry the removal; deleted values cannot be restored from backups.".to_string())?;
             } else {
                 write_result?;
@@ -321,6 +409,7 @@ pub fn apply(
             environment,
             value,
             expected,
+            expected_value_revision: _,
         } => {
             check_revision(&revision, &expected)?;
             current.slot(&variable, environment.as_deref())?;

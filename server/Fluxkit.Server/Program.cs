@@ -10,8 +10,15 @@ using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
 var mode = builder.Configuration["Auth:Mode"] ?? "local";
-if (!string.Equals(mode, "local", StringComparison.OrdinalIgnoreCase))
-    throw new InvalidOperationException("Only local account mode is implemented in this server build.");
+mode = mode.ToLowerInvariant();
+if (mode is not ("local" or "oidc"))
+{
+    throw new InvalidOperationException("Auth:Mode must be local or oidc.");
+}
+if (mode == "oidc")
+{
+    OidcLogin.Configure(builder);
+}
 
 var connection = builder.Configuration.GetConnectionString("Database")
     ?? throw new InvalidOperationException("ConnectionStrings:Database must be configured.");
@@ -25,11 +32,11 @@ if (IsExampleSecret(signingSecret))
 var signingBytes = Encoding.UTF8.GetBytes(signingSecret);
 if (signingBytes.Length < 32)
     throw new InvalidOperationException("Auth:SigningKey must be at least 32 bytes.");
-if (string.IsNullOrWhiteSpace(builder.Configuration["Bootstrap:AdminUsername"])
-    || string.IsNullOrWhiteSpace(builder.Configuration["Bootstrap:AdminPassword"]))
+if (mode == "local" && (string.IsNullOrWhiteSpace(builder.Configuration["Bootstrap:AdminUsername"])
+    || string.IsNullOrWhiteSpace(builder.Configuration["Bootstrap:AdminPassword"])))
     throw new InvalidOperationException("Bootstrap administrator username and password are required for initial setup.");
-if (IsExampleSecret(builder.Configuration["Bootstrap:AdminUsername"]!)
-    || IsExampleSecret(builder.Configuration["Bootstrap:AdminPassword"]!))
+if (mode == "local" && (IsExampleSecret(builder.Configuration["Bootstrap:AdminUsername"]!)
+    || IsExampleSecret(builder.Configuration["Bootstrap:AdminPassword"]!)))
     throw new InvalidOperationException("Replace the example administrator credentials before starting the server.");
 var signingKey = new SymmetricSecurityKey(signingBytes);
 
@@ -70,7 +77,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             OnTokenValidated = async context =>
             {
                 var subject = context.Principal?.FindFirstValue(JwtRegisteredClaimNames.Sub);
-                if (!Guid.TryParse(subject, out var id))
+                if (context.Principal?.FindFirstValue("auth_mode") != mode || !Guid.TryParse(subject, out var id))
                 {
                     context.Fail("Invalid account token.");
                     return;
@@ -94,62 +101,60 @@ builder.Services.AddRateLimiter(options => options.AddPolicy("auth", context =>
             AutoReplenishment = true
         })));
 
+builder.Services.AddRateLimiter(options => options.AddPolicy("oidc-poll", context =>
+    RateLimitPartition.GetFixedWindowLimiter(context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 120, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 })));
 var app = builder.Build();
 app.UseExceptionHandler();
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
+ValueEndpoints.Map(app);
 app.MapGet("/health/ready", async (FluxkitDb db, CancellationToken cancellationToken) =>
 {
     await db.Database.CanConnectAsync(cancellationToken);
     return Results.Ok(new { status = "ready" });
 });
 
-app.MapPost("/api/auth/register", async (
-    RegisterInput input, UserManager<FluxkitUser> users, CancellationToken cancellationToken) =>
+app.MapGet("/api/auth/mode", () => Results.Ok(new { mode })).AllowAnonymous();
+if (mode == "local")
 {
-    if (input is null || string.IsNullOrWhiteSpace(input.Username) || input.Password is null)
-        return Results.BadRequest();
-    var username = input.Username.Trim();
-    if (username.Length is < 3 or > 64 || username.Any(char.IsControl)
-        || input.Password.Length is < 12 or > 256)
-        return Results.ValidationProblem(new Dictionary<string, string[]>
-        {
-            ["credentials"] = ["Choose a username of 3 to 64 characters and a password of at least 12 characters."]
-        });
-    var user = new FluxkitUser { Id = Guid.NewGuid(), UserName = username, Status = "pending" };
-    var created = await users.CreateAsync(user, input.Password);
-    if (!created.Succeeded)
-        return Results.Conflict(new { error = "Account could not be created. The username may already be in use." });
-    return Results.Accepted(value: new { status = "pendingApproval" });
-}).AllowAnonymous().RequireRateLimiting("auth");
-
-app.MapPost("/api/auth/login", async (
-    LoginInput input, UserManager<FluxkitUser> users, SignInManager<FluxkitUser> signIn,
-    IConfiguration configuration) =>
-{
-    if (input is null || string.IsNullOrWhiteSpace(input.Username) || input.Password is null)
-        return Results.Unauthorized();
-    var user = await users.FindByNameAsync(input.Username.Trim());
-    if (user is null || user.Status != "active")
-        return Results.Unauthorized();
-    var result = await signIn.CheckPasswordSignInAsync(user, input.Password, lockoutOnFailure: true);
-    if (!result.Succeeded)
-        return Results.Unauthorized();
-    var issuer = configuration["Auth:Issuer"] ?? "fluxkit-self-hosted";
-    var audience = configuration["Auth:Audience"] ?? "fluxkit-desktop";
-    var claims = new List<Claim>
+    app.MapPost("/api/auth/register", async (
+        RegisterInput input, UserManager<FluxkitUser> users, CancellationToken cancellationToken) =>
     {
-        new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
-        new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-        new(ClaimTypes.Name, user.UserName ?? "")
-    };
-    if (user.IsServerAdmin) claims.Add(new Claim("role", "serverAdmin"));
-    var credentials = new SigningCredentials(signingKey, SecurityAlgorithms.HmacSha256);
-    var token = new JwtSecurityToken(issuer, audience, claims,
-        notBefore: DateTime.UtcNow, expires: DateTime.UtcNow.AddHours(8), signingCredentials: credentials);
-    return Results.Ok(new { accessToken = new JwtSecurityTokenHandler().WriteToken(token), expiresIn = 28800 });
-}).AllowAnonymous().RequireRateLimiting("auth");
+        if (input is null || string.IsNullOrWhiteSpace(input.Username) || input.Password is null)
+            return Results.BadRequest();
+        var username = input.Username.Trim();
+        if (username.Length is < 3 or > 64 || username.Any(char.IsControl)
+            || input.Password.Length is < 12 or > 256)
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["credentials"] = ["Choose a username of 3 to 64 characters and a password of at least 12 characters."]
+            });
+        var user = new FluxkitUser { Id = Guid.NewGuid(), UserName = username, Status = "pending" };
+        var created = await users.CreateAsync(user, input.Password);
+        if (!created.Succeeded)
+            return Results.Conflict(new { error = "Account could not be created. The username may already be in use." });
+        return Results.Accepted(value: new { status = "pendingApproval" });
+    }).AllowAnonymous().RequireRateLimiting("auth");
+
+    app.MapPost("/api/auth/login", async (
+        LoginInput input, UserManager<FluxkitUser> users, SignInManager<FluxkitUser> signIn,
+        IConfiguration configuration) =>
+    {
+        if (input is null || string.IsNullOrWhiteSpace(input.Username) || input.Password is null)
+            return Results.Unauthorized();
+        var user = await users.FindByNameAsync(input.Username.Trim());
+        if (user is null || user.Status != "active")
+            return Results.Unauthorized();
+        var result = await signIn.CheckPasswordSignInAsync(user, input.Password, lockoutOnFailure: true);
+        if (!result.Succeeded)
+            return Results.Unauthorized();
+        return Results.Ok(AuthTokens.Create(user, configuration));
+    }).AllowAnonymous().RequireRateLimiting("auth");
+
+}
+else { OidcLogin.Map(app); }
 
 app.MapGet("/api/account", async (ClaimsPrincipal principal, FluxkitDb db, CancellationToken ct) =>
 {
@@ -187,7 +192,7 @@ app.MapPost("/api/admin/users/{id:guid}/approve", async (
     if (user.Status != "pending") return Results.Conflict(new { error = "Only pending accounts can be approved." });
     user.Status = "active";
     if (!await db.Projects.AnyAsync(project => project.OwnerId == id && project.Kind == "personal", ct))
-        db.Projects.Add(CreatePersonalProject(id, user.UserName ?? "User"));
+        db.Projects.Add(AuthTokens.CreatePersonalProject(id, user.UserName ?? "User"));
     await db.SaveChangesAsync(ct);
     return Results.NoContent();
 }).RequireAuthorization(policy => policy.RequireRole("serverAdmin"));
@@ -364,7 +369,21 @@ app.MapPost("/api/projects/{id:guid}/takeover", async (
         Revision = 1
     };
     if (project.Name.Length is < 1 or > 200) return Results.BadRequest();
+    var shared = input.SharedValues ?? [];
+    var encrypted = input.VaultValues ?? [];
+    if (!ValueEndpoints.ValidShared(input.Snapshot, shared)
+        || !ValueEndpoints.ValidSecrets(input.Snapshot, encrypted)
+        || (encrypted.Count > 0 && !await db.AccountVaults.AnyAsync(vault => vault.UserId == userId, ct)))
+    {
+        return Results.BadRequest(new { error = "Invalid value transfer. Secrets require a configured account vault." });
+    }
+    project.SharedValues = ValueEndpoints.Encode(shared);
+    project.SharedValuesRevision = shared.Count == 0 ? 0 : 1;
     db.Projects.Add(project);
+    if (encrypted.Count > 0)
+    {
+        db.ProjectSecrets.Add(new ProjectSecrets { ProjectId = id, UserId = userId, Values = ValueEndpoints.Encode(encrypted) });
+    }
     if (project.Kind == "team")
         db.Memberships.Add(new ProjectMembership { ProjectId = id, UserId = userId, Role = "projectAdmin" });
     foreach (var secret in input.EncryptedSecrets)
@@ -389,11 +408,23 @@ app.MapPut("/api/projects/{id:guid}", async (
     if (input is null || input.Snapshot is null) return Results.BadRequest();
     if (Encoding.UTF8.GetByteCount(input.Snapshot) > 32 * 1024 * 1024
         || !TryReadSnapshot(input.Snapshot, id, out var snapshotName)) return Results.BadRequest();
+    var expectedRevision = project.Revision;
+    var updatedAt = DateTimeOffset.UtcNow;
+    // Compare and replace in one database statement, including competing requests that
+    // passed the HTTP precondition check before either of them committed.
+    var changed = await db.Projects
+        .Where(candidate => candidate.Id == id && candidate.Revision == expectedRevision)
+        .ExecuteUpdateAsync(update => update
+            .SetProperty(candidate => candidate.Snapshot, input.Snapshot)
+            .SetProperty(candidate => candidate.Name, snapshotName)
+            .SetProperty(candidate => candidate.Revision, expectedRevision + 1)
+            .SetProperty(candidate => candidate.UpdatedAt, updatedAt), ct);
+    if (changed == 0)
+        return Results.Conflict(new { error = "Project changed on the server. Reload before saving." });
     project.Snapshot = input.Snapshot;
     project.Name = snapshotName;
-    project.Revision++;
-    project.UpdatedAt = DateTimeOffset.UtcNow;
-    await db.SaveChangesAsync(ct);
+    project.Revision = expectedRevision + 1;
+    project.UpdatedAt = updatedAt;
     response.Headers.ETag = $"\"{project.Revision}\"";
     return Results.Ok(ToView(project));
 }).RequireAuthorization();
@@ -452,7 +483,7 @@ await using (var scope = app.Services.CreateAsyncScope())
     var config = scope.ServiceProvider.GetRequiredService<IConfiguration>();
     var adminName = config["Bootstrap:AdminUsername"];
     var adminPassword = config["Bootstrap:AdminPassword"];
-    if (!string.IsNullOrWhiteSpace(adminName) && !string.IsNullOrWhiteSpace(adminPassword))
+    if (mode == "local" && !string.IsNullOrWhiteSpace(adminName) && !string.IsNullOrWhiteSpace(adminPassword))
     {
         var users = scope.ServiceProvider.GetRequiredService<UserManager<FluxkitUser>>();
         var admin = await users.FindByNameAsync(adminName);
@@ -461,7 +492,7 @@ await using (var scope = app.Services.CreateAsyncScope())
             admin = new FluxkitUser { Id = Guid.NewGuid(), UserName = adminName, Status = "active", IsServerAdmin = true };
             var result = await users.CreateAsync(admin, adminPassword);
             if (!result.Succeeded) throw new InvalidOperationException("Bootstrap administrator could not be created.");
-            db.Projects.Add(CreatePersonalProject(admin.Id, adminName));
+            db.Projects.Add(AuthTokens.CreatePersonalProject(admin.Id, adminName));
             await db.SaveChangesAsync();
         }
         else if (!admin.IsServerAdmin || admin.Status != "active")
@@ -545,18 +576,6 @@ static bool TryReadSnapshot(string snapshot, Guid projectId, out string name)
     }
 }
 
-static ProjectRecord CreatePersonalProject(Guid ownerId, string username)
-{
-    var id = Guid.NewGuid();
-    var name = $"{username}'s personal project";
-    var snapshot = System.Text.Json.JsonSerializer.Serialize(new
-    {
-        project = new { schemaVersion = 1, id, name },
-        collections = Array.Empty<object>(),
-        environments = new { schemaVersion = 1, environments = Array.Empty<object>(), variables = Array.Empty<object>() }
-    });
-    return new ProjectRecord { Id = id, OwnerId = ownerId, Name = name, Kind = "personal", Snapshot = snapshot };
-}
 
 static bool ValidEnvelope(SecretEnvelope value) =>
     value is not null && value.EnvironmentId is not null && value.Salt is not null

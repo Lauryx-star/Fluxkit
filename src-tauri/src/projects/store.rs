@@ -32,6 +32,8 @@ pub struct ProjectView {
     pub revision: String,
     pub read_only: bool,
     pub server_sync: bool,
+    pub server_owned: bool,
+    pub server_recovery: bool,
     pub data: Project,
     pub collections: Vec<CollectionView>,
 }
@@ -40,6 +42,8 @@ pub struct ProjectView {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ServerWorkspaceMarker {
     pub server_url: String,
+    #[serde(default)]
+    pub account_id: Option<Uuid>,
     pub server_project_id: Uuid,
     pub revision: i64,
 }
@@ -47,6 +51,8 @@ pub(crate) struct ServerWorkspaceMarker {
 #[derive(Default)]
 pub struct ProjectStore {
     roots: BTreeMap<String, (PathBuf, String, bool)>,
+    server_identity: Option<crate::server::ServerIdentity>,
+    server_identity_loaded: bool,
 }
 
 fn io<T>(result: std::io::Result<T>) -> Result<T, String> {
@@ -171,7 +177,54 @@ pub(crate) fn replace(
     atomic(path, bytes, false)
 }
 
+pub(crate) fn server_owner(root: &Path) -> Result<Option<crate::server::ServerIdentity>, String> {
+    for name in ["server-workspace.json", "server-cache.json"] {
+        let path = root.join(".fluxkit").join(name);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                safe(&path, false)?;
+                let marker: crate::server::ServerCacheMarker = decode(&read(&path)?)?;
+                let account_id = marker.account_id.ok_or("This legacy server cache has no account owner. Sign in and reopen it from Server connection. Its files were preserved.")?;
+                return Ok(Some(crate::server::ServerIdentity {
+                    server_url: marker.server_url,
+                    account_id,
+                }));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(IO_ERROR.into()),
+        }
+    }
+    Ok(None)
+}
+
+/// Local history and environment selection are independent for each server account.
+pub(crate) fn local_state_id(root: &Path, project: &str) -> Result<String, String> {
+    match server_owner(root)? {
+        Some(identity) => {
+            let digest = Sha256::digest(format!("{}/{project}", identity.namespace()));
+            let mut bytes = [0; 16];
+            bytes.copy_from_slice(&digest[..16]);
+            Ok(Uuid::from_bytes(bytes).to_string())
+        }
+        None => Ok(project.to_string()),
+    }
+}
+
 impl ProjectStore {
+    pub(crate) fn set_server_identity(&mut self, identity: Option<crate::server::ServerIdentity>) {
+        self.server_identity = identity;
+        self.server_identity_loaded = true;
+    }
+    pub(crate) fn require_server_identity(
+        &self,
+        identity: &crate::server::ServerIdentity,
+    ) -> Result<(), String> {
+        if self.server_identity.as_ref() != Some(identity) {
+            return Err("This server project belongs to another account or session. Sign in with its account and reopen it.".into());
+        }
+        Ok(())
+    }
+
     pub fn snapshot(&self, handle: &str) -> Result<(String, String, String), String> {
         let root = self.root(handle)?;
         let _lock = lock(&root)?;
@@ -185,8 +238,7 @@ impl ProjectStore {
             })
         }) {
             return Err(
-                "Projects with local file attachments cannot be uploaded to a server yet."
-                    .into(),
+                "Projects with local file attachments cannot be uploaded to a server yet.".into(),
             );
         }
         let (environments, _) = super::environments::definitions(&root)?;
@@ -211,7 +263,8 @@ impl ProjectStore {
         let path = root.join(".fluxkit/server-workspace.json");
         safe(&path, false)?;
         let marker: ServerWorkspaceMarker = decode(&read(&path)?)?;
-        if marker.revision < 1 || marker.server_project_id.to_string() != load_project(&root)?.0.id {
+        if marker.revision < 1 || marker.server_project_id.to_string() != load_project(&root)?.0.id
+        {
             return Err("Server workspace metadata does not match the local project.".into());
         }
         Ok(marker)
@@ -229,7 +282,9 @@ impl ProjectStore {
         safe(&path, false)?;
         let current: ServerWorkspaceMarker = decode(&read(&path)?)?;
         if current.server_url != server_url || current.server_project_id != project_id {
-            return Err("Server workspace metadata changed. Reload the project before syncing.".into());
+            return Err(
+                "Server workspace metadata changed. Reload the project before syncing.".into(),
+            );
         }
         if revision <= current.revision {
             return Err("The server returned an invalid project revision.".into());
@@ -281,6 +336,10 @@ impl ProjectStore {
         let _lock = lock(&root)?;
         let marker = root.join(".fluxkit/server-cache.json");
         let workspace_marker = root.join(".fluxkit/server-workspace.json");
+        let recovery = root.join(".fluxkit/server-recovery");
+        if recovery.exists() {
+            safe(&recovery, false)?;
+        }
         let read_only = match fs::symlink_metadata(&marker) {
             Ok(_) => {
                 safe(&marker, false)?;
@@ -293,21 +352,26 @@ impl ProjectStore {
             Ok(_) => {
                 safe(&workspace_marker, false)?;
                 let marker: ServerWorkspaceMarker = decode(&read(&workspace_marker)?)?;
-                if marker.revision < 1 || marker.server_project_id.to_string() != load_project(&root)?.0.id {
-                    return Err("Server workspace metadata does not match the local project.".into());
+                if marker.revision < 1
+                    || marker.server_project_id.to_string() != load_project(&root)?.0.id
+                {
+                    return Err(
+                        "Server workspace metadata does not match the local project.".into(),
+                    );
                 }
                 true
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(_) => return Err(IO_ERROR.into()),
         };
-        self.register(root, read_only || server_sync, server_sync)
+        self.register(
+            root,
+            read_only || server_sync || recovery.exists(),
+            server_sync,
+        )
     }
 
-    pub(crate) fn open_server_workspace(
-        &mut self,
-        selected: &Path,
-    ) -> Result<ProjectView, String> {
+    pub(crate) fn open_server_workspace(&mut self, selected: &Path) -> Result<ProjectView, String> {
         let root = io(selected.canonicalize())?;
         let _lock = lock(&root)?;
         let marker = root.join(".fluxkit/server-workspace.json");
@@ -318,10 +382,24 @@ impl ProjectStore {
         {
             return Err("Server workspace metadata does not match the local project.".into());
         }
+        if root.join(".fluxkit/server-recovery").exists() {
+            return Err("This workspace is a retained recovery copy. Open the current server workspace instead.".into());
+        }
         self.register(root, false, true)
     }
 
-    fn register(&mut self, root: PathBuf, read_only: bool, server_sync: bool) -> Result<ProjectView, String> {
+    fn register(
+        &mut self,
+        root: PathBuf,
+        read_only: bool,
+        server_sync: bool,
+    ) -> Result<ProjectView, String> {
+        if let Some(identity) = server_owner(&root)? {
+            if !self.server_identity_loaded {
+                self.set_server_identity(crate::server::stored_identity()?);
+            }
+            self.require_server_identity(&identity)?;
+        }
         let (project, _) = load_project(&root)?;
         let handle = self
             .roots
@@ -330,6 +408,7 @@ impl ProjectStore {
             .map(|(id, _)| id.clone())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
         let mut view = load(&root, &handle)?;
+        view.server_owned = server_owner(&root)?.is_some();
         view.read_only = read_only;
         view.server_sync = server_sync && !read_only;
         self.roots.insert(handle, (root, project.id, read_only));
@@ -342,6 +421,9 @@ impl ProjectStore {
             .get(handle)
             .ok_or("Project is not open. Open it with the folder chooser first.")?;
         safe(root, true)?;
+        if let Some(identity) = server_owner(root)? {
+            self.require_server_identity(&identity)?;
+        }
         if load_project(root)?.0.id != *project_id {
             return Err(
                 "The project identity changed on disk. Close and reopen the project.".into(),
@@ -352,7 +434,11 @@ impl ProjectStore {
 
     pub fn ensure_writable(&self, handle: &str) -> Result<PathBuf, String> {
         let root = self.root(handle)?;
-        if self.roots.get(handle).is_some_and(|(_, _, read_only)| *read_only) {
+        if self
+            .roots
+            .get(handle)
+            .is_some_and(|(_, _, read_only)| *read_only)
+        {
             return Err("This server project is read-only in the local snapshot.".into());
         }
         Ok(root)
@@ -362,7 +448,11 @@ impl ProjectStore {
         let root = self.root(handle)?;
         let _lock = lock(&root)?;
         let mut view = load(&root, handle)?;
-        view.read_only = self.roots.get(handle).is_some_and(|(_, _, read_only)| *read_only);
+        view.server_owned = server_owner(&root)?.is_some();
+        view.read_only = self
+            .roots
+            .get(handle)
+            .is_some_and(|(_, _, read_only)| *read_only);
         view.server_sync = self.server_workspace_marker(handle).is_ok() && !view.read_only;
         Ok(view)
     }
@@ -546,6 +636,8 @@ pub(crate) fn load(root: &Path, handle: &str) -> Result<ProjectView, String> {
         revision: revision(&bytes),
         read_only: false,
         server_sync: false,
+        server_owned: server_owner(root)?.is_some(),
+        server_recovery: root.join(".fluxkit/server-recovery").exists(),
         data: project,
         collections,
     })

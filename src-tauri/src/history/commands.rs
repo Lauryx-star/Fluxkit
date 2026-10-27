@@ -21,7 +21,9 @@ pub async fn history_action(
 ) -> Result<View, String> {
     let store = history.store()?;
     let mut view = run(&projects, move |projects| {
-        projects.with_environment(&handle, |_, id| {
+        projects.with_environment(&handle, |root, id| {
+            let id = crate::projects::store::local_state_id(root, id)?;
+            let id = id.as_str();
             let time = now()?;
             match action {
                 Action::Load => store.view(id, time),

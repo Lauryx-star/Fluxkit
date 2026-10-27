@@ -27,6 +27,7 @@ vi.mock('../native', () => ({
   isDesktop: vi.fn(() => true),
   getAppInfo: vi.fn(),
   chooseProject: vi.fn(),
+  refreshServerProject: vi.fn(),
   restoreLastProject: vi.fn(),
   rememberProject: vi.fn(),
   saveCollection: vi.fn(),
@@ -1572,4 +1573,47 @@ it('requires explicit confirmation when moving between different imported OpenAP
       expect.objectContaining({ allowMetadataLoss: true }),
     ),
   );
+});
+
+it('loads a fresh server workspace while retaining saved edits as a read-only recovery project', async () => {
+  stored.serverOwned = true;
+  stored.serverSync = true;
+  vi.mocked(native.restoreLastProject).mockResolvedValue(structuredClone(stored));
+  const recovery = { ...structuredClone(stored), readOnly: true, serverSync: false };
+  const fresh = {
+    ...structuredClone(stored),
+    handle: 'fresh-handle',
+    directory: '/synthetic/fresh',
+    data: { ...stored.data, name: 'Remote saved name' },
+  };
+  vi.mocked(native.refreshServerProject).mockResolvedValue({ recovery, workspace: fresh });
+  const { result } = renderHook(() => useWorkspace());
+  await waitFor(() => expect(result.current.busy).toBe(false));
+  await act(async () => {
+    await result.current.refreshServerProject(stored.handle);
+  });
+  expect(result.current.projects).toEqual([recovery, fresh]);
+  expect(result.current.activeHandle).toBe(fresh.handle);
+  expect(native.closeProject).not.toHaveBeenCalled();
+});
+
+it('does not replace server workspaces while another editor has unsaved changes', async () => {
+  const { result } = renderHook(() => useWorkspace(true));
+  await waitFor(() => expect(result.current.busy).toBe(false));
+  await expect(result.current.refreshServerProject('workspace-handle')).rejects.toThrow(
+    'Save or close unsaved editors',
+  );
+  expect(native.refreshServerProject).not.toHaveBeenCalled();
+});
+
+it('restores a retained recovery copy without replacing it with the current server workspace', async () => {
+  stored.readOnly = true;
+  stored.serverOwned = true;
+  stored.serverRecovery = true;
+  vi.mocked(native.restoreLastProject).mockResolvedValue(structuredClone(stored));
+  const { result } = renderHook(() => useWorkspace());
+  await waitFor(() => expect(result.current.busy).toBe(false));
+  expect(result.current.project?.serverRecovery).toBe(true);
+  expect(result.current.project?.handle).toBe(stored.handle);
+  expect(native.closeProject).not.toHaveBeenCalled();
 });

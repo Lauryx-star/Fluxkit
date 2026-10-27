@@ -4,6 +4,7 @@ import type { ImportPreview } from './types';
 
 export function ImportDialog({
   preview,
+  serverOwned = false,
   projectName,
   busy,
   started,
@@ -13,6 +14,7 @@ export function ImportDialog({
   onRename,
 }: {
   preview: ImportPreview;
+  serverOwned?: boolean;
   projectName: string;
   busy: boolean;
   started: boolean;
@@ -22,7 +24,7 @@ export function ImportDialog({
   onRename?: (oldName: string, name: string) => Promise<boolean>;
 }) {
   const blockersRef = useRef<HTMLElement>(null);
-  const [storeValues, setStoreValues] = useState(true);
+  const [storeValues, setStoreValues] = useState(!serverOwned);
   const [renaming, setRenaming] = useState<{ original: string; name: string } | null>(null);
   const [filter, setFilter] = useState('');
   const matchingVariables = preview.variables.filter((item) =>
@@ -126,7 +128,7 @@ export function ImportDialog({
             <input
               type="checkbox"
               checked={storeValues}
-              disabled={busy || started}
+              disabled={busy || started || serverOwned}
               onChange={(event) => setStoreValues(event.target.checked)}
             />
             Store available variable defaults/examples in the OS credential store

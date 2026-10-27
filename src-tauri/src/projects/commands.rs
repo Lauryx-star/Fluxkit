@@ -17,18 +17,65 @@ pub async fn environment_action(
         .app_data_dir()
         .map_err(|_| "Could not locate local application settings.")?
         .join("environment-selection");
+    let remote_context = crate::server::values::context(
+        &state,
+        &handle,
+        matches!(
+            action,
+            super::environments::Action::Save { .. } | super::environments::Action::SetValue { .. }
+        ),
+    )
+    .await?;
+    let value_state = app
+        .state::<crate::server::values::ValueState>()
+        .inner()
+        .clone();
+    let action = if let Some(context) = remote_context {
+        if let super::environments::Action::SetValue {
+            variable,
+            environment,
+            value,
+            expected,
+            expected_value_revision,
+        } = action
+        {
+            crate::server::values::set_value(
+                &app,
+                &context,
+                &variable,
+                environment.as_deref(),
+                value,
+                &expected,
+                expected_value_revision,
+            )
+            .await?;
+            super::environments::Action::Load
+        } else {
+            crate::server::values::refresh(&app, &context).await?;
+            action
+        }
+    } else {
+        action
+    };
     run(&state, move |store| {
-        if matches!(&action, super::environments::Action::Save { .. } | super::environments::Action::SetValue { .. }) {
+        if matches!(
+            &action,
+            super::environments::Action::Save { .. } | super::environments::Action::SetValue { .. }
+        ) {
             store.ensure_writable(&handle)?;
         }
         store.with_environment(&handle, |root, project| {
-            super::environments::apply(
+            let mut reply = super::environments::apply(
                 root,
                 &settings,
                 project,
                 action,
-                &super::environments::OsValues,
-            )
+                &crate::server::values::adapter(&value_state, root)?,
+            )?;
+            if let Some(identity) = super::store::server_owner(root)? {
+                reply.view.server_values = Some(value_state.revisions(&identity, project)?);
+            }
+            Ok(reply)
         })
     })
     .await
@@ -181,7 +228,19 @@ pub async fn choose_attachment(
 }
 
 #[tauri::command]
-pub async fn close_project(state: State<'_, ProjectState>, handle: String) -> Result<(), String> {
+pub async fn close_project(
+    app: tauri::AppHandle,
+    state: State<'_, ProjectState>,
+    handle: String,
+) -> Result<(), String> {
+    match crate::server::values::context(&state, &handle, false).await {
+        Ok(Some(context)) => app
+            .state::<crate::server::values::ValueState>()
+            .lock(&context.identity)?,
+        Ok(None) => {}
+        // Closing a revoked handle must still work; it grants no access to its files.
+        Err(_) => app.state::<crate::server::values::ValueState>().clear(),
+    }
     run(&state, move |store| {
         store.close(&handle);
         Ok(())

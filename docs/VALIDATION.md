@@ -981,3 +981,175 @@ No API requests or OS credential operations occurred. Native mouse-drag attempts
 UI automation did not reliably trigger a move dialog, so native drag behavior is unconfirmed;
 the location picker is the verified workflow. The test app was closed and the regular macOS
 app rebuilt. Windows/Linux integration and native mouse dragging require platform checks.
+
+
+## Server account isolation, atomic revisions and conflict recovery (2026-10-27)
+
+Validation used macOS Apple Silicon, Node.js 24.11.0/npm 11.6.1, Rust 1.92.0 and the
+standalone Apple Command Line Tools SDK. A temporary .NET 10.0.403 SDK was installed under
+`/private/tmp`, leaving the system SDK selection unchanged. Backend tests used an isolated
+PostgreSQL 17 Docker container on loopback. Each run created and dropped its own random test
+database through the production EF migrations and bootstrap.
+
+- `npm ci` installed the unchanged frontend lockfile; TypeScript, ESLint, Prettier, all 122
+  frontend tests and the production UI build passed.
+- Rust formatting, locked Clippy with warnings denied, and the locked native build passed.
+  The complete native suite passed 121 tests; the two existing opt-in real OS credential
+  integration tests were excluded. HTTP tests used controlled loopback servers outside the
+  restricted sandbox; no public API or real variable/token entries were used by those tests.
+- NuGet locked restore, the backend build with warnings treated as errors, and all five new
+  backend tests passed. The simultaneous-writer test deterministically holds both database
+  reads before either writer commits; exactly one response succeeds, the other is HTTP 409,
+  and the winning content/revision remains stored. Other tests cover stale/missing revisions,
+  personal-project isolation (including server admins), pending/suspended accounts, team
+  membership/removal and caller-specific encrypted envelopes.
+- Thirteen native server regressions cover account/server cache separation, handle revocation,
+  local value/token/history/environment isolation, legacy cache rejection, retained recovery
+  generations, restart behavior, changed local data during refresh, stale/wrong remote data,
+  interrupted pointer writes, snapshot staging, offline visibility of saved unsynced edits,
+  semantic JSON comparison and lost-acknowledgement reconciliation without write replay.
+  Routine value tests use fake adapters and temporary directories.
+- Frontend regressions cover adding team members, sign-out protection without discarding work,
+  conflict feedback, explicit recovery/cancellation, unsaved-editor rejection, replacement with
+  a new workspace while retaining the old project read-only, and restoration of recovery copies.
+
+A separate `Fluxkit Recovery Smoke` macOS bundle (`app.fluxkit.recoverysmoke`) built and
+launched from bundled UI. The real native bridge reported Desktop connected. Server connection
+opened successfully with the new explicit command permissions and showed the expected empty
+login form. It was closed, and the test app quit normally. No server account was signed in and
+no user project was opened or uploaded during this desktop smoke test. The full signed-in
+Desktop-to-server recovery workflow has automated native/UI/backend coverage in separate
+layers, but was not repeated end-to-end through the native GUI. Windows/Linux integration,
+release packaging, full deployment/backup/restore and real OS-store integration remain open.
+
+The server's conditional snapshot UPDATE needs no schema migration. New dependencies are
+backend-test-only and their lockfile is committed. Pre-existing formatting violations exposed
+by fixing the server-dialog parser error were corrected; generated .NET bin/obj files are
+excluded from Prettier. Existing unowned server caches and version-1 OS sessions are preserved
+for recovery rather than silently reassigned. Shared server values, client encryption, OIDC
+and upload preview remain outside this change.
+
+## Shared values, transfer preview and account vault (2026-10-27)
+
+Validation used the same macOS Apple Silicon host, Node.js 24.11.0/npm 11.6.1,
+Rust 1.92.0/standalone Apple SDK, temporary .NET 10.0.403 SDK and disposable loopback
+PostgreSQL 17 instance described above. No real user values or keychain entries were used.
+
+- TypeScript, ESLint, Prettier, all 130 frontend tests and the production UI build passed.
+  The frontend lockfile is unchanged from the preceding `npm ci` validation. New interaction
+  tests cover transfer selection/preparation/cancellation, vault confirmation and errors,
+  explicit classification, and preserving editor input/revisions after value conflicts.
+- The native suite passed 129 tests. The two real OS-store tests and the explicit backend
+  protocol test are excluded from the default run. Native regressions cover wrong passwords,
+  rewrapping the same key, tampered/cross-identity ciphertext, invalid KDF/nonce inputs,
+  lock/account-change races, one-at-a-time KDF work, no plaintext fallback and selected-only
+  transfer reads. Formatting, locked Clippy with warnings denied and native builds passed.
+- The opt-in `rust_crypto_and_value_protocol_roundtrip_through_the_real_backend` test also
+  passed separately against the actual loopback C# server and PostgreSQL. It creates a vault
+  using Rust cryptography, writes shared values and ciphertext, reads/decrypts values, changes
+  the wrapper password without changing stored ciphertext, and verifies old/new passwords.
+  The disposable account/database are synthetic and removed after the test. Run this test only
+  against a disposable local server by setting `FLUXKIT_VALUE_TEST_URL`, then selecting it with
+  `cargo test --manifest-path src-tauri/Cargo.toml --locked rust_crypto_and_value_protocol_roundtrip_through_the_real_backend -- --ignored`.
+- NuGet locked restore, backend/test builds with warnings treated as errors and all 12 backend
+  tests passed. Additional tests cover shared membership access, private vault profiles and
+  encrypted bundles, compare-and-swap conflicts, KDF/value/classification limits, atomic
+  takeover and upgrading an existing initial-schema database without losing its project.
+- A debug vault setup with 65,536 KiB/three iterations/one lane took 1,300 ms in an isolated
+  crypto-test run on this host. This is one observed debug measurement, not a latency guarantee
+  or release benchmark. KDF work runs on a blocking worker, with one operation at a time.
+
+A separate `Fluxkit Values Smoke` macOS bundle (`app.fluxkit.valuessmoke`) launched with bundled
+UI, reported Desktop connected and opened/closed the native server dialog successfully. It
+was quit and the regular application rebuilt afterwards. No account was signed in or real
+project opened. Signed-in vault/transfer GUI flows have interaction tests and the native/server
+protocol test, but were not fully repeated through the native GUI. Windows/Linux, real OS-store
+integration, independent security review, complete Compose deployment and operator backup/
+restore remain unverified. No release-platform claim follows from this host's checks.
+
+The additive database migration runs at startup; operators must back up before upgrade.
+New desktop runtime dependencies provide AES-GCM, Argon2id and zeroization; upstream notices
+are included under `assets/notices/crypto/` and in the app bundle. OIDC remains open.
+
+## OIDC authentication (2026-10-27)
+
+Validation used the macOS Apple Silicon/.NET 10.0.403/Rust 1.92.0/Node 24.11.0 setup above,
+with another disposable PostgreSQL 17 instance on loopback. Existing uncommitted backend,
+value/vault and recovery changes were preserved.
+
+- All 133 frontend tests passed, including OIDC mode discovery before showing password fields,
+  external-browser login, cancellation, approval feedback and the retained local-login path.
+  TypeScript, ESLint, Prettier and the production UI build passed. One earlier test invocation
+  suffered worker-start timeouts; the subsequent complete unchanged run passed without skips.
+- All 130 routine native tests passed; two real OS-store tests and the separately invoked
+  values/backend protocol test remained excluded from this run. The new native regression
+  covers single-flight cancellation, preventing cancelled session commits and constructing
+  browser destinations only from the configured server/typed handoff UUID. Locked Clippy with
+  warnings denied, formatting and the native application build passed.
+- NuGet locked restore, backend/test builds with warnings treated as errors and all 16 backend
+  tests passed. The OIDC tests use the actual ASP.NET Core OIDC handler and production PostgreSQL
+  schema, with an isolated HTTP-message-handler provider supplying discovery, JWKS, signed RSA
+  ID tokens and one-use authorization codes. They assert S256 PKCE and confidential-client
+  authentication, validate nonce/state/correlation, reject wrong signatures/issuers/audiences
+  and expired tokens, and verify bootstrap/approval/stable identity, same-name/email separation,
+  account suspension, exclusive login modes and cross-mode token rejection. Other tests cover
+  startup configuration and bounded/single-use/expired handoffs. No public identity provider,
+  real provider account, browser cookies or user OS credentials were used in these tests.
+
+The separate `Fluxkit OIDC Smoke` macOS bundle (`app.fluxkit.oidcsmoke`) started with bundled UI,
+reported Desktop connected and opened the server dialog. The dialog showed Continue/mode
+explanation and no provider password fields. It was closed and the application quit; the normal
+application was rebuilt afterwards. No URL/session was changed and no real account was used.
+A complete native-GUI-to-real-provider login, provider-specific interoperability, Windows/Linux
+URL launchers, TLS/proxy deployment and multi-user proxy rate-limit behavior remain unverified.
+Server integration tests prove the configured test-provider flow, not those deployment claims.
+
+OIDC uses existing Identity login tables and adds no database migration. The added server runtime
+package is Microsoft's MIT-licensed OpenIdConnect 10.0.13 plus its locked protocol dependency;
+there is no additional desktop runtime dependency. Tokens now require the active login-mode
+claim, so sessions issued by older builds must sign in again. Local/OIDC account linking and
+multi-process handoff persistence are deliberately not implemented; see [OIDC.md](OIDC.md).
+
+## Real-provider HTTPS end-to-end fixtures (2026-10-27)
+
+The new `npm run test:server:e2e` launcher was executed successfully on macOS Apple Silicon
+with Docker 29.9.2/Compose, Node 24.11.0 and the pinned Rust 1.92.0 toolchain. It builds the
+actual server's production Dockerfile with locked NuGet restore/release publish, runs its
+migrations on fresh PostgreSQL 17.11, imports Keycloak 26.8.1 and proxies both services through
+Caddy 2.11.7 HTTPS. The test browser is the Chromium bundled with Playwright 1.64.1. Fixture
+images are digest-pinned, apart from the production Dockerfile's existing .NET 10.0 tags.
+
+Seven named browser/server check groups passed against the real provider, database and proxy:
+trusted/unrelated-CA validation; exclusive OIDC/anonymous rejection; wrong-password rejection and
+successful PKCE login; approval/stable account identity/personal isolation; team/shared values/
+competing revisions; atomic project transfer/classification/duplicate identity rejection; and
+account suspension/membership removal. Actual Chromium submits Keycloak's login form and follows
+its form POST callback with normal secure correlation/nonce cookies. There is no mocked provider
+or certificate-verification bypass in this suite.
+
+The selected native `rust_crypto_and_value_protocol_roundtrip_through_the_real_backend` test
+also passed with browser-issued fixture sessions over HTTPS: real Rust Argon2id key wrapping,
+AES-GCM encryption/upload/download/decryption and password rewrapping, plus another member's
+shared-value access and isolation from the owner's ciphertext/profile. The latest complete run
+used alternate published port 18444; a preceding successful browser/native run used default
+18443. Only the test binary imports the fixture CA and maps its reserved hostname to loopback.
+Production clients have no fixture trust/DNS behavior. No OS credential-store entries were used.
+
+The normal Rust suite still passes 130 tests with three explicit integration exclusions; the
+native HTTPS test above was selected separately. Rust formatting, locked Clippy with warnings
+denied and the locked native build passed. Frontend TypeScript, ESLint, Prettier, all 133 tests
+(with two workers) and the production UI build passed. Frontend runtime dependencies are unchanged;
+Playwright has its own test-only npm lockfile and is installed with `npm ci` inside its runner.
+No application UI behavior or server C# source was changed for this fixture slice.
+
+The launcher exercised cleanup on failed as well as successful runs. After the completed runs,
+Docker queries confirmed no `fluxkit-e2e-...` containers, CA volumes or networks remained. Public
+CA/session transfers used private temporary host directories, subsequently removed. The host
+trust store and DNS configuration were not changed. Generated Docker images/build caches are
+retained for reuse. Upstream development/deprecation notices and temporary Data Protection /
+optional Kerberos-probe diagnostics are described in [the E2E guide](../server/e2e/README.md).
+
+This validates the real-provider browser/API path and native crypto protocol. Full Tauri GUI,
+OS-store adapters, GUI conflict recovery/offline use, Windows/Linux launchers, other providers,
+operator TLS setup/load and backup/restore remain separate validation work. It is not a claim
+of release readiness or an independent cryptographic/security audit.

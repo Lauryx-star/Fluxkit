@@ -10,3 +10,6 @@ package-lock.json
 # Preserve the independently maintained planning documents.
 AGENTS.md
 docs/
+
+server/**/bin
+server/**/obj

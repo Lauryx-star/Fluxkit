@@ -6,6 +6,7 @@ import type { Definition, Definitions, EnvironmentAction, EnvironmentView } from
 
 interface Props {
   handle: string;
+  serverOwned?: boolean;
   ask: (message: string) => Promise<boolean>;
   onDirty: (dirty: boolean) => void;
   onOpen: (open: boolean) => void;
@@ -14,6 +15,7 @@ interface Props {
 }
 export function EnvironmentControls({
   handle,
+  serverOwned = false,
   ask,
   onDirty,
   onOpen,
@@ -97,6 +99,7 @@ export function EnvironmentControls({
       )}
       {open && (
         <EnvironmentManager
+          serverOwned={serverOwned}
           view={view}
           busy={busy}
           error={error}
@@ -114,6 +117,7 @@ export function EnvironmentControls({
   );
 }
 interface ManagerProps {
+  serverOwned: boolean;
   view: EnvironmentView | null;
   busy: boolean;
   error: string | null;
@@ -128,6 +132,7 @@ interface ManagerProps {
   onClose: () => void;
 }
 function EnvironmentManager({
+  serverOwned,
   view,
   busy,
   error,
@@ -196,6 +201,27 @@ function EnvironmentManager({
     }
     return reply;
   }
+  async function classify(item: Definition) {
+    if (!view) {
+      return;
+    }
+    const ordinary = item.secret ?? true;
+    if (
+      !(await ask(
+        ordinary
+          ? `Mark ${item.name} as ordinary? Values explicitly transferred or saved in server mode will be visible to every project member. Existing local values are not uploaded by this change.`
+          : `Mark ${item.name} as secret? Remove synchronized values first. Future secret values will be encrypted for your account; previously shared values cannot be made private retrospectively.`,
+      ))
+    ) {
+      return;
+    }
+    await saveDefinitions({
+      ...view.data,
+      variables: view.data.variables.map((entry) =>
+        entry.id === item.id ? { ...entry, secret: !ordinary } : entry,
+      ),
+    });
+  }
   async function saveValue(expected = view?.revision) {
     if (!variable || !expected) {
       return false;
@@ -206,12 +232,26 @@ function EnvironmentManager({
       environment: environment || null,
       value,
       expected,
+      ...(view?.serverValues
+        ? {
+            expectedValueRevision:
+              view.serverValues[
+                (view.data.variables.find((entry) => entry.id === variable)?.secret ?? true)
+                  ? 'secrets'
+                  : 'shared'
+              ],
+          }
+        : {}),
     });
     if (reply) {
       setValue('');
       setVisible(true);
       setValueDirty(false);
-      setStatus('Saved in OS credential store.');
+      setStatus(
+        serverOwned
+          ? 'Saved on the server. Secrets are encrypted for your account; ordinary values are shared.'
+          : 'Saved in OS credential store.',
+      );
     }
     return !!reply;
   }
@@ -240,7 +280,9 @@ function EnvironmentManager({
     if (
       !view ||
       !(await ask(
-        `Remove ${item.name} and delete its associated values from this machine's OS credential store? This cannot be undone. Recovery copies contain definitions only. If deletion fails, some values may already be removed; retry the removal.`,
+        serverOwned
+          ? `Remove ${item.name}? Remove its synchronized values explicitly first. Definitions are published on the next project sync; other users’ encrypted values remain retained.`
+          : `Remove ${item.name} and delete its associated values from this machine's OS credential store? This cannot be undone. Recovery copies contain definitions only. If deletion fails, some values may already be removed; retry the removal.`,
       ))
     ) {
       return;
@@ -270,7 +312,11 @@ function EnvironmentManager({
     <Modal label="Project variables and environments">
       <div className="environment-manager">
         <h2>Project variables & environments</h2>
-        <p>Shared by every collection in this project. Values stay in your OS credential store.</p>
+        <p>
+          {serverOwned
+            ? 'Sync new definitions before saving server values. Ordinary values are shared with members; secrets need the unlocked account vault in Server connection. Use Reload to resolve value conflicts.'
+            : 'Shared by every collection in this project. Values stay in your OS credential store.'}
+        </p>
         <p>
           Use <code>{'{{variableName}}'}</code> in URLs, parameters, headers, and text bodies.
           Environment values override defaults. Empty values stay empty.
@@ -301,6 +347,14 @@ function EnvironmentManager({
                           <small> · {(item.secret ?? true) ? 'Secret' : 'Ordinary value'}</small>
                         )}
                       </span>
+                      {group === 'variables' && (
+                        <button
+                          aria-label={`Mark ${item.name} as ${(item.secret ?? true) ? 'ordinary' : 'secret'}`}
+                          onClick={() => void classify(item)}
+                        >
+                          {(item.secret ?? true) ? 'Make ordinary' : 'Make secret'}
+                        </button>
+                      )}
                       <button
                         aria-label={`Rename ${item.name}`}
                         onClick={() => {
@@ -355,7 +409,9 @@ function EnvironmentManager({
                   checked={secret}
                   onChange={(event) => setSecret(event.target.checked)}
                 />
-                Secret (stored only in this user’s OS credential store)
+                {serverOwned
+                  ? 'Secret (encrypted for your account)'
+                  : 'Secret (stored only in this user’s OS credential store)'}
               </label>
             )}
             <button type="submit" className="secondary-button" disabled={!view || !name.trim()}>
@@ -477,7 +533,9 @@ function EnvironmentManager({
                   if (
                     !view ||
                     !(await ask(
-                      'Delete this slot value from the OS credential store? An environment slot will fall back to its shared default.',
+                      serverOwned
+                        ? 'Delete this synchronized slot value? Shared values are removed for every project member; secret values only for your account. An environment slot will fall back to its default.'
+                        : 'Delete this slot value from the OS credential store? An environment slot will fall back to its shared default.',
                     ))
                   ) {
                     return;
@@ -487,6 +545,17 @@ function EnvironmentManager({
                     variable,
                     environment: environment || null,
                     value: null,
+                    ...(view?.serverValues
+                      ? {
+                          expectedValueRevision:
+                            view.serverValues[
+                              (view.data.variables.find((entry) => entry.id === variable)?.secret ??
+                              true)
+                                ? 'secrets'
+                                : 'shared'
+                            ],
+                        }
+                      : {}),
                     expected: view.revision,
                   });
                   if (reply) {

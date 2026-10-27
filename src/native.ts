@@ -8,6 +8,7 @@ export interface AppInfo {
 export interface ServerConnection {
   serverUrl: string;
   authenticated: boolean;
+  accountId?: string | null;
 }
 
 export interface ServerProject {
@@ -48,6 +49,15 @@ export function setServerConnection(serverUrl: string) {
 export function registerServerAccount(username: string, password: string) {
   return invoke<void>('server_register', { username, password });
 }
+export function getServerAuthMode() {
+  return invoke<{ mode: 'local' | 'oidc' }>('server_auth_mode');
+}
+export function loginWithOidc() {
+  return invoke<ServerConnection>('server_oidc_login');
+}
+export function cancelOidcLogin() {
+  return invoke<void>('server_oidc_cancel');
+}
 export function loginToServer(username: string, password: string) {
   return invoke<ServerConnection>('server_login', { username, password });
 }
@@ -63,22 +73,59 @@ export function getServerProjectSnapshot(projectId: string) {
 export function openServerProject(projectId: string) {
   return invoke<import('./projects/types').ProjectView>('server_open_project', { projectId });
 }
-export function saveServerProjectSnapshot(
-  projectId: string,
-  revision: number,
-  snapshot: string,
-) {
+export function saveServerProjectSnapshot(projectId: string, revision: number, snapshot: string) {
   return invoke<ServerProjectSnapshot>('server_save_project_snapshot', {
     projectId,
     revision,
     snapshot,
   });
 }
-export function uploadLocalProjectToServer(handle: string) {
-  return invoke<ServerProjectSnapshot>('server_upload_local_project', { handle });
+export interface VaultStatus {
+  configured: boolean;
+  unlocked: boolean;
+}
+export function serverVaultAction(
+  action: 'status' | 'create' | 'unlock' | 'lock' | 'changePassword',
+  password?: string,
+) {
+  return invoke<VaultStatus>('server_vault_action', { action, password: password ?? null });
+}
+export interface TransferSlot {
+  variableId: string;
+  environmentId: string;
+}
+export interface TransferPreview {
+  id: string;
+  name: string;
+  collections: number;
+  requests: number;
+  definitions: import('./environments/types').Definitions;
+  ready: boolean;
+  selected: number;
+  available: number;
+  missing: TransferSlot[];
+}
+export function previewServerTransfer(handle: string) {
+  return invoke<TransferPreview>('server_preview_transfer', { handle });
+}
+export function prepareServerTransfer(handle: string, id: string, selections: TransferSlot[]) {
+  return invoke<TransferPreview>('server_prepare_transfer', { handle, id, selections });
+}
+export function commitServerTransfer(handle: string, id: string) {
+  return invoke<ServerProjectSnapshot>('server_commit_transfer', { handle, id });
+}
+export function discardServerTransfer(id: string) {
+  return invoke<void>('server_discard_transfer', { id });
 }
 export function syncServerProject(handle: string) {
   return invoke<ServerProjectSnapshot>('server_sync_project', { handle });
+}
+export interface WorkspaceRecovery {
+  workspace: import('./projects/types').ProjectView;
+  recovery: import('./projects/types').ProjectView;
+}
+export function refreshServerProject(handle: string) {
+  return invoke<WorkspaceRecovery>('server_refresh_project', { handle });
 }
 export function listServerProjectMembers(projectId: string) {
   return invoke<ServerProjectMember[]>('server_project_members', { projectId });

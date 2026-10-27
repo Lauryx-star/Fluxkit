@@ -3,7 +3,7 @@
 Every collection and request uses the environment selected for its project in the header.
 **Defaults** selects shared default values without an environment override. Selection is
 local to this machine and persists across restarts, independently for each project UUID.
-Open a saved project folder after restarting; recent folders and tabs are not restored.
+The last active saved project reopens on startup; request tabs and unsaved drafts are not restored.
 
 ## Definitions and references
 
@@ -129,7 +129,7 @@ is not intercepted. Suggestions use definitions only and never fetch credential 
 
 Hovering a highlighted token explicitly reveals that variable's effective value in a small
 tooltip, using the current project environment and shared-default fallback. This includes
-sensitive values: there is no per-variable secret classification yet. No other variables
+sensitive values: the current secret classification does not suppress explicit hover reveal. No other variables
 are read. Missing values, unknown names, locked stores, and stale project/environment
 state show errors. Empty values are identified explicitly. Values are rendered as text,
 never HTML. Moving away, scrolling, editing the field, or switching project/environment
@@ -168,3 +168,20 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked os_credential_roundtrip
 
 The test is excluded from the default suite because it requires OS-store access. It must
 be exercised on each platform before claiming that platform's integration is verified.
+
+## Server values and account isolation
+
+Server workspaces resolve ordinary values from a shared project bundle and secrets from the
+caller's client-encrypted bundle, with no OS plaintext fallback. The account vault must be
+unlocked before secret resolution. Older definitions without `secret` remain secret. Changing
+classification is explicit and does not read or upload any stored value. Remove synchronized
+values before deleting their definitions or changing their classification.
+
+Server `setValue` additionally carries `expectedValueRevision`; replies include
+`view.serverValues: { shared, secrets }`. Both the loaded definition revision and the relevant
+value revision must match. On conflicts, input is preserved; Reload fetches current revisions
+before an explicit retry. Sync saved definition changes before writing their server values.
+
+Caches, environment selection and acquired tokens are scoped to verified server URL and account
+UUID. Local-only projects retain their OS keys and behavior. See
+[SERVER_VALUES.md](SERVER_VALUES.md) for transfer consent, encryption, offline access and limits.

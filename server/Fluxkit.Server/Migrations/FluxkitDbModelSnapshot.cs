@@ -22,6 +22,24 @@ namespace Fluxkit.Server.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Fluxkit.Server.AccountVault", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Profile")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.HasKey("UserId");
+
+                    b.ToTable("AccountVaults");
+                });
+
             modelBuilder.Entity("Fluxkit.Server.EncryptedSecretRecord", b =>
                 {
                     b.Property<Guid>("ProjectId")
@@ -201,6 +219,15 @@ namespace Fluxkit.Server.Migrations
                     b.Property<long>("Revision")
                         .HasColumnType("bigint");
 
+                    b.Property<string>("SharedValues")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]");
+
+                    b.Property<long>("SharedValuesRevision")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("Snapshot")
                         .IsRequired()
                         .HasColumnType("jsonb");
@@ -213,6 +240,29 @@ namespace Fluxkit.Server.Migrations
                     b.HasIndex("OwnerId");
 
                     b.ToTable("Projects");
+                });
+
+            modelBuilder.Entity("Fluxkit.Server.ProjectSecrets", b =>
+                {
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Values")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.HasKey("ProjectId", "UserId");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("ProjectSecrets");
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole<System.Guid>", b =>
@@ -345,6 +395,15 @@ namespace Fluxkit.Server.Migrations
                     b.ToTable("AspNetUserTokens", (string)null);
                 });
 
+            modelBuilder.Entity("Fluxkit.Server.AccountVault", b =>
+                {
+                    b.HasOne("Fluxkit.Server.FluxkitUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Fluxkit.Server.EncryptedSecretRecord", b =>
                 {
                     b.HasOne("Fluxkit.Server.ProjectRecord", null)
@@ -361,6 +420,21 @@ namespace Fluxkit.Server.Migrations
                 });
 
             modelBuilder.Entity("Fluxkit.Server.ProjectMembership", b =>
+                {
+                    b.HasOne("Fluxkit.Server.ProjectRecord", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Fluxkit.Server.FluxkitUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Fluxkit.Server.ProjectSecrets", b =>
                 {
                     b.HasOne("Fluxkit.Server.ProjectRecord", null)
                         .WithMany()

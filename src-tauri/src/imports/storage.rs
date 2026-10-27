@@ -13,7 +13,11 @@ pub fn commit(
     let handle = plan.handle.clone();
     store.ensure_writable(&handle)?;
     store.with_environment(&handle, |root, project| {
-        let result = apply(root, project, plan, store_values, &environments::OsValues);
+        if store_values && store::server_owner(root)?.is_some() {
+            return Err("Import definitions only into server workspaces. Configure shared values and encrypted secrets afterwards.".into());
+        }
+        let values = environments::ScopedValues::for_root(environments::OsValues, Some(root))?;
+        let result = apply(root, project, plan, store_values, &values);
         Ok(CommitResult {
             project: store::load(root, &handle)?,
             error: result.err(),

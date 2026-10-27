@@ -199,6 +199,7 @@ fn values_never_enter_files_and_stale_writes_do_not_touch_store() {
         environment: None,
         value: Some("synthetic-private".into()),
         expected: saved.view.revision.clone(),
+        expected_value_revision: None,
     };
     apply(root.path(), settings.path(), "p", action(), &values).unwrap();
     let bytes = std::fs::read(root.path().join(FILE)).unwrap();
@@ -227,6 +228,7 @@ fn values_never_enter_files_and_stale_writes_do_not_touch_store() {
         environment: None,
         value: Some("forbidden".into()),
         expected: definitions(root.path()).unwrap().1,
+        expected_value_revision: None,
     };
     assert!(apply(root.path(), settings.path(), "p", invalid, &values).is_err());
 }

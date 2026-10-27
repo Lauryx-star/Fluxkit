@@ -111,3 +111,7 @@ without losing that result, changing its status, or sending the API request agai
 
 History is local metadata, not a credential store or archive. Limits are fixed; payload
 history, replay, history export, and configurable retention are outside this milestone.
+
+For server projects, local history identity is derived from the server URL, verified account
+UUID and project UUID. Recording, entries and clearing are independent between accounts even
+for a shared team project. Local-only project identities and retention behavior are unchanged.

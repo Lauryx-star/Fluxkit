@@ -41,7 +41,8 @@ export function ProjectTree(props: Props) {
     return {
       onDragOver: (event: React.DragEvent) => {
         if (
-          !props.busy && !props.readOnly &&
+          !props.busy &&
+          !props.readOnly &&
           event.dataTransfer.types.some((type) =>
             ['application/x-fluxkit-draft', 'application/x-fluxkit-request'].includes(type),
           )

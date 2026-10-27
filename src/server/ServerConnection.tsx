@@ -9,6 +9,9 @@ import {
   listServerAdminUsers,
   listServerProjects,
   loginToServer,
+  getServerAuthMode,
+  loginWithOidc,
+  cancelOidcLogin,
   logoutFromServer,
   registerServerAccount,
   removeServerProjectMember,
@@ -16,13 +19,14 @@ import {
   syncServerProject,
   setServerUserStatus,
   updateServerProjectMember,
-  uploadLocalProjectToServer,
   type ServerConnection as Connection,
   type ServerAccount,
   type ServerAccountAdminView,
   type ServerProject,
   type ServerProjectMember,
 } from '../native';
+import { VaultControls } from './VaultControls';
+import { TransferPreview } from './TransferPreview';
 import { Modal } from '../projects/Dialogs';
 import type { ProjectView } from '../projects/types';
 
@@ -30,16 +34,20 @@ export function ServerConnection({
   onClose,
   localProjects,
   onOpenProject,
+  onRefreshProject,
 }: {
   onClose: () => void;
   localProjects: ProjectView[];
   onOpenProject: (projectId: string) => Promise<void>;
+  onRefreshProject: (handle: string) => Promise<void>;
 }) {
   const [connection, setConnection] = useState<Connection | null>(null);
   const [projects, setProjects] = useState<ServerProject[]>([]);
   const [url, setUrl] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [authMode, setAuthMode] = useState<'local' | 'oidc' | null>(null);
+  const [browserPending, setBrowserPending] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -50,24 +58,40 @@ export function ServerConnection({
   const [account, setAccount] = useState<ServerAccount | null>(null);
   const [adminUsers, setAdminUsers] = useState<ServerAccountAdminView[]>([]);
   const [teamProjectName, setTeamProjectName] = useState('');
+  const [transferHandle, setTransferHandle] = useState<string | null>(null);
+  const [refreshHandle, setRefreshHandle] = useState<string | null>(null);
+  const hasServerProjects = localProjects.some(
+    (project) => project.serverOwned || project.serverSync || project.readOnly,
+  );
+  function requireClosedProjects() {
+    if (hasServerProjects) {
+      setError(
+        'Close all server projects before changing accounts, changing server, or signing out. Saved workspaces and recovery copies stay on this device.',
+      );
+      return false;
+    }
+    return true;
+  }
 
   useEffect(() => {
     let active = true;
     void (async () => {
       try {
         const value = await getServerConnection();
-        if (!active) return;
+        if (!active) {
+          return;
+        }
         setConnection(value);
         setUrl(value.serverUrl);
         if (value.authenticated) {
           const available = await listServerProjects();
-          if (active) setProjects(available);
+          if (active) {
+            setProjects(available);
+          }
           const currentAccount = await getServerAccount();
           if (active) {
             setAccount(currentAccount);
-            setAdminUsers(
-              currentAccount.isServerAdmin ? await listServerAdminUsers() : [],
-            );
+            setAdminUsers(currentAccount.isServerAdmin ? await listServerAdminUsers() : []);
           }
         }
       } catch (reason) {
@@ -78,10 +102,14 @@ export function ServerConnection({
     })();
     return () => {
       active = false;
+      void cancelOidcLogin();
     };
   }, []);
 
   async function perform(operation: () => Promise<Connection>) {
+    if (!requireClosedProjects()) {
+      return;
+    }
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -94,9 +122,7 @@ export function ServerConnection({
         setProjects(await listServerProjects());
         const currentAccount = await getServerAccount();
         setAccount(currentAccount);
-        setAdminUsers(
-          currentAccount.isServerAdmin ? await listServerAdminUsers() : [],
-        );
+        setAdminUsers(currentAccount.isServerAdmin ? await listServerAdminUsers() : []);
       } else {
         setProjects([]);
         setAccount(null);
@@ -125,7 +151,9 @@ export function ServerConnection({
   }
 
   async function changeMembership(operation: () => Promise<void>) {
-    if (!memberProject) return;
+    if (!memberProject) {
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -163,14 +191,30 @@ export function ServerConnection({
             if (!saved.serverUrl) {
               return saved;
             }
+            const { mode } = await getServerAuthMode();
+            setAuthMode(mode);
+            if (mode === 'oidc') {
+              setPassword('');
+              setBrowserPending(true);
+              setNotice('Complete sign-in in your system browser, then return to Fluxkit.');
+              try {
+                return await loginWithOidc();
+              } finally {
+                setBrowserPending(false);
+                setNotice(null);
+              }
+            }
+            if (!username || !password) {
+              return saved;
+            }
             return loginToServer(username, password);
           });
         }}
       >
         <h2>Self-hosted server</h2>
         <p>
-          Configure a Fluxkit server account. Passwords are sent only to the server and are not
-          saved by Fluxkit.
+          Configure a Fluxkit server account. Continue to discover its login mode. OIDC sign-in
+          opens your system browser; provider passwords are never entered in Fluxkit.
         </p>
         <p>
           Projects can be edited when your account has write access and the server is online.
@@ -185,34 +229,43 @@ export function ServerConnection({
             value={url}
             disabled={busy}
             placeholder="https://fluxkit.example.org"
-            onChange={(event) => setUrl(event.target.value)}
+            onChange={(event) => {
+              setUrl(event.target.value);
+              setAuthMode(null);
+              setPassword('');
+            }}
           />
         </label>
-        <label className="dialog-label">
-          Username
-          <input
-            aria-label="Server username"
-            autoComplete="username"
-            value={username}
-            disabled={busy}
-            onChange={(event) => setUsername(event.target.value)}
-          />
-        </label>
-        <label className="dialog-label">
-          Password
-          <input
-            aria-label="Server password"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            disabled={busy}
-            onChange={(event) => setPassword(event.target.value)}
-          />
-        </label>
+        {authMode === 'local' && !connection?.authenticated && (
+          <>
+            <label className="dialog-label">
+              Username
+              <input
+                aria-label="Server username"
+                autoComplete="username"
+                value={username}
+                disabled={busy}
+                onChange={(event) => setUsername(event.target.value)}
+              />
+            </label>
+            <label className="dialog-label">
+              Password
+              <input
+                aria-label="Server password"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                disabled={busy}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </label>
+          </>
+        )}
         {error && <p role="alert">{error}</p>}
         {notice && <p role="status">{notice}</p>}
         {connection?.authenticated && (
           <>
+            <VaultControls busy={busy} onBusy={setBusy} />
             <section aria-label="Server projects">
               <h3>Projects available to this account</h3>
               {projects.length ? (
@@ -293,6 +346,14 @@ export function ServerConnection({
                           }}
                         >
                           Sync saved changes
+                        </button>{' '}
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={busy}
+                          onClick={() => setRefreshHandle(project.handle)}
+                        >
+                          Load server version
                         </button>
                       </li>
                     ))}
@@ -301,6 +362,47 @@ export function ServerConnection({
                 <p>Open an editable server project to create a workspace here.</p>
               )}
             </section>
+            {refreshHandle && (
+              <section aria-label="Confirm workspace recovery">
+                <h3>Load current server version?</h3>
+                <p>
+                  Your saved local edits will remain as a read-only recovery copy in the project
+                  list. Save or close unsaved editors first. Copy any changes you want to keep into
+                  the new workspace, then sync again. This does not overwrite the server.
+                </p>
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={busy}
+                  onClick={() => {
+                    setBusy(true);
+                    setError(null);
+                    void onRefreshProject(refreshHandle)
+                      .then(onClose)
+                      .catch((reason: unknown) =>
+                        setError(
+                          reason instanceof Error
+                            ? reason.message
+                            : typeof reason === 'string'
+                              ? reason
+                              : 'Could not load the server version. Your saved edits remain available.',
+                        ),
+                      )
+                      .finally(() => setBusy(false));
+                  }}
+                >
+                  Keep recovery copy and load
+                </button>{' '}
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={busy}
+                  onClick={() => setRefreshHandle(null)}
+                >
+                  Cancel recovery
+                </button>
+              </section>
+            )}
             {memberProject && (
               <section aria-label="Manage team project members">
                 <h3>Team project members</h3>
@@ -333,7 +435,7 @@ export function ServerConnection({
                     onClick={() =>
                       void changeMembership(() =>
                         addServerProjectMember(memberProject, memberUsername, memberRole),
-                      ),
+                      )
                     }
                   >
                     Add member
@@ -423,9 +525,7 @@ export function ServerConnection({
                           type="button"
                           className="secondary-button"
                           disabled={busy}
-                          onClick={() =>
-                            void changeAccount(() => approveServerUser(user.id))
-                          }
+                          onClick={() => void changeAccount(() => approveServerUser(user.id))}
                         >
                           Approve account
                         </button>
@@ -433,9 +533,7 @@ export function ServerConnection({
                         <button
                           type="button"
                           className="secondary-button"
-                          disabled={
-                            busy || (user.id === account.id && user.status === 'active')
-                          }
+                          disabled={busy || (user.id === account.id && user.status === 'active')}
                           onClick={() =>
                             void changeAccount(() =>
                               setServerUserStatus(
@@ -455,44 +553,41 @@ export function ServerConnection({
             )}
             <section aria-label="Upload local project">
               <h3>Upload a local project copy</h3>
-              <p>
-                This creates a personal server copy and keeps your local files. Reusable values
-                from the OS credential store and request history are not uploaded. Projects that
-                reference local file attachments cannot be uploaded yet. After opening the server
-                project, changes stay in its local workspace until you sync them here.
-              </p>
-              <ul>
-                {localProjects.filter((project) => !project.readOnly).map((project) => (
-                  <li key={project.handle}>
-                    {project.data.name}{' '}
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      disabled={busy}
-                      onClick={() => {
-                        setBusy(true);
-                        setError(null);
-                        setNotice(null);
-                        void uploadLocalProjectToServer(project.handle)
-                          .then(async (uploaded) => {
-                            setProjects(await listServerProjects());
-                            setNotice(
-                              `Uploaded “${uploaded.name}” to the server. Your local project remains unchanged.`,
-                            );
-                          })
-                          .catch((reason: unknown) =>
-                            setError(
-                              typeof reason === 'string' ? reason : 'Project upload failed.',
-                            ),
-                          )
-                          .finally(() => setBusy(false));
-                      }}
-                    >
-                      Upload copy
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              {transferHandle ? (
+                <TransferPreview
+                  handle={transferHandle}
+                  busy={busy}
+                  onBusy={setBusy}
+                  onCancel={() => setTransferHandle(null)}
+                  onDone={async (name) => {
+                    setProjects(await listServerProjects());
+                    setTransferHandle(null);
+                    setNotice(
+                      `Uploaded “${name}”. Your original local project and values remain unchanged.`,
+                    );
+                  }}
+                />
+              ) : (
+                <ul>
+                  {localProjects
+                    .filter(
+                      (project) => !project.readOnly && !project.serverOwned && !project.serverSync,
+                    )
+                    .map((project) => (
+                      <li key={project.handle}>
+                        {project.data.name}{' '}
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={busy}
+                          onClick={() => setTransferHandle(project.handle)}
+                        >
+                          Review transfer
+                        </button>
+                      </li>
+                    ))}
+                </ul>
+              )}
             </section>
           </>
         )}
@@ -503,6 +598,9 @@ export function ServerConnection({
               className="secondary-button"
               disabled={busy}
               onClick={() => {
+                if (!requireClosedProjects()) {
+                  return;
+                }
                 setBusy(true);
                 void logoutFromServer()
                   .then((value) => {
@@ -524,45 +622,62 @@ export function ServerConnection({
             </button>
           ) : (
             <>
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={busy || !url.trim() || !username.trim() || !password}
-                onClick={() => {
-                  setBusy(true);
-                  setError(null);
-                  setNotice(null);
-                  void setServerConnection(url)
-                    .then(() => registerServerAccount(username, password))
-                    .then(() => {
-                      setPassword('');
-                      setNotice(
-                        'Registration submitted. A server administrator must approve this account before sign-in.',
-                      );
-                    })
-                    .catch((reason: unknown) =>
-                      setError(typeof reason === 'string' ? reason : 'Registration failed.'),
-                    )
-                    .finally(() => setBusy(false));
-                }}
-              >
-                Request account
-              </button>
+              {authMode === 'local' && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={busy || !url.trim() || !username.trim() || !password}
+                  onClick={() => {
+                    if (!requireClosedProjects()) {
+                      return;
+                    }
+                    setBusy(true);
+                    setError(null);
+                    setNotice(null);
+                    void setServerConnection(url)
+                      .then(() => registerServerAccount(username, password))
+                      .then(() => {
+                        setPassword('');
+                        setNotice(
+                          'Registration submitted. A server administrator must approve this account before sign-in.',
+                        );
+                      })
+                      .catch((reason: unknown) =>
+                        setError(typeof reason === 'string' ? reason : 'Registration failed.'),
+                      )
+                      .finally(() => setBusy(false));
+                  }}
+                >
+                  Request account
+                </button>
+              )}
               <button
                 type="submit"
                 className="primary-button"
-                disabled={busy || !url.trim() || !username.trim() || !password}
+                disabled={
+                  busy || !url.trim() || (authMode === 'local' && (!username.trim() || !password))
+                }
               >
-                {busy ? 'Connecting…' : 'Connect'}
+                {busy
+                  ? 'Connecting…'
+                  : authMode === 'local'
+                    ? 'Connect'
+                    : authMode === 'oidc'
+                      ? 'Sign in with OIDC'
+                      : 'Continue'}
               </button>
             </>
           )}
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={busy}
-            onClick={onClose}
-          >
+          {browserPending && (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => void cancelOidcLogin()}
+            >
+              Cancel browser sign-in
+            </button>
+          )}
+          <button type="button" className="secondary-button" disabled={busy} onClick={onClose}>
             Close
           </button>
         </div>

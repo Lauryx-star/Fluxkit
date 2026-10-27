@@ -1,0 +1,102 @@
+# Disposable integration fixtures only. Never use these credentials in a deployment.
+services:
+  database:
+    image: postgres:17@sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe
+    environment:
+      POSTGRES_DB: fluxkit_e2e
+      POSTGRES_USER: fluxkit_e2e
+      POSTGRES_PASSWORD: SyntheticE2eDatabase42
+    tmpfs: /var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U fluxkit_e2e -d fluxkit_e2e']
+      interval: 2s
+      timeout: 2s
+      retries: 40
+
+  identity:
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:a78d6b79572168cb25886b80a8b5b8d4ed4390743e3eecb810538683e209dd6b
+    command: ['start-dev', '--import-realm']
+    environment:
+      KC_HOSTNAME: https://identity.fluxkit.test:18443
+      KC_HTTP_ENABLED: 'true'
+      KC_PROXY_HEADERS: xforwarded
+      KC_HTTP_ACCESS_LOG_ENABLED: 'false'
+      KC_LOG_LEVEL: warn
+      JAVA_OPTS_KC_HEAP: '-Xms128m -Xmx512m'
+    volumes:
+      - ./realm.json:/opt/keycloak/data/import/fluxkit-e2e-realm.json:ro
+    tmpfs: '/opt/keycloak/data:uid=1000,gid=0,mode=0770'
+
+  proxy:
+    image: caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ca-private:/data
+    ports:
+      - '127.0.0.1:${FLUXKIT_E2E_HTTPS_PORT:-18443}:18443'
+    networks:
+      default:
+        aliases: [fluxkit.test, identity.fluxkit.test]
+      ingress: {}
+
+  certificates:
+    image: caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
+    depends_on: [proxy]
+    entrypoint: /bin/sh
+    command:
+      - -ec
+      - |
+        for attempt in $$(seq 1 60); do
+          if test -s /private-ca/caddy/pki/authorities/local/root.crt; then
+            cp /private-ca/caddy/pki/authorities/local/root.crt /public-ca/root.crt
+            chmod 644 /public-ca/root.crt
+            exit 0
+          fi
+          sleep 1
+        done
+        echo 'The isolated HTTPS CA was not created.' >&2
+        exit 1
+    volumes:
+      - ca-private:/private-ca:ro
+      - ca-public:/public-ca
+
+  server:
+    build:
+      context: ../..
+      dockerfile: server/Fluxkit.Server/Dockerfile
+    depends_on:
+      database: { condition: service_healthy }
+      certificates: { condition: service_completed_successfully }
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Database: Host=database;Database=fluxkit_e2e;Username=fluxkit_e2e;Password=SyntheticE2eDatabase42
+      Auth__Mode: oidc
+      Auth__SigningKey: Synthetic-e2e-only-signing-key-at-least-32-bytes
+      Auth__Oidc__Authority: https://identity.fluxkit.test:18443/realms/fluxkit-e2e
+      Auth__Oidc__PublicOrigin: https://fluxkit.test:18443
+      Auth__Oidc__ClientId: fluxkit-e2e
+      Auth__Oidc__ClientSecret: SyntheticE2eClientSecret42
+      Bootstrap__OidcSubject: 11111111-1111-4111-8111-111111111111
+      SSL_CERT_FILE: /public-ca/root.crt
+      Logging__LogLevel__Default: Warning
+    volumes:
+      - ca-public:/public-ca:ro
+
+  runner:
+    build: .
+    depends_on:
+      server: { condition: service_started }
+      identity: { condition: service_started }
+    init: true
+    shm_size: 512mb
+    volumes:
+      - ca-public:/public-ca:ro
+
+volumes:
+  ca-private:
+  ca-public:
+
+networks:
+  default:
+    internal: true
+  ingress: {}

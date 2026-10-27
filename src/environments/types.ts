@@ -14,6 +14,7 @@ export interface EnvironmentView {
   data: Definitions;
   selectedEnvironment: string | null;
   selectionMissing: boolean;
+  serverValues?: { shared: number; secrets: number };
 }
 export type EnvironmentAction =
   | { kind: 'load' }
@@ -25,6 +26,7 @@ export type EnvironmentAction =
       environment: string | null;
       value: string | null;
       expected: string;
+      expectedValueRevision?: number;
     }
   | { kind: 'reveal'; variable: string; environment: string | null }
   | { kind: 'preview'; variable: string; environment: string | null; expected: string }
