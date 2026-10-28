@@ -1,0 +1,54 @@
+frontend:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/**"
+          - "index.html"
+          - "vite.config.ts"
+          - "tsconfig.json"
+          - "eslint.config.js"
+          - ".prettierrc.json"
+          - ".prettierignore"
+          - "package.json"
+
+desktop-rust:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src-tauri/**"
+          - "rust-toolchain.toml"
+
+server:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "server/**"
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "**/*.md"
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.test.ts"
+          - "**/*.test.tsx"
+          - "src/test/**"
+          - "src-tauri/tests/**"
+          - "server/Fluxkit.Server.Tests/**"
+          - "server/e2e/**"
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - "scripts/**"
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "package-lock.json"
+          - "src-tauri/Cargo.lock"
+          - "server/**/packages.lock.json"
+          - "server/dotnet-tools.json"
+          - "rust-toolchain.toml"
+          - ".nvmrc"
