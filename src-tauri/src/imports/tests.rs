@@ -787,3 +787,17 @@ fn preview_rename_updates_server_templates_and_bounds_growth() {
         "baseUrl"
     );
 }
+
+#[test]
+fn openapi_server_urls_and_token_endpoints_are_ordinary_while_credentials_stay_secret() {
+    let root = tempdir().unwrap();
+    let project = ProjectStore::default()
+        .create(root.path(), "Synthetic".into())
+        .unwrap();
+    let plan = mapping::plan(YAML, &project, Definitions::default(), "missing".into()).unwrap();
+    for variable in &plan.variables {
+        let name = &variable.definition.name;
+        let ordinary = name == "baseUrl" || name.ends_with("_token_url");
+        assert_eq!(variable.definition.secret, Some(!ordinary), "{name}");
+    }
+}

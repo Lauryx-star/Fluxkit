@@ -17,6 +17,8 @@ use std::{
 use tauri::{Manager, State};
 use zeroize::Zeroizing;
 
+const UNSYNCED_DEFINITIONS: &str = "The server does not know this variable or environment yet, or its secret setting changed locally. Use Sync saved changes in the server dialog to publish the variable definitions first, then save the value again.";
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValueRevisions {
@@ -321,9 +323,25 @@ async fn put<T: Serialize, R: DeserializeOwned>(
     revision: i64,
     body: &T,
 ) -> Result<R, String> {
+    put_with(session, path, revision, body, None).await
+}
+/// The server rejects values for variables/environments missing from its definition snapshot,
+/// or with a different secret classification, with 400. `bad_request` explains that case.
+async fn put_with<T: Serialize, R: DeserializeOwned>(
+    session: &super::Session,
+    path: &str,
+    revision: i64,
+    body: &T,
+    bad_request: Option<&str>,
+) -> Result<R, String> {
     let response = client()?.put(super::api_url(&session.identity.server_url, path)?)
         .bearer_auth(&session.access_token).header(reqwest::header::IF_MATCH, format!("\"{revision}\""))
         .json(body).send().await.map_err(|_| "The server response was interrupted. Reload values to check whether the change was saved; no automatic retry was made.".to_string())?;
+    if response.status() == reqwest::StatusCode::BAD_REQUEST {
+        if let Some(message) = bad_request {
+            return Err(message.into());
+        }
+    }
     if !response.status().is_success() {
         return Err(super::response_error(response).await);
     }
@@ -615,7 +633,7 @@ pub async fn set_value(
                 &state.key(&context.identity)?,
             )?);
         }
-        let saved: Bundle<CipherValue> = put(&session, &format!("/api/projects/{}/vault-values", context.project), bundle.revision, &serde_json::json!({"projectRevision": bundle.project_revision, "values": bundle.values})).await?;
+        let saved: Bundle<CipherValue> = put_with(&session, &format!("/api/projects/{}/vault-values", context.project), bundle.revision, &serde_json::json!({"projectRevision": bundle.project_revision, "values": bundle.values}), Some(UNSYNCED_DEFINITIONS)).await?;
         super::ensure_session(&session)?;
         state.with(|inner| {
             inner.secrets.insert(key, saved.clone());
@@ -643,13 +661,124 @@ pub async fn set_value(
                 value: value.to_string(),
             });
         }
-        let saved: Bundle<SharedValue> = put(&session, &format!("/api/projects/{}/values", context.project), bundle.revision, &serde_json::json!({"projectRevision": bundle.project_revision, "values": bundle.values})).await?;
+        let saved: Bundle<SharedValue> = put_with(&session, &format!("/api/projects/{}/values", context.project), bundle.revision, &serde_json::json!({"projectRevision": bundle.project_revision, "values": bundle.values}), Some(UNSYNCED_DEFINITIONS)).await?;
         super::ensure_session(&session)?;
         state.with(|inner| {
             inner.shared.insert(key, saved.clone());
             Ok(())
         })?;
         save(&shared_path, &saved)?;
+    }
+    Ok(())
+}
+
+/// One imported value slot: variable ID, environment ID (`default` for the default slot), value.
+pub type ImportSlot = (String, String, Zeroizing<String>);
+
+/// Adds imported values to the server bundles after the definitions were synced. Ordinary
+/// values join the shared bundle; secret values are encrypted into the caller's vault bundle.
+/// A slot that already holds the same value is skipped, so a retry does not duplicate work.
+/// A different shared value or any existing secret slot is never overwritten.
+pub async fn import_values(
+    app: &tauri::AppHandle,
+    context: &Context,
+    slots: Vec<ImportSlot>,
+) -> Result<(), String> {
+    refresh(app, context).await?;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| super::SETTINGS_ERROR)?;
+    let session = super::session_for(&root)?;
+    if session.identity != context.identity {
+        return Err("The server account changed.".into());
+    }
+    let state = app.state::<ValueState>().inner().clone();
+    let scoped = super::account_root(&root, &context.identity)?;
+    let (shared_path, secret_path) = bundle_paths(&scoped, &context.project);
+    let key = scope(&context.identity, &context.project);
+    let (mut shared, mut secrets) = state.with(|inner| {
+        Ok((
+            inner
+                .shared
+                .get(&key)
+                .cloned()
+                .ok_or("Load server values before importing.")?,
+            inner
+                .secrets
+                .get(&key)
+                .cloned()
+                .ok_or("Load server values before importing.")?,
+        ))
+    })?;
+    let mut shared_changed = false;
+    let mut secrets_changed = false;
+    for (variable, environment, value) in slots {
+        let definition = context
+            .definitions
+            .variables
+            .iter()
+            .find(|entry| entry.id == variable)
+            .ok_or("An imported variable is missing from the workspace definitions.")?;
+        if value.len() > 2560 {
+            continue;
+        }
+        if definition.secret.unwrap_or(true) {
+            if secrets
+                .values
+                .iter()
+                .any(|entry| entry.variable_id == variable && entry.environment_id == environment)
+            {
+                continue;
+            }
+            secrets.values.push(crypto::encrypt(
+                &context.identity,
+                &context.project,
+                &variable,
+                &environment,
+                &value,
+                &state.key(&context.identity)?,
+            )?);
+            secrets_changed = true;
+        } else {
+            match shared
+                .values
+                .iter()
+                .find(|entry| entry.variable_id == variable && entry.environment_id == environment)
+            {
+                Some(entry) if *entry.value == **value => {}
+                Some(_) => return Err("An imported value was changed on the server meanwhile. It was not overwritten; check Project variables.".into()),
+                None => {
+                    shared.values.push(SharedValue {
+                        variable_id: variable,
+                        environment_id: environment,
+                        value: value.to_string(),
+                    });
+                    shared_changed = true;
+                }
+            }
+        }
+    }
+    if shared.values.len() > 1000 || secrets.values.len() > 1000 {
+        return Err("The server value bundle would exceed 1,000 slots.".into());
+    }
+    if shared_changed {
+        let saved: Bundle<SharedValue> = put_with(&session, &format!("/api/projects/{}/values", context.project), shared.revision, &serde_json::json!({"projectRevision": shared.project_revision, "values": shared.values}), Some(UNSYNCED_DEFINITIONS)).await?;
+        super::ensure_session(&session)?;
+        state.with(|inner| {
+            inner.shared.insert(key.clone(), saved.clone());
+            Ok(())
+        })?;
+        save(&shared_path, &saved)?;
+    }
+    if secrets_changed {
+        let saved: Bundle<CipherValue> = put_with(&session, &format!("/api/projects/{}/vault-values", context.project), secrets.revision, &serde_json::json!({"projectRevision": secrets.project_revision, "values": secrets.values}), Some(UNSYNCED_DEFINITIONS)).await?;
+        super::ensure_session(&session)?;
+        state.with(|inner| {
+            inner.secrets.insert(key, saved.clone());
+            Ok(())
+        })?;
+        save(&secret_path, &saved)?;
     }
     Ok(())
 }

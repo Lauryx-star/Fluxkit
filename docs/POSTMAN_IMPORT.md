@@ -5,6 +5,9 @@ Postman Collection v2.1 export. To import an environment, select an already impo
 collection in **Collection for environment mapping**, then **Choose environment JSON…**.
 Review the compatibility report and source-name to local-variable mapping before confirming.
 Cancelling before confirmation writes no project definitions, collection or OS values.
+In a server workspace the import is synced to the server and can store its values there; see
+[SERVER_VALUES.md](SERVER_VALUES.md#imports-into-server-workspaces) for the classification of
+secret and ordinary variables.
 
 ## Supported sources and mapping
 
@@ -21,9 +24,10 @@ Collections receive new UUIDs and numbered names on title collisions. Folder nes
 request names/methods, URL strings and structured URLs, query/header rows, disabled rows,
 raw JSON/text, URL-encoded forms and text multipart fields map to existing Fluxkit models.
 Raw query pairs are decoded and represented as query rows; a structured query list is
-preferred over the duplicate raw query. Repeated keys stay repeated. `:path` variables
-receive separate OS-held values percent-encoded as one segment. Edit those values in encoded
-form. URL fragments are omitted. Body-file requests require explicit attachment selection
+preferred over the duplicate raw query. Repeated keys stay repeated. `:path` variables with a
+value are inserted into the URL, percent-encoded as one segment; `:path` variables without a
+value become new variables named after the parameter that need a value before sending. URL
+fragments are omitted. Body-file requests require explicit attachment selection
 after import; no source path is opened or copied. Inline file data is not adopted.
 
 Collection/folder/request Basic, Bearer and header/query API Key auth map to native auth
@@ -37,28 +41,46 @@ for mandatory import review. Import never acquires tokens.
 
 ## Variable scopes and privacy
 
-Each collection import creates fresh project-variable names (`pm_<import prefix>_<n>_<name>`)
-and IDs, even if an existing project variable has the same source name. All executable
-`{{name}}` occurrences are rewritten, including bodies and supported auth inputs. Undefined
-collection/global references become new variables requiring local values; they never bind
-an unrelated existing value. The preview displays source names and generated names, not
-candidate values. Scalar collection defaults can be stored in the OS credential store after
-confirmation. Disabled definitions receive no default. Compound values require manual setup.
+Postman variable names are kept. A source name that already exists as a project variable
+reuses that variable: imported requests reference its ID and its existing default and
+environment values stay unchanged (the Postman default is not stored for it). This is
+deliberate, so several collections can share e.g. one base-URL variable. It also means an
+imported request can send an existing value to the URLs the collection defines; review reused
+variables (marked **existing project variable**) before importing third-party collections.
+Other source names become new variables with that name. Names that are not valid Fluxkit
+variable names are sanitized (invalid characters become `_`, a leading `_` is added where
+needed). Undefined collection/global references follow the same rules; new ones need a local
+value. Scalar collection defaults of new variables can be stored in the OS credential store
+after confirmation. Disabled definitions receive no default. Compound values require manual
+setup.
 
-Literal request header/query/form values, literal URLs without placeholders and recognized
-credentials are also represented by new OS-held variable values. Literal raw body text is
-editable request content and is saved in collection JSON after the explicit confirmation.
-Do not commit private bodies. Original scripts, saved responses, cookies, source files and
-source credential payloads are not persisted. This is a request migration, not a lossless
-copy of a Postman collection.
+Literal URLs and literal header, query, form and `:path` values stay editable request content
+and are saved in collection JSON after the explicit confirmation, like literal raw body text.
+Review them before sharing a collection; for sensitive fields, create a project variable and
+replace the literal with its placeholder. Recognized credentials (Basic username/password,
+Bearer and API Key values, OAuth2 client ID/secret, token URL and scope) are still represented
+by new OS-held variables named after their role (`password`, `clientSecret`, …). Generated
+names never reuse an existing variable; a collision receives a numeric suffix (`password_2`).
+Original scripts, saved responses, cookies, source files and source credential payloads are
+not persisted. This is a request migration, not a lossless copy of a Postman collection.
+
+**Show variable definitions** lists each variable with its source name. Before starting a
+collection import, **Rename** and **Apply name** change a variable's name throughout the
+preview, as for OpenAPI. For Postman, entering the name of an existing project variable
+reuses that variable instead (auth references and the stored source-name mapping move to its
+ID; its values stay unchanged). Renaming a reused variable to a free name creates a new
+import-owned variable instead. Names already used by another new variable of the same import
+are rejected. Renaming has no filesystem or credential access and is disabled for environment
+previews and after import has started.
 
 Environment import creates a new **project-wide** environment, with a numbered name on
 conflict; the selected environment does not change. Matching source names use the selected
 collection's saved variable IDs. The new environment ID guarantees that no existing
 collection default or other environment value is overwritten. Disabled entries are omitted,
-so normal Fluxkit default fallback remains effective. Unreferenced environment keys receive
-new standalone variables, explicitly reported as not connected to requests. They can be used
-in any collection manually. Other collections do not independently select an environment.
+so normal Fluxkit default fallback remains effective. Environment keys not referenced by the
+collection use the existing project variable with that name (only its value in the new
+environment is written) or receive new standalone variables, reported as not connected to
+requests. They can be used in any collection manually. Other collections do not independently select an environment.
 
 The optional collection field `postman: { version: "2.1", variables: { sourceName: variableId } }`
 retains only the mapping, never source values. It survives request/collection edits and
@@ -108,15 +130,16 @@ After a partial failure, retry the same open preview to resume without duplicate
 Closing/restarting drops only the in-memory plan. Added definitions/values remain visible.
 For an abandoned environment import, inspect/remove the newly created environment through
 Variables and its explicit value-deletion confirmation; retain existing mapped variables
-that requests still use. For an abandoned collection import, inspect the newly added `pm_…`
-variables. Locally edited imported values are never overwritten on retry. Existing unrelated
+that requests still use. For an abandoned collection import, inspect the newly added variables
+listed in the preview (reused existing variables are not changed). Locally edited imported values are never overwritten on retry. Existing unrelated
 values are not deleted. Arbitrary external editors can ignore advisory locks; the existing
 final-check/write race remains documented in [FILE_FORMAT.md](FILE_FORMAT.md).
 
 Native command `choose_postman_import(handle, collectionId)` opens the file chooser;
 `collectionId: null` selects collection import, a validated local UUID selects environment
-mapping. It shares opaque preview IDs and the existing `commit_openapi_import` /
-`discard_openapi_import` command lifecycle with OpenAPI. Only the bundled main window has
+mapping. It shares opaque preview IDs and the existing `rename_import_variable` /
+`commit_openapi_import` / `discard_openapi_import` command lifecycle with OpenAPI. Preview
+variables carry an `existing` flag for reused project variables. Only the bundled main window has
 permission. The frontend cannot submit import paths, write plans, environment IDs or candidate
 values. No dependency or service was added for this slice.
 

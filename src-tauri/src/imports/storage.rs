@@ -13,11 +13,17 @@ pub fn commit(
     let handle = plan.handle.clone();
     store.ensure_writable(&handle)?;
     store.with_environment(&handle, |root, project| {
-        if store_values && store::server_owner(root)?.is_some() {
-            return Err("Import definitions only into server workspaces. Configure shared values and encrypted secrets afterwards.".into());
+        // Server workspaces never use the OS store; their values are uploaded after the sync.
+        let server = store::server_owner(root)?.is_some();
+        let result = if plan.local_saved {
+            Ok(())
+        } else {
+            let values = environments::ScopedValues::for_root(environments::OsValues, Some(root))?;
+            apply(root, project, plan, store_values && !server, &values)
+        };
+        if result.is_ok() {
+            plan.local_saved = true;
         }
-        let values = environments::ScopedValues::for_root(environments::OsValues, Some(root))?;
-        let result = apply(root, project, plan, store_values, &values);
         Ok(CommitResult {
             project: store::load(root, &handle)?,
             error: result.err(),
@@ -85,7 +91,13 @@ pub(super) fn apply(
         plan.definitions_saved = true;
     }
     if store_values {
-        for variable in &plan.variables {
+        // Reused project variables keep their existing default; only new environment slots
+        // created by this import may receive values for them.
+        for variable in plan
+            .variables
+            .iter()
+            .filter(|v| !v.reused || v.environment.is_some())
+        {
             if let Some(value) = &variable.value {
                 let key = format!(
                     "{project}/{}/{}",

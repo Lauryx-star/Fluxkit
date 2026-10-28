@@ -553,3 +553,23 @@ fn removing_an_auth_referenced_variable_keeps_definitions_and_os_values() {
     save(root.path(), settings.path(), "p", removed, &values);
     assert!(values.get(&key("p", variable, None)).unwrap().is_none());
 }
+
+#[test]
+fn set_value_action_accepts_the_frontend_camel_case_value_revision() {
+    let action: Action = serde_json::from_value(serde_json::json!({
+        "kind": "setValue",
+        "variable": Uuid::new_v4().to_string(),
+        "environment": null,
+        "value": "synthetic",
+        "expected": "revision",
+        "expectedValueRevision": 7
+    }))
+    .unwrap();
+    assert!(matches!(
+        action,
+        Action::SetValue {
+            expected_value_revision: Some(7),
+            ..
+        }
+    ));
+}

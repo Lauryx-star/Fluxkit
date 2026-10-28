@@ -290,7 +290,8 @@ pub enum Action {
         environment: Option<String>,
         value: Option<String>,
         expected: String,
-        #[serde(default)]
+        // Enum-level rename_all only renames variants; fields need their own camelCase name.
+        #[serde(default, rename = "expectedValueRevision")]
         expected_value_revision: Option<i64>,
     },
     Reveal {

@@ -180,7 +180,9 @@ values before deleting their definitions or changing their classification.
 Server `setValue` additionally carries `expectedValueRevision`; replies include
 `view.serverValues: { shared, secrets }`. Both the loaded definition revision and the relevant
 value revision must match. On conflicts, input is preserved; Reload fetches current revisions
-before an explicit retry. Sync saved definition changes before writing their server values.
+before an explicit retry. Sync saved definition changes before writing their server values;
+a rejected value save names this. Imports sync and store values themselves
+([SERVER_VALUES.md](SERVER_VALUES.md#imports-into-server-workspaces)).
 
 Caches, environment selection and acquired tokens are scoped to verified server URL and account
 UUID. Local-only projects retain their OS keys and behavior. See

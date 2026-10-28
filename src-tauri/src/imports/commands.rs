@@ -13,7 +13,7 @@ use std::{
     },
     time::Duration,
 };
-use tauri::State;
+use tauri::{Manager, State};
 
 #[derive(Default)]
 pub struct ImportState {
@@ -145,6 +145,7 @@ async fn choose(
 }
 #[tauri::command]
 pub async fn commit_openapi_import(
+    app: tauri::AppHandle,
     projects: State<'_, ProjectState>,
     state: State<'_, ImportState>,
     handle: String,
@@ -153,7 +154,7 @@ pub async fn commit_openapi_import(
 ) -> Result<CommitResult, String> {
     let _operation = state.begin()?;
     crate::projects::model::validate_id(&id)?;
-    let mut plan = {
+    let plan = {
         let mut plans = state
             .plans
             .lock()
@@ -168,19 +169,90 @@ pub async fn commit_openapi_import(
         }
         plan
     };
-    let (result, returned) = run(&projects, move |store| {
-        let result = storage::commit(store, &mut plan, store_values);
-        Ok((result, plan))
-    })
-    .await?;
+    let mut slot = Some(plan);
+    let result = commit(&app, &projects, &mut slot, store_values).await;
     if !result.as_ref().is_ok_and(|result| result.error.is_none()) {
-        state
-            .plans
-            .lock()
-            .map_err(|_| "Import state is unavailable.")?
-            .insert(id, returned);
+        if let Some(plan) = slot {
+            state
+                .plans
+                .lock()
+                .map_err(|_| "Import state is unavailable.")?
+                .insert(id, plan);
+        }
     }
     result
+}
+/// Local save first; in server workspaces then sync the saved workspace and upload values.
+/// Each finished step is recorded on the plan, so "Retry import" resumes at the failed step.
+async fn commit(
+    app: &tauri::AppHandle,
+    projects: &State<'_, ProjectState>,
+    slot: &mut Option<Plan>,
+    store_values: bool,
+) -> Result<CommitResult, String> {
+    const MISSING: &str = "The import preview is unavailable. Preview the file again.";
+    let plan = slot.as_ref().ok_or(MISSING)?;
+    let handle = plan.handle.clone();
+    let server = crate::server::values::context(projects, &handle, true).await?;
+    if let Some(context) = &server {
+        // Fail before any write when secret values would need a locked vault.
+        if store_values
+            && plan.value_slots().any(|(id, _, _)| plan.is_secret(id))
+            && app
+                .state::<crate::server::values::ValueState>()
+                .key(&context.identity)
+                .is_err()
+        {
+            return Err("Unlock your account vault to store imported secret values, or clear the value checkbox to import without values.".into());
+        }
+    }
+    let mut local = slot.take().ok_or(MISSING)?;
+    let (result, returned) = run(projects, move |store| {
+        let result = storage::commit(store, &mut local, store_values);
+        Ok((result, local))
+    })
+    .await?;
+    let plan = slot.insert(returned);
+    let mut result = result?;
+    if result.error.is_some() || server.is_none() {
+        return Ok(result);
+    }
+    if !plan.synced {
+        if let Err(error) =
+            crate::server::server_sync_project(app.clone(), projects.clone(), handle.clone()).await
+        {
+            result.error = Some(format!("The import is saved in this workspace, but it could not be synced to the server: {error} Retry the import, or use Sync saved changes."));
+            return Ok(result);
+        }
+        plan.synced = true;
+    }
+    if store_values {
+        let slots: Vec<_> = plan
+            .value_slots()
+            .map(|(variable, environment, value)| {
+                (
+                    variable.to_string(),
+                    environment.to_string(),
+                    zeroize::Zeroizing::new(value.to_string()),
+                )
+            })
+            .collect();
+        if !slots.is_empty() {
+            let uploaded = match crate::server::values::context(projects, &handle, true).await? {
+                Some(context) => crate::server::values::import_values(app, &context, slots).await,
+                None => Err("This workspace is no longer a server workspace.".into()),
+            };
+            if let Err(error) = uploaded {
+                result.error = Some(format!("The import was synced to the server, but its variable values could not be saved: {error} Retry the import to store them, or enter them in Project variables."));
+            }
+        }
+    }
+    let reload = handle.clone();
+    result.project = run(projects, move |store| {
+        store.with_environment(&reload, |root, _| store::load(root, &reload))
+    })
+    .await?;
+    Ok(result)
 }
 #[tauri::command]
 pub fn discard_openapi_import(state: State<'_, ImportState>, id: String) -> Result<(), String> {

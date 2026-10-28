@@ -38,6 +38,10 @@ pub struct VariablePreview {
     pub source_name: Option<String>,
     pub name: String,
     pub has_default: bool,
+    /// The import binds to this already existing project variable instead of creating one.
+    pub existing: bool,
+    /// Secret values go to the personal vault in server workspaces, never to shared data.
+    pub secret: bool,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +56,8 @@ pub struct ImportedVariable {
     pub definition: Definition,
     pub value: Option<String>,
     pub environment: Option<String>,
+    /// An existing project variable matched by source name. Its default value is never written.
+    pub reused: bool,
 }
 pub struct Plan {
     pub preview: Preview,
@@ -64,6 +70,10 @@ pub struct Plan {
     pub variables: Vec<ImportedVariable>,
     pub definitions: Definitions,
     pub definitions_saved: bool,
+    /// The collection/definitions are saved in the workspace; a retry continues after it.
+    pub local_saved: bool,
+    /// Server workspaces only: the saved workspace reached the server.
+    pub synced: bool,
     pub created: Instant,
 }
 #[derive(Serialize)]
@@ -71,4 +81,29 @@ pub struct Plan {
 pub struct CommitResult {
     pub project: ProjectView,
     pub error: Option<String>,
+}
+
+impl Plan {
+    /// Value slots this import may write: new import-owned defaults and new environment slots.
+    /// Reused project variables keep their existing default.
+    pub fn value_slots(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+        self.variables
+            .iter()
+            .filter(|v| !v.reused || v.environment.is_some())
+            .filter_map(|v| {
+                Some((
+                    v.definition.id.as_str(),
+                    v.environment.as_deref().unwrap_or("default"),
+                    v.value.as_deref()?,
+                ))
+            })
+    }
+    /// Secret classification as saved in the plan's definitions (missing means secret).
+    pub fn is_secret(&self, id: &str) -> bool {
+        self.definitions
+            .variables
+            .iter()
+            .find(|v| v.id == id)
+            .is_none_or(|v| v.secret.unwrap_or(true))
+    }
 }

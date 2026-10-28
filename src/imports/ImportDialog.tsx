@@ -24,14 +24,17 @@ export function ImportDialog({
   onRename?: (oldName: string, name: string) => Promise<boolean>;
 }) {
   const blockersRef = useRef<HTMLElement>(null);
-  const [storeValues, setStoreValues] = useState(!serverOwned);
+  const [storeValues, setStoreValues] = useState(true);
   const [renaming, setRenaming] = useState<{ original: string; name: string } | null>(null);
   const [filter, setFilter] = useState('');
   const matchingVariables = preview.variables.filter((item) =>
     `${item.name} ${item.sourceName ?? ''}`.toLowerCase().includes(filter.trim().toLowerCase()),
   );
+  const reused = preview.environmentName ? 0 : preview.variables.filter((v) => v.existing).length;
+  const created = preview.variables.length - reused;
   const defaults = preview.variables.filter((v) => v.hasDefault).length;
-  const missing = preview.variables.length - defaults;
+  const missing = preview.variables.filter((v) => !v.hasDefault && !v.existing).length;
+  const canRename = !!onRename && !started && !preview.environmentName;
   return (
     <Modal label={`Import ${preview.source}`}>
       <div
@@ -61,6 +64,13 @@ export function ImportDialog({
           )}{' '}
           No HTTP requests are sent.
         </p>
+        {serverOwned && (
+          <p role="note">
+            This is a server workspace. After saving, the import is synced to the server like{' '}
+            <strong>Sync saved changes</strong>: any other saved, not yet synced edits in this
+            workspace are uploaded too.
+          </p>
+        )}
         <div className="import-summary">
           <span>
             <strong>{preview.requestCount}</strong>{' '}
@@ -71,9 +81,14 @@ export function ImportDialog({
             {preview.folderCount === 1 ? 'folder' : 'folders'}
           </span>
           <span>
-            <strong>{preview.variables.length}</strong> {preview.environmentName ? 'mapped' : 'new'}{' '}
-            {preview.variables.length === 1 ? 'variable' : 'variables'}
+            <strong>{created}</strong> {preview.environmentName ? 'mapped' : 'new'}{' '}
+            {created === 1 ? 'variable' : 'variables'}
           </span>
+          {reused > 0 && (
+            <span>
+              <strong>{reused}</strong> existing {reused === 1 ? 'variable' : 'variables'} reused
+            </span>
+          )}
         </div>
         {!!preview.reviewCount && (
           <p role="status">
@@ -119,6 +134,14 @@ export function ImportDialog({
               directly in each request. Missing required values are marked for review.
             </p>
           )}
+          {preview.source === 'Postman' && !preview.environmentName && (
+            <p>
+              Postman variable names are kept. Names that already exist in this project reuse that
+              variable and its values. Literal URLs and header, query and form values stay in the
+              requests; only credentials get new variables. Rename a variable to give it a different
+              name or to reuse an existing project variable.
+            </p>
+          )}
           <p>
             {defaults} {defaults === 1 ? 'default/example is' : 'defaults/examples are'} available.{' '}
             {missing} {missing === 1 ? 'variable needs' : 'variables need'} a local value. Variable
@@ -128,11 +151,19 @@ export function ImportDialog({
             <input
               type="checkbox"
               checked={storeValues}
-              disabled={busy || started || serverOwned}
+              disabled={busy || started}
               onChange={(event) => setStoreValues(event.target.checked)}
             />
-            Store available variable defaults/examples in the OS credential store
+            {serverOwned
+              ? 'Save available variable values on the server'
+              : 'Store available variable defaults/examples in the OS credential store'}
           </label>
+          {serverOwned && storeValues && (
+            <p>
+              Ordinary values become shared project values, readable by all project members. Secret
+              values are encrypted into your personal vault; unlock it before importing.
+            </p>
+          )}
           <p>
             {storeValues
               ? 'Only new import-owned values will be written.'
@@ -163,8 +194,13 @@ export function ImportDialog({
                     </>
                   )}
                   <code>{item.name}</code> ·{' '}
-                  {item.hasDefault ? 'default/example available' : 'value required'}
-                  {preview.source === 'OpenAPI' && onRename && !started && (
+                  {serverOwned && !item.existing && (item.secret ? 'secret · ' : 'shared · ')}
+                  {item.existing && !preview.environmentName
+                    ? 'existing project variable · values unchanged'
+                    : item.hasDefault
+                      ? 'default/example available'
+                      : 'value required'}
+                  {canRename && (
                     <button
                       className="secondary-button"
                       disabled={busy || renaming !== null}
@@ -205,6 +241,8 @@ export function ImportDialog({
                       <p>
                         Updates every reference in this import. Existing project variables and
                         values stay unchanged.
+                        {preview.source === 'Postman' &&
+                          ' Enter the name of an existing project variable to reuse it.'}
                       </p>
                       <button
                         type="button"

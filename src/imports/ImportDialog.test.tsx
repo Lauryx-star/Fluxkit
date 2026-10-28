@@ -201,3 +201,108 @@ it('finds and renames variables beyond the first hundred by name or origin', asy
   expect(screen.getByRole('textbox', { name: 'Imported variable name' })).toHaveValue('tenant');
   expect(screen.getByRole('textbox', { name: 'Filter imported variables' })).toBeDisabled();
 });
+
+describe('Postman preview', () => {
+  const postman: ImportPreview = {
+    ...preview,
+    source: 'Postman',
+    version: '2.1',
+    collectionName: 'Epitop',
+    variables: [
+      { sourceName: 'baseUrlEpitopId', name: 'baseUrlEpitopId', hasDefault: false, existing: true },
+      { sourceName: 'clientId', name: 'clientId', hasDefault: true },
+      { sourceName: null, name: 'password', hasDefault: false },
+    ],
+    requests: [
+      { name: 'Version', method: 'GET', url: '{{baseUrlEpitopId}}/api/v0/info/version' },
+      { name: 'Test', method: 'GET', url: 'https://localhost:5002/api/v0/info/Test' },
+    ],
+  };
+  it('lists reused project variables separately and renames Postman variables', async () => {
+    const user = userEvent.setup();
+    const onRename = vi.fn(async () => true);
+    render(
+      <ImportDialog
+        preview={postman}
+        projectName="Project"
+        busy={false}
+        started={false}
+        error={null}
+        onRename={onRename}
+        onImport={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('reused', { exact: false })).toHaveTextContent(
+      '1 existing variable reused',
+    );
+    const variables = screen.getByRole('region', { name: 'Imported variables' });
+    expect(variables).toHaveTextContent('1 variable needs a local value');
+    expect(variables).toHaveTextContent('existing project variable · values unchanged');
+    expect(screen.getByText('https://localhost:5002/api/v0/info/Test')).toBeVisible();
+    await user.click(screen.getByText('Show variable definitions'));
+    await user.click(screen.getByRole('button', { name: 'Rename baseUrlEpitopId before import' }));
+    expect(screen.getByText(/existing project variable to reuse it/)).toBeVisible();
+    const input = screen.getByRole('textbox', { name: 'Imported variable name' });
+    await user.clear(input);
+    await user.type(input, 'epitopUrl');
+    await user.click(screen.getByRole('button', { name: 'Apply name' }));
+    expect(onRename).toHaveBeenCalledWith('baseUrlEpitopId', 'epitopUrl');
+  });
+  it('does not offer renaming for environment previews', async () => {
+    const user = userEvent.setup();
+    render(
+      <ImportDialog
+        preview={{ ...postman, environmentName: 'Prod', requestCount: 0, requests: [] }}
+        projectName="Project"
+        busy={false}
+        started={false}
+        error={null}
+        onRename={vi.fn(async () => true)}
+        onImport={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByText('Show variable definitions'));
+    expect(screen.queryByRole('button', { name: /before import/ })).toBeNull();
+  });
+});
+
+describe('server workspace import', () => {
+  it('explains the sync, enables value storage and shows shared/secret classification', async () => {
+    const user = userEvent.setup();
+    const onImport = vi.fn();
+    render(
+      <ImportDialog
+        serverOwned
+        preview={{
+          ...preview,
+          source: 'Postman',
+          variables: [
+            { name: 'baseUrl', hasDefault: true, secret: false },
+            { name: 'password', hasDefault: true, secret: true },
+          ],
+        }}
+        projectName="Project"
+        busy={false}
+        started={false}
+        error={null}
+        onImport={onImport}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('note')).toHaveTextContent('other saved, not yet synced edits');
+    const checkbox = screen.getByRole('checkbox', {
+      name: 'Save available variable values on the server',
+    });
+    expect(checkbox).toBeEnabled();
+    expect(checkbox).toBeChecked();
+    expect(screen.getByText(/encrypted into your personal vault/)).toBeVisible();
+    await user.click(screen.getByText('Show variable definitions'));
+    const variables = screen.getByRole('region', { name: 'Imported variables' });
+    expect(variables).toHaveTextContent('baseUrl · shared');
+    expect(variables).toHaveTextContent('password · secret');
+    await user.click(screen.getByRole('button', { name: 'Import collection' }));
+    expect(onImport).toHaveBeenCalledWith(true);
+  });
+});

@@ -25,8 +25,32 @@ Reveal and request execution resolve only the requested slots in Rust. Values ar
 Value saves are online operations. A conflict preserves editor input; **Reload** obtains
 current revisions before an explicit retry. Before removing a variable/environment or changing
 classification, explicitly remove its existing shared/own-secret values. Other users' encrypted
-rows are retained. Server imports support definitions only; import-value storage is disabled.
-Local imports retain their existing OS-store behavior.
+rows are retained. Local imports retain their existing OS-store behavior.
+
+## Imports into server workspaces
+
+An OpenAPI or Postman import into an editable server workspace is saved locally first and then
+synced like **Sync saved changes**, so its collection and variable definitions reach the server
+without a separate step. The sync uploads the whole saved workspace, including other saved but
+not yet synced edits; the import preview states this. With **Save available variable values on
+the server** checked, the import then adds its values: ordinary values join the shared project
+bundle (readable by all project members), secret values are encrypted into the importer's
+personal vault bundle. Secret values require an unlocked vault; otherwise the import stops
+before writing anything. Only new import-owned slots are written: reused existing variables keep
+their values, an identical existing value is skipped and a different shared value or an existing
+secret slot is never overwritten. No OS credential store access occurs for server workspaces.
+
+Imports classify new variables explicitly. Postman: literal auth credentials (username, password,
+token, API key, client ID/secret, access token) and variables of Postman `type: secret` are
+secret; all other variables (base URLs, `{{token}}` references without the secret type, path
+parameters, scope/token URL) are ordinary. A secret-typed environment value for an ordinary
+mapped variable is not adopted. OpenAPI: server URLs and OAuth token endpoints are ordinary,
+credentials are secret. Change a classification later in the environment manager.
+
+Each step is recorded on the open preview. When the sync or value upload fails, the import is
+already saved in the workspace; **Retry import** resumes at the failed step without saving the
+collection again. Closing the preview drops the remaining steps: then use **Sync saved changes**
+and enter values in Project variables.
 
 A forgotten master password has no recovery/reset flow: without the password or an already
 unlocked key, the account's synchronized secrets are inaccessible. **Change master password**
