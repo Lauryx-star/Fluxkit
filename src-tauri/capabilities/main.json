@@ -60,6 +60,7 @@
     "allow-server-admin-users",
     "allow-server-admin-approve-user",
     "allow-server-admin-set-user-status",
+    "allow-server-admin-delete-user",
     "allow-server-create-team-project"
   ]
 }

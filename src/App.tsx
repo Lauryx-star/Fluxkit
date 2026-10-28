@@ -45,6 +45,7 @@ import { EnvironmentControls } from './environments/EnvironmentControls';
 import { ServerConnection } from './server/ServerConnection';
 import { VaultLock } from './server/VaultLock';
 import { SettingsDialog } from './projects/SettingsDialog';
+import { ServerUsers } from './server/ServerUsers';
 import { VariableContext } from './environments/VariableContext';
 import { VariableInput } from './environments/VariableInput';
 import type { EnvironmentView } from './environments/types';
@@ -85,6 +86,7 @@ export default function App() {
   const [variablesOpen, setVariablesOpen] = useState(false);
   const [serverConnectionOpen, setServerConnectionOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [serverUsersOpen, setServerUsersOpen] = useState(false);
   // Reload the status-bar vault state when the dialogs that can change it close.
   const vaultDialogsOpen = settingsOpen || serverConnectionOpen;
   const [vaultRefresh, setVaultRefresh] = useState(0);
@@ -463,6 +465,7 @@ export default function App() {
 
   const [serverStatus, setServerStatus] = useState<'local' | 'connected' | 'unreachable'>('local');
   const [serverStatusUrl, setServerStatusUrl] = useState<string | null>(null);
+  const [serverAdmin, setServerAdmin] = useState(false);
   const checkServerStatus = useCallback(async () => {
     if (!workspace.desktop) {
       return;
@@ -472,18 +475,21 @@ export default function App() {
       if (!current.authenticated) {
         setServerStatus('local');
         setServerStatusUrl(null);
+        setServerAdmin(false);
         return;
       }
       setServerStatusUrl(current.serverUrl);
       try {
-        await getServerAccount();
+        const account = await getServerAccount();
         setServerStatus('connected');
+        setServerAdmin(account.isServerAdmin);
       } catch {
         setServerStatus('unreachable');
       }
     } catch {
       setServerStatus('local');
       setServerStatusUrl(null);
+      setServerAdmin(false);
     }
   }, [workspace.desktop]);
 
@@ -509,6 +515,7 @@ export default function App() {
           !workspace.confirmation &&
           !workspace.conflict &&
           !workspace.quitOpen &&
+          !serverUsersOpen &&
           !variablesOpen &&
           !authDialog &&
           !moveTarget &&
@@ -525,6 +532,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onSave);
   }, [
     workspace,
+    serverUsersOpen,
     variablesOpen,
     authDialog,
     moveTarget,
@@ -1488,12 +1496,18 @@ export default function App() {
           onOpenProject={workspace.openServerProject}
           onRefreshProject={workspace.refreshServerWorkspace}
           onDeleteProject={workspace.deleteServerProject}
+          onManageUsers={() => {
+            setServerConnectionOpen(false);
+            void checkServerStatus();
+            setServerUsersOpen(true);
+          }}
           onClose={() => {
             setServerConnectionOpen(false);
             void checkServerStatus();
           }}
         />
       )}
+      {serverUsersOpen && <ServerUsers onClose={() => setServerUsersOpen(false)} />}
       {settingsOpen && (
         <SettingsDialog
           onClose={() => setSettingsOpen(false)}
@@ -1503,6 +1517,14 @@ export default function App() {
             setServerConnectionOpen(true);
           }}
           serverConnectionDisabled={busy}
+          onServerUsers={
+            serverAdmin && serverStatus === 'connected'
+              ? () => {
+                  setSettingsOpen(false);
+                  setServerUsersOpen(true);
+                }
+              : undefined
+          }
           onNewLocalProject={() => {
             setSettingsOpen(false);
             workspace.createProject();

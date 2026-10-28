@@ -101,6 +101,7 @@ pub fn run() {
             server::server_admin_users,
             server::server_admin_approve_user,
             server::server_admin_set_user_status,
+            server::server_admin_delete_user,
             server::server_create_team_project,
             exports::commands::preview_openapi_export,
             exports::commands::save_openapi_export,

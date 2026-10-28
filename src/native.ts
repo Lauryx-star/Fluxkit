@@ -36,6 +36,10 @@ export interface ServerAccount {
 
 export interface ServerAccountAdminView extends ServerAccount {
   status: 'pending' | 'active' | 'disabled';
+  createdAt?: string | null;
+  /** Collections in the personal project, which deleting the account removes. */
+  personalCollections?: number | null;
+  teamProjects?: number | null;
 }
 
 export function getServerConnection() {
@@ -144,6 +148,10 @@ export function approveServerUser(userId: string) {
 }
 export function setServerUserStatus(userId: string, status: 'active' | 'disabled') {
   return invoke<void>('server_admin_set_user_status', { userId, status });
+}
+/** Permanently deletes an account with its personal project, vault and encrypted values. */
+export function deleteServerUser(userId: string) {
+  return invoke<void>('server_admin_delete_user', { userId });
 }
 export function createServerTeamProject(name: string) {
   return invoke<ServerProject>('server_create_team_project', { name });

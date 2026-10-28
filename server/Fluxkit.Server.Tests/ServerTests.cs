@@ -195,6 +195,65 @@ public sealed partial class ServerTests(ServerFixture server) : IClassFixture<Se
         Assert.Equal(HttpStatusCode.NotFound, (await member.GetAsync($"/api/projects/{id}")).StatusCode);
     }
 
+    [Fact]
+    public async Task Deleting_an_account_removes_its_private_data_but_keeps_team_content()
+    {
+        using var admin = await server.Admin();
+        using var member = await server.ApprovedUser();
+        using var other = await server.ApprovedUser();
+        var account = await member.GetFromJsonAsync<JsonElement>("/api/account");
+        var memberId = account.GetProperty("id").GetGuid();
+        var adminId = (await admin.GetFromJsonAsync<JsonElement>("/api/account")).GetProperty("id").GetGuid();
+        var created = await admin.PostAsJsonAsync("/api/projects", new { name = "Team kept after deletion" });
+        var team = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.PostAsJsonAsync($"/api/projects/{team}/members",
+            new { username = account.GetProperty("userName").GetString(), role = "member" })).StatusCode);
+        var personal = (await ServerFixture.PersonalProject(member)).GetProperty("id").GetGuid();
+        var teamCollection = Guid.NewGuid(); var teamRequest = Guid.NewGuid(); var secret = Guid.NewGuid();
+        var details = new { @params = Array.Empty<object>(), headers = Array.Empty<object>(), body = new { kind = "none", text = "", fields = Array.Empty<object>() } };
+        Assert.Equal(HttpStatusCode.OK, (await member.PostAsJsonAsync($"/api/projects/{team}/changes", new
+        {
+            operations = new object[]
+            {
+                new { op = "put", kind = "collection", id = teamCollection, data = new { name = "Team API", position = "g" } },
+                new { op = "put", kind = "request", id = teamRequest, data = new { collectionId = teamCollection, name = "Kept", method = "GET", url = "https://synthetic.invalid/kept", details, position = "g" } },
+                new { op = "put", kind = "variable", id = secret, data = new { name = "token", secret = true, position = "g" } },
+            }
+        })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await member.PostAsJsonAsync($"/api/projects/{personal}/changes", new
+        {
+            operations = new object[] { new { op = "put", kind = "collection", id = Guid.NewGuid(), data = new { name = "Private", position = "g" } } }
+        })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PutWithRevision(member, "/api/account/vault", 0, new { profile = Profile() })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PutWithRevision(member, $"/api/projects/{team}/vault-values/{secret}/default", 0,
+            new { nonce = Convert.ToBase64String(new byte[12]), ciphertext = Convert.ToBase64String(new byte[32]) })).StatusCode);
+
+        var listed = (await admin.GetFromJsonAsync<JsonElement>("/api/admin/users")).EnumerateArray()
+            .Single(user => user.GetProperty("id").GetGuid() == memberId);
+        Assert.Equal(1, listed.GetProperty("personalCollections").GetInt32());
+        Assert.Equal(1, listed.GetProperty("teamProjects").GetInt32());
+        Assert.True(listed.TryGetProperty("createdAt", out _));
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await other.DeleteAsync($"/api/admin/users/{memberId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.DeleteAsync($"/api/admin/users/{adminId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.DeleteAsync($"/api/admin/users/{memberId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await admin.DeleteAsync($"/api/admin/users/{memberId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await member.GetAsync("/api/account")).StatusCode);
+        Assert.DoesNotContain((await admin.GetFromJsonAsync<JsonElement>("/api/admin/users")).EnumerateArray(),
+            user => user.GetProperty("id").GetGuid() == memberId);
+
+        var tree = await admin.GetFromJsonAsync<JsonElement>($"/api/projects/{team}/tree");
+        Assert.Contains(tree.GetProperty("requests").EnumerateArray(), item => item.GetProperty("id").GetGuid() == teamRequest);
+        using var scope = server.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FluxkitDb>();
+        Assert.False(await db.Projects.AnyAsync(project => project.Id == personal));
+        Assert.False(await db.Collections.AnyAsync(collection => collection.ProjectId == personal));
+        Assert.False(await db.AccountVaults.AnyAsync(vault => vault.UserId == memberId));
+        Assert.False(await db.VaultValues.AnyAsync(value => value.UserId == memberId));
+        Assert.False(await db.Memberships.AnyAsync(membership => membership.UserId == memberId));
+        Assert.False(await db.Users.AnyAsync(user => user.Id == memberId));
+    }
+
     private static VaultProfile Profile(byte marker = 0) => new(1, "AES-256-GCM", new("Argon2id", 19, 65536, 3, 1),
         Convert.ToBase64String(new byte[16]), Convert.ToBase64String(new byte[12]), Convert.ToBase64String(Enumerable.Repeat(marker, 48).ToArray()));
     private static Task<HttpResponseMessage> PutWithRevision<T>(HttpClient client, string path, long revision, T body)

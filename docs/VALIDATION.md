@@ -1167,6 +1167,11 @@ Clippy with warnings denied passed. The check used Rust 1.97 instead of the pinn
 allowed the pre-existing `clippy::collapsible_match` finding in `src/http/auth.rs`. Frontend
 TypeScript, ESLint, Prettier, all 154 Vitest tests and the production UI build passed.
 
+Follow-up the same day (server user administration): with NuGet access available, the server
+built without warnings and all 28 server tests passed three times in a row against a local
+PostgreSQL 16, including account deletion; `dotnet ef migrations has-pending-model-changes`
+reported no model drift.
+
 The updated two-member scenario in the HTTPS/OIDC end-to-end suite was syntax-checked but not
 run (no Docker in the validation environment). A signed-in GUI session with two accounts
 editing the same project concurrently remains to be exercised manually.

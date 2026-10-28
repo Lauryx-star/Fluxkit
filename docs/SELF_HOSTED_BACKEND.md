@@ -37,6 +37,7 @@ The initial API exposes:
 | `POST /api/admin/users/{id}/approve` | Approve an account and create its personal project |
 | `GET /api/admin/users` | List user status and server-admin flag |
 | `PUT /api/admin/users/{id}/status` | Disable or re-enable an approved account |
+| `DELETE /api/admin/users/{id}` | Delete an account with its personal project, vault and encrypted values |
 | `GET /api/projects` | List only owned or member projects, with creation date and collection count |
 | `POST /api/projects` | Create a team project (server admin), optionally with an initial tree and values |
 | `DELETE /api/projects/{id}` | Delete an empty team project as server admin, `If-Match` project revision |
@@ -122,6 +123,19 @@ Variable definitions carry an optional `secret` classification. New variables de
 secret; older files without the field remain secret. Local-mode values stay in the OS store.
 Server ordinary values are shared project data; secret values belong to the caller and require
 an unlocked account vault. Existing local values never become shared through classification alone.
+
+## Managing accounts
+
+Server administrators open **Settings → Server users** (also linked from the Administration step
+of Server connection). It lists every registered account with status and registration date,
+filterable by status and username, and approves pending accounts, disables or reactivates them,
+or deletes them. Deleting asks for the username and permanently removes the account, its personal
+project with all rows and values, its account vault, its encrypted values in every project and
+its team memberships. Team projects and their content remain; rows the account last changed show
+no author name afterwards. Administrators cannot disable or delete their own account, and at
+least one active server administrator always remains. A deleted OIDC identity that signs in
+again becomes a new pending account. The local bootstrap administrator configured on the server
+is recreated at the next start if it was deleted.
 
 ## Account isolation and workspace recovery
 

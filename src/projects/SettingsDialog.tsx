@@ -35,6 +35,7 @@ export function SettingsDialog({
   desktop,
   onServerConnection,
   serverConnectionDisabled,
+  onServerUsers,
   onNewLocalProject,
   onOpenLocalProject,
   localProjectDisabled,
@@ -56,6 +57,8 @@ export function SettingsDialog({
   desktop: boolean;
   onServerConnection: () => void;
   serverConnectionDisabled: boolean;
+  /** Present only for a signed-in server administrator. */
+  onServerUsers?: () => void;
   onNewLocalProject: () => void;
   onOpenLocalProject: () => void;
   localProjectDisabled: boolean;
@@ -90,6 +93,14 @@ export function SettingsDialog({
             disabled={!desktop || serverConnectionDisabled}
             onClick={onServerConnection}
           />
+          {onServerUsers && (
+            <SettingsRow
+              label="Server users"
+              hint="See registered accounts; approve, disable or delete them"
+              disabled={!desktop}
+              onClick={onServerUsers}
+            />
+          )}
           <SettingsRow
             label="New local project"
             hint="Create a project stored only on this device"

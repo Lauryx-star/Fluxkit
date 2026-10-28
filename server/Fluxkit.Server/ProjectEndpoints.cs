@@ -102,7 +102,7 @@ public static class ProjectEndpoints
                     _ => null
                 };
                 changes.Add(current is { } found
-                    ? new { Kind = change.EntityKind, Id = change.EntityId, Operation = "put", found.Revision, Data = found.Data }
+                    ? new { Kind = change.EntityKind, Id = change.EntityId, Operation = "put", found.Revision, Data = (object?)found.Data }
                     : new { Kind = change.EntityKind, Id = change.EntityId, Operation = "delete", Revision = 0L, Data = (object?)null });
             }
             await transaction.CommitAsync(ct);

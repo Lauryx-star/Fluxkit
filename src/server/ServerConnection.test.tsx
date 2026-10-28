@@ -12,6 +12,7 @@ const onDeleteProject = vi.fn<(projectId: string, revision: number) => Promise<b
   async () => true,
 );
 const onClose = vi.fn();
+const onManageUsers = vi.fn();
 const workspace: ProjectView = {
   handle: 'workspace-handle',
   directory: '/synthetic/workspace',
@@ -56,6 +57,7 @@ function show(projects: ProjectView[] = []) {
       onOpenProject={onOpenProject}
       onRefreshProject={onRefreshProject}
       onDeleteProject={onDeleteProject}
+      onManageUsers={onManageUsers}
       onClose={onClose}
     />,
   );
@@ -288,4 +290,23 @@ it('keeps local credentials available only after discovering local account mode'
     expect(native.loginToServer).toHaveBeenCalledWith('synthetic', 'Synthetic password'),
   );
   expect(native.loginWithOidc).not.toHaveBeenCalled();
+});
+
+it('points administrators from the Administration step to the server user view', async () => {
+  const user = userEvent.setup();
+  vi.mocked(native.getServerAccount).mockResolvedValue({
+    id: 'account-id',
+    username: 'Synthetic admin',
+    isServerAdmin: true,
+  });
+  vi.mocked(native.listServerAdminUsers).mockResolvedValue([
+    { id: 'account-id', username: 'Synthetic admin', status: 'active', isServerAdmin: true },
+    { id: 'pending-id', username: 'newcomer', status: 'pending', isServerAdmin: false },
+  ]);
+  show();
+  await user.click(await screen.findByRole('tab', { name: 'Administration' }));
+  const section = screen.getByRole('region', { name: 'Server account administration' });
+  expect(section).toHaveTextContent('2 registered accounts, 1 awaiting approval.');
+  await user.click(screen.getByRole('button', { name: 'Manage server users' }));
+  expect(onManageUsers).toHaveBeenCalled();
 });

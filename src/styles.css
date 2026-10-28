@@ -1234,6 +1234,130 @@ svg {
   color: var(--muted);
   font-weight: 400;
 }
+.modal:has(.server-users) {
+  width: 620px;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100dvh - 60px);
+  overflow-y: auto;
+}
+.server-users-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 16px 0 12px;
+}
+.server-users-filters input {
+  background: #11180e;
+  border: 1px solid #445939;
+  border-radius: 5px;
+  color: #e0ebd7;
+  padding: 9px 10px;
+  font-size: 13px;
+}
+.server-users-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.server-users-tab {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 5px 11px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+.server-users-tab:hover:not(.active) {
+  background: #1b2217;
+  color: #c3d2b7;
+}
+.server-users-tab.active {
+  background: #26311f;
+  border-color: #46593a;
+  color: #e3f0d7;
+}
+.server-users-count {
+  font: 10px var(--mono);
+  color: var(--muted);
+}
+.server-users-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.server-user {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 11px 2px;
+  border-bottom: 1px solid var(--line);
+}
+.server-user-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.server-user-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #dbe6d2;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.server-user-badge {
+  border: 1px solid #3d4934;
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 10px;
+  color: #aebf9f;
+}
+.server-user-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.server-user-status.active {
+  color: var(--accent);
+}
+.server-user-status.pending {
+  color: #e6c87a;
+}
+.server-user-status.disabled {
+  color: #e39b8b;
+}
+.server-user-actions {
+  display: flex;
+  gap: 6px;
+}
+.secondary-button.danger-button {
+  border-color: #6b3a32;
+  color: #f0b4a6;
+}
+.secondary-button.danger-button:hover:not(:disabled) {
+  background: #3a221d;
+}
+.server-user-delete {
+  flex-basis: 100%;
+  border: 1px solid #6b3a32;
+  border-radius: 7px;
+  padding: 12px 14px;
+  background: #1f1613;
+}
+.server-user-delete p {
+  margin: 0 0 12px;
+}
+.server-user-delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
 .settings-empty {
   color: var(--muted);
   font-size: 12px;

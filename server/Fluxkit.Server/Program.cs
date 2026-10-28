@@ -181,7 +181,18 @@ app.MapGet("/api/admin/pending-users", async (FluxkitDb db, CancellationToken ct
 app.MapGet("/api/admin/users", async (FluxkitDb db, CancellationToken ct) =>
     Results.Ok(await db.Users.AsNoTracking()
         .OrderBy(user => user.UserName)
-        .Select(user => new { user.Id, user.UserName, user.Status, user.IsServerAdmin, user.CreatedAt })
+        .Select(user => new
+        {
+            user.Id,
+            user.UserName,
+            user.Status,
+            user.IsServerAdmin,
+            user.CreatedAt,
+            // What deleting the account removes, so the confirmation can say so.
+            PersonalCollections = db.Collections.Count(collection => db.Projects.Any(project =>
+                project.Id == collection.ProjectId && project.OwnerId == user.Id && project.Kind == "personal")),
+            TeamProjects = db.Memberships.Count(membership => membership.UserId == user.Id)
+        })
         .ToListAsync(ct)))
     .RequireAuthorization(policy => policy.RequireRole("serverAdmin"));
 
@@ -213,6 +224,28 @@ app.MapPut("/api/admin/users/{id:guid}/status", async (
     if (user.Status == "pending") return Results.Conflict(new { error = "Pending accounts must use the approval action." });
     user.Status = input.Status;
     await db.SaveChangesAsync(ct);
+    return Results.NoContent();
+}).RequireAuthorization(policy => policy.RequireRole("serverAdmin"));
+
+// Permanently removes an account with its private data: the personal project (with all its
+// rows and values), the account vault, its own encrypted values in every project and its team
+// memberships. Team projects and their content stay; rows it last changed keep the stale id.
+app.MapDelete("/api/admin/users/{id:guid}", async (
+    Guid id, ClaimsPrincipal principal, FluxkitDb db, CancellationToken ct) =>
+{
+    if (id == UserId(principal))
+        return Results.Conflict(new { error = "You cannot delete your own account." });
+    await using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
+    var user = await db.Users.SingleOrDefaultAsync(candidate => candidate.Id == id, ct);
+    if (user is null) return Results.NotFound();
+    if (user.IsServerAdmin && user.Status == "active"
+        && !await db.Users.AnyAsync(candidate => candidate.Id != id && candidate.IsServerAdmin
+            && candidate.Status == "active", ct))
+        return Results.Conflict(new { error = "At least one active server administrator must remain." });
+    await db.Projects.Where(project => project.OwnerId == id && project.Kind == "personal").ExecuteDeleteAsync(ct);
+    // Vault, encrypted values, memberships and identity rows cascade with the account.
+    await db.Users.Where(candidate => candidate.Id == id).ExecuteDeleteAsync(ct);
+    await transaction.CommitAsync(ct);
     return Results.NoContent();
 }).RequireAuthorization(policy => policy.RequireRole("serverAdmin"));
 

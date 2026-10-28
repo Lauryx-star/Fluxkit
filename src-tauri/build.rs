@@ -27,6 +27,7 @@ fn main() {
             "server_admin_users",
             "server_admin_approve_user",
             "server_admin_set_user_status",
+            "server_admin_delete_user",
             "server_create_team_project",
             "preview_openapi_export",
             "save_openapi_export",

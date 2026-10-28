@@ -135,6 +135,13 @@ pub struct ServerAccountAdminView {
     username: String,
     status: String,
     is_server_admin: bool,
+    #[serde(default)]
+    created_at: Option<String>,
+    /// Collections in the account's personal project, which deleting the account removes.
+    #[serde(default)]
+    personal_collections: Option<i64>,
+    #[serde(default)]
+    team_projects: Option<i64>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -652,6 +659,27 @@ pub async fn server_admin_set_user_status(
         reqwest::Method::PUT,
         &format!("/api/admin/users/{id}/status"),
         Some(serde_json::json!({ "status": status })),
+    )
+    .await?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(response_error(response).await)
+    }
+}
+
+/// Permanently deletes an account and its private server data (server administrators only).
+#[tauri::command]
+pub async fn server_admin_delete_user(
+    app: tauri::AppHandle,
+    user_id: String,
+) -> Result<(), String> {
+    let id = uuid::Uuid::parse_str(&user_id).map_err(|_| "Invalid user identifier.".to_string())?;
+    let response = server_api_request(
+        &app,
+        reqwest::Method::DELETE,
+        &format!("/api/admin/users/{id}"),
+        None,
     )
     .await?;
     if response.status().is_success() {

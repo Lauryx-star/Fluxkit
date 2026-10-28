@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   addServerProjectMember,
-  approveServerUser,
   createServerTeamProject,
   getServerAccount,
   getServerConnection,
@@ -16,7 +15,6 @@ import {
   registerServerAccount,
   removeServerProjectMember,
   setServerConnection,
-  setServerUserStatus,
   updateServerProjectMember,
   type ServerConnection as Connection,
   type ServerAccount,
@@ -37,6 +35,7 @@ export function ServerConnection({
   onOpenProject,
   onRefreshProject,
   onDeleteProject,
+  onManageUsers,
 }: {
   onClose: () => void;
   localProjects: ProjectView[];
@@ -44,6 +43,8 @@ export function ServerConnection({
   onRefreshProject: (handle: string) => Promise<void>;
   /** Resolves false when the user kept the project open instead. */
   onDeleteProject: (projectId: string, revision: number) => Promise<boolean>;
+  /** Opens the server user administration (server administrators only). */
+  onManageUsers: () => void;
 }) {
   const [connection, setConnection] = useState<Connection | null>(null);
   const [projects, setProjects] = useState<ServerProject[]>([]);
@@ -65,6 +66,7 @@ export function ServerConnection({
   const [transferHandle, setTransferHandle] = useState<string | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<ServerProject | null>(null);
   const [step, setStep] = useState<StepId>('vault');
+  const pendingUsers = adminUsers.filter((user) => user.status === 'pending').length;
   const hasServerProjects = localProjects.some(
     (project) => project.serverOwned || project.serverSync || project.readOnly,
   );
@@ -185,19 +187,6 @@ export function ServerConnection({
       setMemberUsername('');
     } catch (reason) {
       setError(typeof reason === 'string' ? reason : 'Could not update project membership.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function changeAccount(operation: () => Promise<void>) {
-    setBusy(true);
-    setError(null);
-    try {
-      await operation();
-      setAdminUsers(await listServerAdminUsers());
-    } catch (reason) {
-      setError(typeof reason === 'string' ? reason : 'Could not update the account.');
     } finally {
       setBusy(false);
     }
@@ -618,39 +607,19 @@ export function ServerConnection({
                     Create project
                   </button>
                   <h3>Server accounts</h3>
-                  <ul>
-                    {adminUsers.map((user) => (
-                      <li key={user.id}>
-                        {user.username} ({user.status}){user.isServerAdmin ? ' · admin' : ''}{' '}
-                        {user.status === 'pending' ? (
-                          <button
-                            type="button"
-                            className="secondary-button"
-                            disabled={busy}
-                            onClick={() => void changeAccount(() => approveServerUser(user.id))}
-                          >
-                            Approve account
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            className="secondary-button"
-                            disabled={busy || (user.id === account.id && user.status === 'active')}
-                            onClick={() =>
-                              void changeAccount(() =>
-                                setServerUserStatus(
-                                  user.id,
-                                  user.status === 'active' ? 'disabled' : 'active',
-                                ),
-                              )
-                            }
-                          >
-                            {user.status === 'active' ? 'Disable' : 'Reactivate'}
-                          </button>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
+                  <p>
+                    {adminUsers.length} registered{' '}
+                    {adminUsers.length === 1 ? 'account' : 'accounts'}
+                    {pendingUsers > 0 ? `, ${pendingUsers} awaiting approval` : ''}.
+                  </p>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={busy}
+                    onClick={onManageUsers}
+                  >
+                    Manage server users
+                  </button>
                 </section>
               )}
               {step === 'upload' && (
