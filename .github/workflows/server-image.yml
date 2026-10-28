@@ -1,0 +1,127 @@
+name: Server Image
+
+# Builds the self-hosted server, runs its tests and publishes the Docker image to the GitHub
+# Container Registry of this repository (ghcr.io/<owner>/fluxkit-server).
+#
+# Version: yyyy.MM.dd.<commit> — the UTC date of the commit followed by its short hash, for
+# example 2026.10.28.9edf377. Using the commit date (not the build date) keeps the version of a
+# commit stable when its build is repeated. Each publish also moves the `latest` tag. The version
+# is a Docker tag and the image's OCI version label; it is not a SemVer/NuGet version, so it is
+# not written into the .NET assembly (the SDK rejects the hash as a version part).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/Fluxkit.Server/**'
+      - '.dockerignore'
+      - '.github/workflows/server-image.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: server-image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test server
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: fluxkit
+          POSTGRES_PASSWORD: fluxkit_ci_only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U fluxkit"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      FLUXKIT_TEST_DATABASE: 'Host=localhost;Port=5432;Database=postgres;Username=fluxkit;Password=fluxkit_ci_only'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore (locked)
+        run: dotnet restore server/Fluxkit.Server.Tests/Fluxkit.Server.Tests.csproj --locked-mode
+
+      - name: Run server tests
+        run: dotnet test server/Fluxkit.Server.Tests/Fluxkit.Server.Tests.csproj --no-restore --configuration Release
+
+  publish:
+    name: Publish image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Compute version and image name
+        id: version
+        run: |
+          date=$(TZ=UTC git log -1 --date=format-local:'%Y.%m.%d' --format=%cd HEAD)
+          revision=$(git rev-parse --short=7 HEAD)
+          echo "version=${date}.${revision}" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # Registry paths must be lowercase; the repository owner may not be.
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/fluxkit-server" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.version.outputs.image }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=Fluxkit Server
+            org.opencontainers.image.description=Optional self-hosted server for Fluxkit
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.version.outputs.revision }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Fluxkit.Server/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published ${{ steps.version.outputs.image }}"
+            echo
+            echo "- \`${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}\`"
+            echo "- \`${{ steps.version.outputs.image }}:latest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
