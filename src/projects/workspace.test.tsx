@@ -13,7 +13,14 @@ import { StrictMode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from '../App';
 import * as native from '../native';
-import type { Collection, ProjectView } from './types';
+import {
+  emptyDraft,
+  fromRequest,
+  isDirty,
+  type Collection,
+  type ProjectView,
+  type SavedRequest,
+} from './types';
 import type { EnvironmentReply } from '../environments/types';
 import type { ExecutionResult } from '../http/types';
 import { SERVER_POLL_MS, useWorkspace } from './useWorkspace';
@@ -30,6 +37,9 @@ vi.mock('../native', () => ({
   refreshServerWorkspace: vi.fn(),
   deleteServerProject: vi.fn(),
   restoreLastProject: vi.fn(),
+  restoreSession: vi.fn(),
+  openServerProject: vi.fn(),
+  saveSession: vi.fn(),
   rememberProject: vi.fn(),
   saveCollection: vi.fn(),
   moveRequest: vi.fn(),
@@ -96,6 +106,8 @@ beforeEach(() => {
   vi.mocked(native.isDesktop).mockReturnValue(true);
   vi.mocked(native.getAppInfo).mockResolvedValue({ name: 'Fluxkit', version: '0.1.0' });
   vi.mocked(native.restoreLastProject).mockResolvedValue(null);
+  vi.mocked(native.restoreSession).mockResolvedValue(null);
+  vi.mocked(native.saveSession).mockResolvedValue();
   vi.mocked(native.rememberProject).mockResolvedValue();
   vi.mocked(native.chooseProject).mockImplementation(async (name) => {
     if (name) {
@@ -894,6 +906,200 @@ async function requestQuit() {
   expect(preventDefault).toHaveBeenCalledOnce();
 }
 
+describe('session restore', () => {
+  function savedRequest(id: string, url: string): SavedRequest {
+    return {
+      id,
+      name: `Request ${id}`,
+      folderId: null,
+      method: 'GET',
+      url,
+      params: [],
+      headers: [],
+      body: { kind: 'none', text: '', fields: [], file: null },
+    };
+  }
+  function project(name: string, requests: SavedRequest[]): ProjectView {
+    return {
+      ...fixture(name),
+      collections: [
+        {
+          revision: 'collection-1',
+          data: {
+            schemaVersion: 1,
+            id: crypto.randomUUID(),
+            name: `${name} API`,
+            auth: { kind: 'none' },
+            folders: [],
+            requests,
+          },
+        },
+      ],
+    };
+  }
+  function tab(view: ProjectView, request: SavedRequest, url = request.url) {
+    const collectionId = view.collections[0]!.data.id;
+    const draft = fromRequest(99, request, view.handle, collectionId);
+    return { project: view.handle, draft: { ...draft, url } };
+  }
+
+  it('reopens every project with its tabs, unsaved edits and the active tab', async () => {
+    const first = project('First', [savedRequest('a', 'https://a.invalid')]);
+    const second = project('Second', [savedRequest('b', 'https://b.invalid')]);
+    vi.mocked(native.restoreSession).mockResolvedValue({
+      projects: [first, second],
+      activeProject: second.handle,
+      tabs: [
+        tab(first, first.collections[0]!.data.requests[0]!),
+        tab(second, second.collections[0]!.data.requests[0]!, 'https://unsaved.invalid'),
+      ],
+      activeTab: 1,
+      requestPaneRatio: 0.6,
+      unavailable: [],
+    });
+    const { result } = renderHook(() => useWorkspace());
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(result.current.projects.map((item) => item.handle)).toEqual([
+      first.handle,
+      second.handle,
+    ]);
+    expect(result.current.activeHandle).toBe(second.handle);
+    expect(result.current.drafts.map((item) => item.id)).toEqual([1, 2]);
+    expect(result.current.draft).toMatchObject({ id: 2, url: 'https://unsaved.invalid' });
+    expect(isDirty(result.current.draft!)).toBe(true);
+    expect(isDirty(result.current.drafts[0]!)).toBe(false);
+    expect(result.current.restoredRatio).toBe(0.6);
+    expect(native.restoreLastProject).not.toHaveBeenCalled();
+  });
+
+  it('reopens read-only server copies online and keeps tabs of missing projects', async () => {
+    const offline = {
+      ...project('Server', [savedRequest('s', 'https://s.invalid')]),
+      readOnly: true,
+    };
+    const online = {
+      ...structuredClone(offline),
+      handle: 'online-handle',
+      readOnly: false,
+      serverSync: true,
+    };
+    vi.mocked(native.openServerProject).mockResolvedValue(online);
+    vi.mocked(native.restoreSession).mockResolvedValue({
+      projects: [offline],
+      activeProject: offline.handle,
+      tabs: [
+        tab(offline, offline.collections[0]!.data.requests[0]!),
+        { project: null, draft: emptyDraft(5, null, null, null) },
+      ],
+      activeTab: 0,
+      requestPaneRatio: null,
+      unavailable: ['/synthetic/moved'],
+    });
+    const { result } = renderHook(() => useWorkspace());
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(native.closeProject).toHaveBeenCalledWith(offline.handle);
+    expect(result.current.projects.map((item) => item.handle)).toEqual(['online-handle']);
+    expect(result.current.activeHandle).toBe('online-handle');
+    expect(result.current.drafts[0]).toMatchObject({ id: 1, projectHandle: 'online-handle' });
+    expect(result.current.drafts[1]).toMatchObject({ id: 2, projectHandle: null });
+    expect(result.current.error).toContain('/synthetic/moved could not be reopened');
+  });
+
+  it('gives the response the bottom quarter by default and restores a moved divider', async () => {
+    const first = render(<App />);
+    const initial = await screen.findByRole('separator', {
+      name: 'Resize request and response panes',
+    });
+    await waitFor(() => expect(initial).toHaveAttribute('aria-valuenow', '75'));
+    first.unmount();
+    vi.mocked(native.restoreSession).mockResolvedValue({
+      projects: [project('Layout', [savedRequest('a', 'https://a.invalid')])],
+      activeProject: null,
+      tabs: [],
+      activeTab: null,
+      requestPaneRatio: 0.6,
+      unavailable: [],
+    });
+    render(<App />);
+    const divider = await screen.findByRole('separator', {
+      name: 'Resize request and response panes',
+    });
+    await waitFor(() => expect(divider).toHaveAttribute('aria-valuenow', '60'));
+  });
+
+  it('remembers open tabs and the layout while working', async () => {
+    const view = project('Saved', [savedRequest('a', 'https://a.invalid')]);
+    vi.mocked(native.restoreSession).mockResolvedValue({
+      projects: [view],
+      activeProject: view.handle,
+      tabs: [tab(view, view.collections[0]!.data.requests[0]!)],
+      activeTab: 0,
+      requestPaneRatio: null,
+      unavailable: [],
+    });
+    const { result } = renderHook(() => useWorkspace(false, undefined, false, 0.7));
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    act(() => result.current.updateDraft({ url: 'https://typed.invalid' }));
+    await waitFor(() =>
+      expect(native.saveSession).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          projects: [view.handle],
+          activeProject: view.handle,
+          activeTab: 0,
+          requestPaneRatio: 0.7,
+          tabs: [
+            expect.objectContaining({
+              project: view.handle,
+              draft: expect.objectContaining({ url: 'https://typed.invalid' }),
+            }),
+          ],
+        }),
+      ),
+    );
+  });
+
+  it('keeps unsaved edits for the next start or drops them, as chosen when quitting', async () => {
+    const user = await setupCollection();
+    await user.click(screen.getByRole('button', { name: 'New request in Shop API' }));
+    await user.type(screen.getByRole('textbox', { name: 'Request URL' }), 'https://kept.invalid');
+    await requestQuit();
+    await user.click(screen.getByRole('button', { name: 'Keep for next start' }));
+    await waitFor(() => expect(lifecycle.destroy).toHaveBeenCalledOnce());
+    expect(native.saveSession).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        tabs: [
+          expect.objectContaining({
+            draft: expect.objectContaining({ url: 'https://kept.invalid' }),
+          }),
+        ],
+      }),
+    );
+    expect(native.saveCollection).toHaveBeenCalledTimes(1); // only the collection creation
+  });
+
+  it('does not quit when the edits to keep could not be written', async () => {
+    const user = await setupCollection();
+    await user.click(screen.getByRole('button', { name: 'New request in Shop API' }));
+    await user.type(screen.getByRole('textbox', { name: 'Request URL' }), 'https://kept.invalid');
+    vi.mocked(native.saveSession).mockRejectedValue('Could not save the open tabs.');
+    await requestQuit();
+    await user.click(screen.getByRole('button', { name: 'Keep for next start' }));
+    const quit = within(screen.getByRole('dialog', { name: 'Unsaved changes' }));
+    expect(await quit.findByRole('alert')).toHaveTextContent('Could not save the open tabs');
+    expect(lifecycle.destroy).not.toHaveBeenCalled();
+  });
+
+  it('discarding leaves only saved versions for the next start', async () => {
+    const user = await setupCollection();
+    await user.click(screen.getByRole('button', { name: 'New request in Shop API' }));
+    await user.type(screen.getByRole('textbox', { name: 'Request URL' }), 'https://gone.invalid');
+    await requestQuit();
+    await user.click(screen.getByRole('button', { name: 'Discard changes' }));
+    await waitFor(() => expect(lifecycle.destroy).toHaveBeenCalledOnce());
+    expect(native.saveSession).toHaveBeenLastCalledWith(expect.objectContaining({ tabs: [] }));
+  });
+});
+
 describe('save before quitting', () => {
   it('cancels with the button or Escape and discards only after the explicit choice', async () => {
     const user = await setupCollection();
@@ -1151,8 +1357,8 @@ it('keeps an edited variable value open after a credential-store failure during 
   });
   const user = await setupCollection();
   await user.click(screen.getByRole('button', { name: 'Variables' }));
-  await selectOption(user, screen.getByRole('combobox', { name: 'Value variable' }), variable);
-  await user.type(screen.getByLabelText('Variable value'), 'synthetic-value');
+  await user.click(await screen.findByRole('button', { name: 'Edit Default value of baseUrl' }));
+  await user.type(screen.getByLabelText('Default value of baseUrl'), 'synthetic-value');
   await requestQuit();
   await user.click(screen.getByRole('button', { name: 'Save & quit' }));
   const quit = within(screen.getByRole('dialog', { name: 'Unsaved changes' }));
@@ -1166,7 +1372,7 @@ it('keeps an edited variable value open after a credential-store failure during 
     }),
   );
   await user.click(quit.getByRole('button', { name: 'Cancel' }));
-  expect(screen.getByLabelText('Variable value')).toHaveValue('synthetic-value');
+  expect(screen.getByLabelText('Default value of baseUrl')).toHaveValue('synthetic-value');
 });
 
 it('applies a native preview rename before committing the same import plan', async () => {

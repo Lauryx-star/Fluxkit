@@ -751,7 +751,7 @@ async fn inherited_authentication_uses_variable_ids_and_manual_fields_win() {
     assert!(prepare(&input)
         .err()
         .unwrap()
-        .contains("variable is missing"));
+        .contains("Authentication uses a deleted variable"));
     input.request.auth = Some(Auth::ApiKey {
         name: "access_key".into(),
         value: token.clone(),
@@ -1186,4 +1186,39 @@ fn automatic_defaults_do_not_override_pending_custom_login_headers() {
             && header.source == "authentication"
             && header.value == "••••••••"));
     }
+}
+
+#[test]
+fn unknown_variables_are_all_named_before_anything_is_resolved() {
+    let settings = tempfile::tempdir().unwrap();
+    let mut input = input("https://synthetic.invalid/{{deletedBase}}/items");
+    input.request.headers = vec![
+        Entry {
+            id: 1,
+            enabled: true,
+            key: "X-Synthetic".into(),
+            value: "{{deletedToken}} {{deletedBase}}".into(),
+        },
+        Entry {
+            id: 2,
+            enabled: false,
+            key: "X-Disabled".into(),
+            value: "{{ignoredWhileDisabled}}".into(),
+        },
+    ];
+    let error = prepare::prepare(
+        &input,
+        None,
+        "session",
+        settings.path(),
+        &client(),
+        &Fake(HashMap::new()),
+        &CancellationToken::new(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(
+        error,
+        "Unknown variables {{deletedBase}}, {{deletedToken}}: they are not defined in this project. Replace them before sending."
+    );
 }

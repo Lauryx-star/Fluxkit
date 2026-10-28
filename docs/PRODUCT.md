@@ -24,10 +24,11 @@ local project files, and migration from existing API clients.
 The hierarchy is project, collection, nested folders, and requests. A collection usually
 represents an API application. Requests can live directly in a collection or in folders.
 
-On desktop startup, reopen the last active project if its saved files and identity remain
-valid. Keep its path only in local app-data settings. An unavailable project produces a
-recoverable warning; explicitly closing the last project leaves the next startup empty.
-This restores saved project definitions, not unsaved request drafts or response payloads.
+On desktop startup, reopen every project that was open, with its request tabs (including
+unsaved edits the user chose to keep), the active tab and the request/response divider. Keep
+this only in local app-data settings. An unavailable project produces a recoverable warning and
+its tabs stay open without a project; closing all projects leaves the next startup empty.
+Response payloads are never restored.
 
 Environments belong to a project and apply to all its collections and requests. Each
 project selects its own environment independently. The same variable can hold different

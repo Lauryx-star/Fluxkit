@@ -26,7 +26,7 @@ function Variable({
       >
         <option value="">Choose a project variable…</option>
         {value && !variables.some((v) => v.id === value) && (
-          <option value={value}>Missing variable — choose a replacement</option>
+          <option value={value}>Deleted variable — choose a replacement</option>
         )}
         {variables.map((v) => (
           <option key={v.id} value={v.id}>

@@ -184,6 +184,27 @@ previous valid settings. A normal window close waits for queued selection writes
 damaged settings, close Fluxkit and preserve the damaged file before restoring a valid
 previous copy; never copy these machine-specific settings into portable project files.
 
+### Open projects and tabs
+
+`session.json` (schema version 1) in the same directory remembers the projects that are open
+(directory and project ID, in tab-bar order), the active project, every open request tab with its
+editor contents, the active tab and the share of the request pane above the response
+(`requestPaneRatio`, 0–1). It is written about half a second after changes and once more when
+quitting. Startup reopens the projects with the usual validation and fresh handles; read-only
+server copies are reopened online. Tabs that were unedited follow the current saved request;
+edited tabs keep their edits and ask before overwriting a request that changed meanwhile. A
+project that cannot be reopened is reported and its tabs stay open without a project. Without
+a `session.json` (first start after upgrading) only `workspace.json`'s last project reopens.
+Without a saved divider the response takes the bottom quarter.
+
+Tab contents are request templates as typed, including unsaved edits, and can contain literal
+credentials typed into a request. They never contain resolved variable values or responses.
+The file is created owner-only (on Unix) and limited to 16 MiB, 50 projects and 200 tabs; invalid
+or unsupported files are ignored without being changed. When quitting with unsaved changes,
+**Save & quit** stores the saved versions, **Keep for next start** keeps the unsaved edits (and
+does not quit if they cannot be written), and **Discard changes** reopens only saved versions
+and drops tabs that were never saved.
+
 IPC: `restore_last_project()` returns `ProjectView | null` or a non-sensitive error.
 `remember_project(handle: string | null)` accepts only an authorized open handle or an
 explicit clear; the frontend cannot submit a path. Neither command reads credential values

@@ -178,7 +178,7 @@ export function QuitDialog({
 }: {
   saving: boolean;
   error: string | null;
-  onChoose: (choice: 'cancel' | 'discard' | 'save') => void;
+  onChoose: (choice: 'cancel' | 'discard' | 'save' | 'keep') => void;
 }) {
   const cancel = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -196,7 +196,10 @@ export function QuitDialog({
         }}
       >
         <h2>Save changes before quitting?</h2>
-        <p>You have unsaved changes. Save them, discard them, or return to Fluxkit.</p>
+        <p>
+          You have unsaved changes. Save them, keep unsaved requests open for the next start,
+          discard them, or return to Fluxkit.
+        </p>
         {error && <p role="alert">{error}</p>}
         {saving && <p role="status">Saving changes… Fluxkit will quit when all saves succeed.</p>}
         <div className="dialog-actions quit-actions">
@@ -214,6 +217,9 @@ export function QuitDialog({
             onClick={() => onChoose('discard')}
           >
             Discard changes
+          </button>
+          <button className="secondary-button" disabled={saving} onClick={() => onChoose('keep')}>
+            Keep for next start
           </button>
           <button className="primary-button" disabled={saving} onClick={() => onChoose('save')}>
             Save & quit

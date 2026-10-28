@@ -506,7 +506,8 @@ fn hover_preview_resolves_one_variable_and_rejects_stale_scope_before_reading() 
 }
 
 #[test]
-fn removing_an_auth_referenced_variable_keeps_definitions_and_os_values() {
+fn a_used_variable_can_be_deleted_after_its_usages_were_listed() {
+    use crate::projects::model::{Auth, Body, BodyKind, Collection, Entry, Request};
     let root = tempdir().unwrap();
     let settings = tempdir().unwrap();
     let values = Fake::default();
@@ -521,37 +522,132 @@ fn removing_an_auth_referenced_variable_keeps_definitions_and_os_values() {
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     project["auth"] = serde_json::json!({"kind":"bearer","token":variable});
     std::fs::write(&path, serde_json::to_vec(&project).unwrap()).unwrap();
+    let request = |name: &str, url: &str, header: &str| Request {
+        import_issues: vec![],
+        id: Uuid::new_v4().to_string(),
+        name: name.into(),
+        auth: None,
+        folder_id: None,
+        method: "GET".into(),
+        url: url.into(),
+        params: vec![],
+        headers: vec![Entry {
+            id: 1,
+            enabled: false,
+            key: "X-Synthetic".into(),
+            value: header.into(),
+        }],
+        body: Body {
+            kind: BodyKind::None,
+            text: String::new(),
+            fields: vec![],
+            file: None,
+        },
+    };
+    let collection = Collection {
+        schema_version: 1,
+        id: Uuid::new_v4().to_string(),
+        name: "Synthetic API".into(),
+        auth: Some(Auth::Bearer {
+            token: variable.clone(),
+        }),
+        open_api: None,
+        postman: None,
+        folders: vec![],
+        requests: vec![
+            request("Uses it in the URL", "{{baseUrl}}/items", ""),
+            request(
+                "Uses it in a disabled header",
+                "https://synthetic.invalid",
+                "{{baseUrl}}",
+            ),
+            request("Similar name only", "{{baseUrlOld}}/items", ""),
+        ],
+    };
+    crate::projects::store::atomic(
+        &root
+            .path()
+            .join(format!("collections/{}.json", collection.id)),
+        &crate::projects::store::encode(&collection).unwrap(),
+        false,
+    )
+    .unwrap();
+
+    let usages = apply(
+        root.path(),
+        settings.path(),
+        "p",
+        Action::Usages {
+            variable: variable.clone(),
+        },
+        &values,
+    )
+    .unwrap()
+    .usages
+    .unwrap();
+    assert_eq!(
+        usages.requests,
+        [
+            "Synthetic API › Uses it in the URL",
+            "Synthetic API › Uses it in a disabled header"
+        ]
+    );
+    assert_eq!(
+        usages.authentication,
+        ["Project authentication", "Collection Synthetic API"]
+    );
+
     let mut removed = data.clone();
     removed.variables.remove(0);
-    let error = apply(
+    apply(
         root.path(),
         settings.path(),
         "p",
         Action::Save {
-            data: removed.clone(),
+            data: removed,
             expected: saved.view.revision,
         },
         &values,
     )
-    .err()
     .unwrap();
-    assert!(error.contains("still referenced"));
-    assert_eq!(
-        values.get(&key("p", variable, None)).unwrap().as_deref(),
-        Some("synthetic-value")
-    );
+    assert!(values.get(&key("p", variable, None)).unwrap().is_none());
     assert_eq!(
         load(root.path(), settings.path(), "p")
             .unwrap()
             .data
             .variables
             .len(),
-        2
+        1
     );
-    project.as_object_mut().unwrap().remove("auth");
-    std::fs::write(&path, serde_json::to_vec(&project).unwrap()).unwrap();
-    save(root.path(), settings.path(), "p", removed, &values);
-    assert!(values.get(&key("p", variable, None)).unwrap().is_none());
+    let error = resolve(
+        "{{baseUrl}}/items",
+        "p",
+        &load(root.path(), settings.path(), "p").unwrap().data,
+        None,
+        &values,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        "Unknown variable {{baseUrl}}: it is not defined in this project. Replace it before sending."
+    );
+}
+
+#[test]
+fn unknown_variables_are_listed_once_in_order() {
+    let data = fixture();
+    let unknown = unknown_variables(
+        [
+            "{{first}}/{{baseUrl}}",
+            "{{second}} {{first}} {{not valid}} {{open",
+        ],
+        &data,
+    );
+    assert_eq!(unknown, ["first", "second"]);
+    assert_eq!(
+        unknown_variables_message(&unknown),
+        "Unknown variables {{first}}, {{second}}: they are not defined in this project. Replace them before sending."
+    );
 }
 
 #[test]
@@ -572,4 +668,92 @@ fn set_value_action_accepts_the_frontend_camel_case_value_revision() {
             ..
         }
     ));
+}
+
+#[test]
+fn the_variables_table_shows_ordinary_values_and_only_marks_secrets_as_set() {
+    let dir = tempdir().unwrap();
+    let settings = dir.path().join("settings");
+    let values = Fake::default();
+    let mut data = fixture();
+    data.variables[0].secret = Some(false);
+    data.variables[1].secret = Some(true);
+    save(dir.path(), &settings, "p", data.clone(), &values);
+    let (url, user) = (&data.variables[0].id, &data.variables[1].id);
+    let test = data.environments[0].id.clone();
+    values
+        .set(&key("p", url, None), "https://synthetic.invalid")
+        .unwrap();
+    values
+        .set(
+            &key("p", url, Some(&test)),
+            "https://test.synthetic.invalid",
+        )
+        .unwrap();
+    values
+        .set(&key("p", user, None), "synthetic-secret-user")
+        .unwrap();
+    let reply = apply(
+        dir.path(),
+        &settings,
+        "p",
+        Action::Table {
+            environment: Some(test.clone()),
+        },
+        &values,
+    )
+    .unwrap();
+    let table = reply.table.unwrap();
+    assert_eq!(
+        table[0],
+        TableRow {
+            variable: url.clone(),
+            default: TableCell {
+                set: true,
+                value: Some("https://synthetic.invalid".into())
+            },
+            environment: Some(TableCell {
+                set: true,
+                value: Some("https://test.synthetic.invalid".into())
+            }),
+        }
+    );
+    assert_eq!(
+        table[1],
+        TableRow {
+            variable: user.clone(),
+            default: TableCell {
+                set: true,
+                value: None
+            },
+            environment: Some(TableCell {
+                set: false,
+                value: None
+            }),
+        }
+    );
+    let json = serde_json::to_string(
+        &apply(
+            dir.path(),
+            &settings,
+            "p",
+            Action::Table { environment: None },
+            &values,
+        )
+        .unwrap()
+        .table,
+    )
+    .unwrap();
+    assert!(!json.contains("synthetic-secret-user"), "{json}");
+    assert!(!json.contains("\"environment\""), "{json}");
+    assert!(apply(
+        dir.path(),
+        &settings,
+        "p",
+        Action::Table {
+            environment: Some(Uuid::new_v4().to_string()),
+        },
+        &values,
+    )
+    .is_err());
 }

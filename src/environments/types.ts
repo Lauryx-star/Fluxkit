@@ -30,9 +30,25 @@ export type EnvironmentAction =
       expectedValueRevision?: number;
     }
   | { kind: 'reveal'; variable: string; environment: string | null }
+  | { kind: 'table'; environment: string | null }
+  | { kind: 'usages'; variable: string }
   | { kind: 'preview'; variable: string; environment: string | null; expected: string }
   | { kind: 'check'; text: string };
+export interface TableCell {
+  set: boolean;
+  /** Only ordinary values are listed; a secret needs an explicit reveal. */
+  value?: string;
+}
+export interface TableRow {
+  variable: string;
+  default: TableCell;
+  environment?: TableCell;
+}
 export interface EnvironmentReply {
   view: EnvironmentView;
   value: string | null;
+  /** Present in the reply to a `table` action. */
+  table?: TableRow[];
+  /** Present in the reply to a `usages` action: saved places that use the variable. */
+  usages?: { requests: string[]; authentication: string[] };
 }

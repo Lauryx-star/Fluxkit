@@ -30,7 +30,7 @@ export function AuthEditor({
         >
           <option value="">Choose a project variable…</option>
           {id && !variables.some((item) => item.id === id) && (
-            <option value={id}>Missing variable — choose a replacement</option>
+            <option value={id}>Deleted variable — choose a replacement</option>
           )}
           {variables.map((item) => (
             <option key={item.id} value={item.id}>

@@ -16,6 +16,8 @@
     "allow-choose-project",
     "allow-restore-last-project",
     "allow-remember-project",
+    "allow-save-session",
+    "allow-restore-session",
     "allow-reload-project",
     "allow-rename-project",
     "allow-save-project-auth",

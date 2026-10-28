@@ -192,8 +192,11 @@ choices, validation results, and remaining work. Do not claim unexecuted checks 
   and machine. A cloned project does not implicitly acquire another user's stored values.
 - A missing, locked, denied, or unavailable credential store is an actionable error.
   Never fall back to plaintext files or browser storage.
-- Resolve values in Rust for execution. Reveal values to the UI only when an explicit
-  editing or reveal interaction needs them; do not preload every stored value.
+- Resolve values in Rust for execution. Hand values to the UI only for an explicit user
+  interaction: opening the variables window lists ordinary (non-secret) values of the default
+  slot and the one environment shown there; secret values stay masked and reach the UI only when
+  the user reveals that single slot (the table reports only whether a secret is set). Do not
+  load values at startup, on project open or environment selection, or for slots not shown.
 - Define and test failure recovery for operations spanning files and the credential store;
   do not claim these independent systems provide an atomic transaction.
 - Do not delete values still referenced elsewhere. Specify ownership and deletion behavior

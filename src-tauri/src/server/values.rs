@@ -227,17 +227,32 @@ impl ValueAccess {
             }
         })
     }
-    pub fn check_removal(&self, key: &str) -> Result<(), String> {
-        let (variable, environment, _) = self.slot(key)?;
-        let id = scope(&self.identity, &self.project);
+    /// Whether a slot holds a value; secrets are answered from metadata, without the vault key.
+    pub fn exists(&self, key: &str) -> Result<bool, String> {
+        let (variable, environment, secret) = self.slot(key)?;
         self.state.with(|inner| {
-            let shared = inner.shared.get(&id).ok_or("Load server values before removing definitions.")?;
-            let secrets = inner.secrets.get(&id).ok_or("Load server values before removing definitions.")?;
-            if shared.values.iter().any(|value| value.variable_id == variable && value.environment_id == environment)
-                || secrets.values.iter().any(|value| value.variable_id == variable && value.environment_id == environment) {
-                return Err("Remove synchronized values explicitly before deleting their definitions. Other users' encrypted values are retained.".into());
-            }
-            Ok(())
+            let id = scope(&self.identity, &self.project);
+            Ok(if secret {
+                inner
+                    .secrets
+                    .get(&id)
+                    .ok_or("Load server values before listing secrets.")?
+                    .values
+                    .iter()
+                    .any(|value| {
+                        value.variable_id == variable && value.environment_id == environment
+                    })
+            } else {
+                inner
+                    .shared
+                    .get(&id)
+                    .ok_or("Load shared server values before listing variables.")?
+                    .values
+                    .iter()
+                    .any(|value| {
+                        value.variable_id == variable && value.environment_id == environment
+                    })
+            })
         })
     }
 }
@@ -927,7 +942,8 @@ mod tests {
         );
         state.lock(&owner).unwrap();
         assert!(access.get(&reference).is_err());
-        assert!(access.check_removal(&reference).is_err());
+        // Whether a secret is set is known without the vault key.
+        assert!(access.exists(&reference).unwrap());
         let other = ServerIdentity {
             account_id: uuid::Uuid::new_v4(),
             ..owner

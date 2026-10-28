@@ -369,7 +369,7 @@ impl<V: Values> Inputs<'_, V> {
             .variables
             .iter()
             .find(|v| v.id == id)
-            .ok_or("A token-flow variable is missing. Update authentication settings.")?;
+            .ok_or("Token login uses a deleted variable. Choose another variable in the authentication settings.")?;
         let value = environments::resolve(
             &format!("{{{{{}}}}}", variable.name),
             &self.plan.project,

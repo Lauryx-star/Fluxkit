@@ -151,6 +151,40 @@ pub async fn restore_last_project(
     .await
 }
 
+/// Reopens the projects and tabs open at the end of the previous run; none when no session
+/// was saved yet.
+#[tauri::command]
+pub async fn restore_session(
+    app: tauri::AppHandle,
+    state: State<'_, ProjectState>,
+) -> Result<Option<super::session::RestoredSession>, String> {
+    let settings = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Could not locate local workspace settings.")?;
+    run(&state, move |store| {
+        super::session::restore(&settings, store)
+    })
+    .await
+}
+
+/// Remembers the open projects, tabs (including unsaved edits) and layout for the next start.
+#[tauri::command]
+pub async fn save_session(
+    app: tauri::AppHandle,
+    state: State<'_, ProjectState>,
+    session: super::session::SessionInput,
+) -> Result<(), String> {
+    let settings = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Could not locate local workspace settings.")?;
+    run(&state, move |store| {
+        super::session::save(&settings, store, session)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn remember_project(
     app: tauri::AppHandle,

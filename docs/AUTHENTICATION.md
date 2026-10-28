@@ -20,11 +20,13 @@ selection and default fallback are the same as for other project variables. Rena
 variable preserves its authentication references. No additional credential namespace or token
 cache is introduced for these manually configured methods.
 
-Removing a variable referenced by any saved project, collection, folder, or request auth
-configuration is blocked before deleting any values. First replace/remove those saved
-references. This includes configured auth in branches currently overridden by None or a
-manual header: those definitions remain reusable. Unsaved request settings are not durable
-references; deleting a variable they use makes them unresolved. Removing an environment
+Removing a variable that saved project, collection, folder, or request auth settings use is
+allowed after a warning that lists those settings (including configured auth in branches
+currently overridden by None or a manual header). The settings keep the deleted variable's
+identity: the editor shows **Deleted variable — choose a replacement**, and sending a request
+that resolves to such auth stops with “Authentication uses a deleted variable. Choose another
+variable in the authentication settings.” (token logins: “Token login uses a deleted
+variable…”). Unsaved request settings are not listed; they become unresolved the same way. Removing an environment
 still follows the explicit environment/value deletion confirmation and recovery rules in
 [ENVIRONMENTS.md](ENVIRONMENTS.md).
 

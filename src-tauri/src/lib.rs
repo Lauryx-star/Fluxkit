@@ -114,6 +114,8 @@ pub fn run() {
             choose_project,
             restore_last_project,
             remember_project,
+            save_session,
+            restore_session,
             reload_project,
             rename_project,
             save_project_auth,

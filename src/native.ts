@@ -174,6 +174,35 @@ export function restoreLastProject() {
 export function rememberProject(handle: string | null) {
   return invoke<void>('remember_project', { handle });
 }
+export interface SessionTab {
+  /** An open project handle; null for a tab without a project. */
+  project: string | null;
+  draft: import('./projects/types').Draft;
+}
+export interface SessionInput {
+  projects: string[];
+  activeProject: string | null;
+  tabs: SessionTab[];
+  activeTab: number | null;
+  requestPaneRatio: number | null;
+}
+export interface RestoredSession {
+  projects: import('./projects/types').ProjectView[];
+  activeProject: string | null;
+  /** Drafts come back as saved; validate before use. */
+  tabs: { project: string | null; draft: unknown }[];
+  activeTab: number | null;
+  requestPaneRatio: number | null;
+  unavailable: string[];
+}
+/** Reopens the projects and tabs of the previous run; null when none was saved yet. */
+export function restoreSession() {
+  return invoke<RestoredSession | null>('restore_session');
+}
+/** Remembers open projects, tabs (including unsaved edits) and the layout for the next start. */
+export function saveSession(session: SessionInput) {
+  return invoke<void>('save_session', { session });
+}
 export function reloadProject(handle: string) {
   return invoke<import('./projects/types').ProjectView>('reload_project', { handle });
 }

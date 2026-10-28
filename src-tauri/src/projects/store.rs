@@ -616,31 +616,61 @@ pub(crate) fn load(root: &Path, handle: &str) -> Result<ProjectView, String> {
     })
 }
 
-/// Credential cleanup must not remove variables still referenced by persisted auth settings.
-pub(super) fn check_auth_removal(root: &Path, removed: &[&str]) -> Result<(), String> {
-    if removed.is_empty() {
-        return Ok(());
+/// Where saved project content uses a variable: request text by `{{name}}` and authentication
+/// settings by identity. Deleting the variable stays allowed; this only feeds the warning.
+#[derive(Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VariableUsages {
+    pub requests: Vec<String>,
+    pub authentication: Vec<String>,
+}
+
+pub(crate) fn variable_usages(root: &Path, id: &str, name: &str) -> Result<VariableUsages, String> {
+    let view = load(root, "variable-usages")?;
+    let placeholder = format!("{{{{{name}}}}}");
+    let uses = |auth: &Option<super::model::Auth>| {
+        auth.as_ref()
+            .is_some_and(|auth| auth.variable_ids().contains(&id))
+    };
+    let mut usages = VariableUsages::default();
+    if uses(&view.data.auth) {
+        usages.authentication.push("Project authentication".into());
     }
-    let view = load(root, "credential-cleanup")?;
-    let auth = view
-        .data
-        .auth
-        .iter()
-        .chain(view.collections.iter().flat_map(|c| {
-            c.data
-                .auth
-                .iter()
-                .chain(c.data.folders.iter().filter_map(|f| f.auth.as_ref()))
-                .chain(c.data.requests.iter().filter_map(|r| r.auth.as_ref()))
-        }));
-    for configuration in auth {
-        if configuration
-            .variable_ids()
-            .iter()
-            .any(|id| removed.contains(id))
-        {
-            return Err("A variable is still referenced by saved authentication settings. Replace or remove those authentication references before deleting the variable. No values were deleted.".into());
+    for collection in &view.collections {
+        let collection = &collection.data;
+        if uses(&collection.auth) {
+            usages
+                .authentication
+                .push(format!("Collection {}", collection.name));
+        }
+        for folder in &collection.folders {
+            if uses(&folder.auth) {
+                usages
+                    .authentication
+                    .push(format!("Folder {} in {}", folder.name, collection.name));
+            }
+        }
+        for request in &collection.requests {
+            if uses(&request.auth) {
+                usages
+                    .authentication
+                    .push(format!("Request {} in {}", request.name, collection.name));
+            }
+            let entries = request.params.iter().chain(&request.headers);
+            let in_text = request.url.contains(&placeholder)
+                || request.body.text.contains(&placeholder)
+                || entries.into_iter().any(|entry| {
+                    entry.key.contains(&placeholder) || entry.value.contains(&placeholder)
+                })
+                || request.body.fields.iter().any(|field| {
+                    field.key.contains(&placeholder) || field.value.contains(&placeholder)
+                });
+            if in_text {
+                usages
+                    .requests
+                    .push(format!("{} › {}", collection.name, request.name));
+            }
         }
     }
-    Ok(())
+    Ok(usages)
 }

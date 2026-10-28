@@ -1101,7 +1101,7 @@ svg {
 }
 .environment-controls .select-control,
 .environment-manager .select-control,
-.environment-manager input {
+.environment-manager input:not([type='checkbox']) {
   background: var(--surface, #181e19);
   border: 1px solid #344036;
   border-radius: 6px;
@@ -1115,7 +1115,7 @@ svg {
   color: #eab59b;
 }
 .modal:has(.environment-manager) {
-  width: min(760px, calc(100vw - 40px));
+  width: min(980px, calc(100vw - 40px));
   max-height: calc(100vh - 48px);
   overflow-y: auto;
 }
@@ -1364,66 +1364,230 @@ svg {
   line-height: 1.7;
   margin: 0;
 }
-.environment-manager fieldset {
-  border: 1px solid #344036;
-  border-radius: 8px;
-  margin: 18px 0;
-  padding: 14px;
-}
-.environment-manager legend {
-  color: #a8b9aa;
-  padding: 0 6px;
-}
-.definition-columns {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-}
-.definition-columns section {
-  min-width: 0;
-}
-.definition-columns h3 {
-  margin: 0 0 10px;
-  font-size: 13px;
-}
-.definition-list {
-  list-style: none;
-  padding: 0;
+.environment-manager h3 {
   margin: 0;
-  max-height: 120px;
-  overflow-y: auto;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--muted);
 }
-.definition-list li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 0;
+.environment-chips {
+  margin: 16px 0 6px;
 }
-.definition-list li span {
-  flex: 1;
-  overflow-wrap: anywhere;
-}
-.definition-list button,
-.value-actions button {
-  color: #b7d0bb;
-  background: #222d25;
-  border: 1px solid #344036;
-  border-radius: 5px;
-  padding: 6px 8px;
-  font-size: 11px;
-}
-.definition-form,
-.value-actions {
+.environment-chips ul {
+  list-style: none;
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
 }
-.definition-form input {
+.environment-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid #344036;
+  border-radius: 999px;
+  padding: 2px 4px 2px 11px;
+  background: #1a2119;
+  font-size: 12px;
+  color: #dbe6d2;
+}
+.environment-chip.add {
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+.environment-chip.add .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+}
+.variables-section {
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.variables-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.variables-toolbar h3 {
   flex: 1;
 }
-.environment-manager .dialog-label {
-  margin-top: 14px;
+.environment-manager .variables-toolbar input {
+  width: 180px;
+  padding: 6px 9px;
+}
+.environment-manager .variables-toolbar .select-control {
+  min-width: 160px;
+  padding: 6px 9px;
+}
+.variables-table-scroll {
+  max-height: min(56vh, 560px);
+  overflow: auto;
+  border: 1px solid #2f3a2f;
+  border-radius: 8px;
+}
+.variables-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12.5px;
+}
+.variables-table th,
+.variables-table td {
+  position: relative;
+  text-align: left;
+  vertical-align: top;
+  padding: 7px 10px;
+  border-bottom: 1px solid #252e25;
+  font-weight: 400;
+  color: #dbe6d2;
+}
+.variables-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #1c241b;
+  font-size: 11px;
+  font-weight: 600;
+  color: #aebf9f;
+}
+.variables-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+.variables-table tbody tr:hover > * {
+  background: #1b2219;
+}
+.variables-table td + td,
+.variables-table th + td,
+.variables-table thead th + th {
+  border-left: 1px solid #252e25;
+}
+.variable-cell {
+  font-family: var(--mono);
+}
+.cell-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+}
+.cell-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.value-cell .cell-value {
+  font-family: var(--mono);
+}
+.cell-muted {
+  flex: 1;
+  color: var(--muted);
+  font-style: italic;
+}
+.cell-mask {
+  flex: 1;
+  color: #aebf9f;
+  letter-spacing: 1px;
+}
+.cell-tools {
+  display: flex;
+  gap: 1px;
+  margin-left: auto;
+}
+.cell-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #8f9c8a;
+}
+.cell-icon:hover:not(:disabled) {
+  background: #2a3527;
+  color: #e3f0d7;
+}
+.cell-icon:disabled {
+  opacity: 0.4;
+}
+.secret-toggle.on {
+  color: #e6c87a;
+}
+/* Row actions stay reachable by keyboard but only draw attention on hover or focus. */
+.variables-table .row-only {
+  opacity: 0;
+}
+.variables-table tr:hover .row-only,
+.variables-table .row-only:focus-visible {
+  opacity: 1;
+}
+.cell-editor {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% - 4px);
+  left: 6px;
+  width: max(260px, calc(100% - 12px));
+  padding: 10px;
+  border: 1px solid #4a5e3e;
+  border-radius: 8px;
+  background: #1d261b;
+  box-shadow: 0 14px 40px #000a;
+  font-family: inherit;
+}
+.environment-chip .cell-editor {
+  top: calc(100% + 6px);
+  left: 0;
+}
+.cell-editor-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.environment-manager .cell-editor input {
+  flex: 1;
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.cell-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+.add-variable {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.environment-manager .add-variable input:not([type='checkbox']) {
+  flex: 1;
+}
+.add-variable label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #c4d2b9;
+}
+.add-variable .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 .environment-manager code {
   color: #b8d4b8;

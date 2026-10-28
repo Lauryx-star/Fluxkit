@@ -45,6 +45,7 @@ import { EnvironmentControls } from './environments/EnvironmentControls';
 import { ServerConnection } from './server/ServerConnection';
 import { VaultLock } from './server/VaultLock';
 import { SettingsDialog } from './projects/SettingsDialog';
+import { DEFAULT_REQUEST_PANE_RATIO } from './projects/session';
 import { ServerUsers } from './server/ServerUsers';
 import { VariableContext } from './environments/VariableContext';
 import { VariableInput } from './environments/VariableInput';
@@ -53,21 +54,10 @@ import type { EnvironmentView } from './environments/types';
 type EditorTab = 'Params' | 'Headers' | 'Body' | 'Auth';
 const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'TRACE'];
 const editorTabs: EditorTab[] = ['Params', 'Headers', 'Body', 'Auth'];
-const SPLIT_RATIO_KEY = 'fluxkit.requestPaneRatio';
 const SPLIT_RATIO_MIN = 0.2;
 const SPLIT_RATIO_MAX = 0.8;
-const SPLIT_RATIO_DEFAULT = 0.55;
 function clampSplitRatio(value: number) {
   return Math.min(SPLIT_RATIO_MAX, Math.max(SPLIT_RATIO_MIN, value));
-}
-function loadSplitRatio() {
-  try {
-    const raw = localStorage.getItem(SPLIT_RATIO_KEY);
-    const stored = raw === null ? NaN : Number(raw);
-    return Number.isFinite(stored) ? clampSplitRatio(stored) : SPLIT_RATIO_DEFAULT;
-  } catch {
-    return SPLIT_RATIO_DEFAULT;
-  }
 }
 export default function App() {
   const variableSave = useRef<(() => Promise<boolean>) | null>(null);
@@ -107,15 +97,10 @@ export default function App() {
   const [authChanges, setAuthChanges] = useState(false);
   const [historyHandle, setHistoryHandle] = useState<string | null>(null);
   const splitRef = useRef<HTMLDivElement>(null);
-  const [requestPaneRatio, setRequestPaneRatio] = useState(loadSplitRatio);
+  // The divider position is part of the saved session; without one the response takes the
+  // bottom quarter.
+  const [requestPaneRatio, setRequestPaneRatio] = useState(DEFAULT_REQUEST_PANE_RATIO);
   const [resizingSplit, setResizingSplit] = useState(false);
-  useEffect(() => {
-    try {
-      localStorage.setItem(SPLIT_RATIO_KEY, String(requestPaneRatio));
-    } catch {
-      // Ignore storage failures (private browsing, disabled storage).
-    }
-  }, [requestPaneRatio]);
   useEffect(() => {
     if (!resizingSplit) {
       return;
@@ -171,7 +156,14 @@ export default function App() {
     variableChanges || authChanges,
     saveOtherEditors,
     choosingImport || importBusy || exportBusy,
+    requestPaneRatio,
   );
+  // Apply the restored divider position once, when the session has been read.
+  const [appliedRatio, setAppliedRatio] = useState<number | null>(null);
+  if (workspace.restoredRatio !== null && workspace.restoredRatio !== appliedRatio) {
+    setAppliedRatio(workspace.restoredRatio);
+    setRequestPaneRatio(clampSplitRatio(workspace.restoredRatio));
+  }
   const [moveTarget, setMoveTarget] = useState<{
     draftId: number;
     collectionId?: string;
@@ -795,7 +787,7 @@ export default function App() {
                   ? 'SERVER SNAPSHOT · READ ONLY'
                   : project
                     ? project.serverSync
-                      ? 'SERVER WORKSPACE · SYNC MANUALLY'
+                      ? 'SERVER WORKSPACE · SAVED ON SERVER'
                       : 'LOCAL PROJECT'
                     : 'SESSION ONLY'}
               </span>

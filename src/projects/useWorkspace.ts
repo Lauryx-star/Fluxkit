@@ -16,14 +16,92 @@ import {
   type SavedRequest,
 } from './types';
 import { isServerConflict, mergeRefreshedView, refreshNotice } from './serverRefresh';
+import { asSaved, restoredDrafts, sessionInput, withoutEdits } from './session';
 
 /** How often open server workspaces pull other members' changes. */
 export const SERVER_POLL_MS = 15_000;
+
+interface Startup {
+  projects: ProjectView[];
+  active: string | null;
+  drafts: Draft[];
+  activeId: number | null;
+  requestPaneRatio: number | null;
+  problems: string[];
+}
+
+/** Reopens a read-only server copy online; the copy is closed either way. */
+async function online(view: ProjectView) {
+  if (!view.readOnly || view.serverRecovery) {
+    return view;
+  }
+  try {
+    const refreshed = await native.openServerProject(view.data.id);
+    if (refreshed.handle !== view.handle) {
+      await native.closeProject(view.handle);
+    }
+    return refreshed;
+  } catch (reason) {
+    await native.closeProject(view.handle);
+    throw reason;
+  }
+}
+
+async function restore(): Promise<Startup> {
+  const session = await native.restoreSession();
+  if (!session) {
+    // No session saved yet (first start after upgrading): the last active project only.
+    const view = await native.restoreLastProject().then((view) => (view ? online(view) : null));
+    return {
+      projects: view ? [view] : [],
+      active: view?.handle ?? null,
+      drafts: [],
+      activeId: null,
+      requestPaneRatio: null,
+      problems: [],
+    };
+  }
+  const projects: ProjectView[] = [];
+  const handles = new Map<string, string>();
+  const problems = session.unavailable.map(
+    (directory) => `The project in ${directory} could not be reopened.`,
+  );
+  for (const view of session.projects) {
+    try {
+      const opened = await online(view);
+      projects.push(opened);
+      handles.set(view.handle, opened.handle);
+    } catch (reason) {
+      problems.push(
+        typeof reason === 'string' ? reason : `“${view.data.name}” could not be reopened.`,
+      );
+    }
+  }
+  const restored = restoredDrafts(session.tabs, handles);
+  // Unedited tabs follow the saved requests; edited ones are flagged if those changed meanwhile.
+  let drafts = restored.drafts;
+  for (const view of projects) {
+    drafts = mergeRefreshedView(drafts, view).drafts;
+  }
+  const activeId = session.activeTab === null ? null : (restored.ids[session.activeTab] ?? null);
+  return {
+    projects,
+    active:
+      (session.activeProject && handles.get(session.activeProject)) ?? projects[0]?.handle ?? null,
+    drafts,
+    activeId: drafts.some((item) => item.id === activeId) ? activeId : (drafts.at(-1)?.id ?? null),
+    requestPaneRatio: session.requestPaneRatio,
+    problems: problems.length
+      ? [...problems, 'Their open requests were kept without a project.']
+      : [],
+  };
+}
 
 export function useWorkspace(
   additionalChanges = false,
   saveAdditionalChanges?: () => Promise<boolean>,
   additionalBusy = false,
+  requestPaneRatio: number | null = null,
 ) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -37,7 +115,10 @@ export function useWorkspace(
   } | null>(null);
   const [restoring, setRestoring] = useState(() => native.isDesktop());
   const [busy, setBusy] = useState(() => native.isDesktop());
-  const startup = useRef<Promise<ProjectView | null> | null>(null);
+  const startup = useRef<Promise<Startup> | null>(null);
+  const [restoredRatio, setRestoredRatio] = useState<number | null>(null);
+  // Set once the quit flow wrote the final session, so no pending autosave overwrites it.
+  const sessionClosed = useRef(false);
   const remembered = useRef<string | null>(null);
   const rememberQueue = useRef<Promise<void>>(Promise.resolve());
   const [error, setError] = useState<string | null>(null);
@@ -87,29 +168,20 @@ export function useWorkspace(
     }
     let disposed = false;
     // StrictMode replays effects: reuse the same native restore instead of registering twice.
-    startup.current ??= native.restoreLastProject().then(async (view) => {
-      if (!view?.readOnly || view.serverRecovery) {
-        return view;
-      }
-      try {
-        const refreshed = await native.openServerProject(view.data.id);
-        if (refreshed.handle !== view.handle) {
-          await native.closeProject(view.handle);
-        }
-        return refreshed;
-      } catch (reason) {
-        await native.closeProject(view.handle);
-        throw reason;
-      }
-    });
+    startup.current ??= restore();
     void startup.current
       .then(
-        (view) => {
+        (restored) => {
           if (!disposed) {
-            remembered.current = view?.handle ?? null;
-            if (view) {
-              setProjects([view]);
-              setActiveHandle(view.handle);
+            remembered.current = restored.active;
+            setProjects(restored.projects);
+            setActiveHandle(restored.active);
+            setDrafts(restored.drafts);
+            setActiveId(restored.activeId);
+            setNextId(restored.drafts.length + 1);
+            setRestoredRatio(restored.requestPaneRatio);
+            if (restored.problems.length) {
+              setError(restored.problems.join(' '));
             }
           }
         },
@@ -156,6 +228,22 @@ export function useWorkspace(
       disposed = true;
     };
   }, [desktop, restoring, activeHandle]);
+
+  // Remember open projects, tabs (with unsaved edits) and the layout for the next start.
+  useEffect(() => {
+    if (!desktop || restoring || quitInFlight.current) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      if (quitInFlight.current || sessionClosed.current) {
+        return;
+      }
+      void native
+        .saveSession(sessionInput(projects, activeHandle, drafts, activeId, requestPaneRatio))
+        .catch(() => {});
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [desktop, restoring, projects, activeHandle, drafts, activeId, requestPaneRatio]);
 
   const ask = useCallback(
     (message: string) =>
@@ -802,7 +890,7 @@ export function useWorkspace(
     if (
       (draft.serverChanged &&
         !(await ask(
-          `“${draft.name}” was changed on the server while you were editing it. Overwrite the server version with yours?`,
+          `“${draft.name}” was changed elsewhere while you were editing it. Overwrite the saved version with yours?`,
         ))) ||
       (draft.serverDeleted &&
         !(await ask(`“${draft.name}” was deleted on the server. Save it again to recreate it?`)))
@@ -913,7 +1001,11 @@ export function useWorkspace(
     }
   }
 
-  async function finishQuit(choice: 'cancel' | 'discard' | 'save') {
+  /**
+   * Quitting: `save` saves every edit first, `keep` keeps unsaved edits for the next start and
+   * `discard` reopens only the saved versions next time.
+   */
+  async function finishQuit(choice: 'cancel' | 'discard' | 'save' | 'keep') {
     if (quitInFlight.current) {
       return;
     }
@@ -936,6 +1028,21 @@ export function useWorkspace(
         }
       }
       await rememberQueue.current;
+      const tabs =
+        choice === 'save' ? asSaved(drafts) : choice === 'discard' ? withoutEdits(drafts) : drafts;
+      const final = native.saveSession(
+        sessionInput(projects, activeHandle, tabs, activeId, requestPaneRatio),
+      );
+      sessionClosed.current = true;
+      if (choice === 'keep') {
+        // Quitting would lose the edits if they could not be written.
+        await final.catch((reason: unknown) => {
+          sessionClosed.current = false;
+          throw reason;
+        });
+      } else {
+        await final.catch(() => {});
+      }
       await getCurrentWindow().destroy();
     } catch (reason: unknown) {
       setQuitOpen(true);
@@ -980,6 +1087,7 @@ export function useWorkspace(
   }
   return {
     ask,
+    restoredRatio,
     conflict,
     resolveConflict,
     deleteServerProject,
