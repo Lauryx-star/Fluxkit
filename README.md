@@ -1,122 +1,203 @@
-# Fluxkit
+<p align="center">
+  <img src="assets/fluxkit.svg" alt="Fluxkit" width="96" />
+</p>
 
-A local, open-source desktop API client built with Rust, Tauri, React, and TypeScript.
+<h1 align="center">Fluxkit</h1>
 
-## Current state
+<p align="center">
+  A fast, local-first, open-source desktop API client — a lightweight alternative to Postman and Insomnia.
+</p>
 
-Milestones 1 through 7 provide desktop editing, local projects, environments, native HTTP execution,
-inherited authentication, OAuth2 Client Credentials, Custom Login, and minimal local history.
-Create or open project folders, organize collections and nested folders, and edit requests
-with parameters, headers, text/JSON/form bodies, and portable file attachments.
+---
 
-Use **Save** or **Cmd/Ctrl+S** to save the selected request. Unsaved changes are marked;
-closing a dirty request, reloading/closing its project, or closing the desktop window
-requires confirmation. Structural operations such as creating collections and renaming
-folders save immediately. **Close project** keeps its files on disk. The last active project
-reopens automatically on desktop startup; request tabs and unsaved drafts are not restored.
+Fluxkit is a desktop application for designing, organizing, and sending HTTP requests. It stores
+everything as readable JSON files in a project folder you choose, runs completely offline by
+default, and adds an optional self-hosted sync server for teams that want shared projects without
+handing data to a third-party cloud.
 
-Quitting with unsaved changes offers **Cancel**, **Discard changes**, and **Save & quit**.
-Save & quit saves dirty request tabs across all open projects and pending authentication,
-variable definitions and edited variable values before closing. Missing destinations,
-invalid fields and save failures keep Fluxkit open; successful partial saves remain saved.
+## Why Fluxkit
 
-See [local file format and recovery](docs/FILE_FORMAT.md) for storage, conflict handling,
-limits, backups, and removal behavior. User request fields are plain JSON; use placeholders
-such as `{{apiToken}}` for reusable values, stored through **Variables** in the OS credential store.
+- **Local-first.** No account, no backend, and no network access required to start the app, edit
+  requests, or save a project. Your collections live in plain JSON files you can put under Git.
+- **Fast and light.** A Rust/Tauri core keeps the installed app small and responsive, instead of
+  bundling a full Chromium/Node runtime like Electron-based clients.
+- **Your secrets stay yours.** Reusable values (tokens, passwords, API keys) are stored in the
+  operating system's credential store, never written to project files or logs.
+- **Optional self-hosted sync.** Teams that want shared projects can run their own ASP.NET Core +
+  PostgreSQL server. There is no Fluxkit-hosted cloud service.
+- **Open source.** Licensed under GPL-3.0 — inspect it, modify it, self-host it.
 
-Select project-wide environments in the header. Environment values override shared defaults;
-**Check variables** resolves the active draft without sending it or exposing resolved values.
-Request fields highlight placeholders and suggest variable names after `{{`; hover a
-highlighted token to explicitly preview its effective value.
-See [environments and OS values](docs/ENVIRONMENTS.md) for syntax, limits, and deletion recovery.
+## Current status
 
-**Send** executes the active draft with Cancel, a 60-second default timeout, and Raw/JSON/
-Headers response views. **Send & save response…** streams a new request's response to a
-chosen file. Previews are limited to 1 MiB. See [HTTP behavior and downloads](docs/HTTP.md).
-Configure Basic, Bearer/JWT, API Key, OAuth2 Client Credentials, or Custom Login in the request **Auth** tab or through project, collection,
-and folder authentication settings. Credential fields reference project variables; manual headers
-and query parameters take priority. See [authentication and inheritance](docs/AUTHENTICATION.md).
-Token acquisition, expiry, manual renewal, and local token removal are described in
-[token authentication](docs/TOKEN_AUTHENTICATION.md). Native backup export/import remains planned in
-[the product plan](docs/PRODUCT.md) and [milestones](docs/MILESTONES.md).
-Browser preview supports draft editing; native sending and project files require the desktop app.
+Fluxkit is under active development and not yet a full Postman/Insomnia replacement. Implemented
+so far: local projects with collections and nested folders, request editing (params, headers,
+text/JSON/form/multipart/file bodies), native HTTP execution with cancellation and response
+previews, project-wide environments and variables backed by the OS credential store, inherited
+authentication (Basic, Bearer, API Key, OAuth2 Client Credentials, Custom Login), minimal local
+request history, OpenAPI import/export, Postman collection/environment import, and an initial
+self-hosted sync server. See [docs/PRODUCT.md](docs/PRODUCT.md) for the full product plan and
+[docs/MILESTONES.md](docs/MILESTONES.md) for delivery status, and
+[docs/VALIDATION.md](docs/VALIDATION.md) for recorded platform validation results.
 
-The desktop app reopens the last active project on startup. Its location is remembered in
-local app-data settings; unsaved drafts and responses are not restored. Closing the last
-project explicitly leaves the next startup empty. If its folder moved or is unavailable,
-use **Open project** to locate it again. See [local startup settings](docs/FILE_FORMAT.md#local-startup-selection).
+## Architecture
 
-Selection menus use the Fluxkit theme on every platform. Use arrow keys or Home/End to
-navigate, type a name prefix to find an option, and press Enter or Space to select it.
-Escape closes without changing the value; Tab closes and moves to the next control.
+Fluxkit has two independent parts: the desktop application (always required) and an optional
+self-hosted server (only needed for team sync).
 
-Open **Request history** for a project and enable **Record request history** to opt in.
-History stores up to 100 entries for seven days, with literal hosts visible locally and
-path/query content redacted. Closing a project preserves history; **Clear history** explicitly
-clears it. Bodies, headers, and resolved values are excluded. See [the history contract](docs/HISTORY.md).
+```text
+┌─────────────────────────────── Desktop application ───────────────────────────────┐
+│                                                                                     │
+│   React + TypeScript UI  ──typed Tauri commands/events──▶  Rust application core   │
+│   (src/)                                                   (src-tauri/src/)        │
+│                                                                                     │
+│                                                   ├─ project & file storage (JSON) │
+│                                                   ├─ environment & variable rules  │
+│                                                   ├─ OS credential-store adapter   │
+│                                                   ├─ native HTTP execution         │
+│                                                   ├─ auth (Basic/Bearer/API key/   │
+│                                                   │   OAuth2 Client Credentials/   │
+│                                                   │   Custom Login)                │
+│                                                   ├─ OpenAPI & Postman import/export│
+│                                                   └─ optional self-hosted server   │
+│                                                      client adapter                │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                          │ HTTPS (optional, user-configured)
+                                          ▼
+                        ┌───────────────────────────────────┐
+                        │   Self-hosted server (optional)    │
+                        │   server/Fluxkit.Server             │
+                        │   ASP.NET Core 10 + PostgreSQL      │
+                        │   ─ local accounts or OIDC login    │
+                        │   ─ project snapshots + revisions   │
+                        │   ─ shared values + per-user         │
+                        │     client-encrypted secret vault    │
+                        └───────────────────────────────────┘
+```
 
-The first milestone 8 slice adds **Import OpenAPI…** for OpenAPI 3.0.x/3.1.x YAML and JSON.
-Review the mappings and compatibility report before adding a new collection. Defaults/examples
-can be stored as new OS variable values or imported as definitions only. Internal references
-are supported; external references are blocked without network access. See
-[OpenAPI import and partial-failure recovery](docs/OPENAPI_IMPORT.md).
+### Desktop application
 
-An initial self-hosted server foundation is available under [server/](server/README.md):
-ASP.NET Core with PostgreSQL, local account registration and admin approval, personal/team
-project access, revision-checked project snapshots, and per-user encrypted-secret envelopes.
-The desktop includes account-scoped server workspaces, explicit sync and offline snapshots.
-Shared values, explicit transfer preview and client-encrypted personal secrets are implemented.
-Local and OIDC login modes are available; full deployment/platform validation remains open. See
-[the server architecture and API notes](docs/SELF_HOSTED_BACKEND.md).
+- **UI (`src/`)** — React 19 + TypeScript. Owns presentation and draft/interaction state, and
+  talks to the Rust core only through typed Tauri commands and events (`src/native.ts`).
+- **Application core (`src-tauri/src/`)** — Rust, built on Tauri 2. Owns everything durable or
+  security-sensitive: project file I/O, variable and environment resolution, the OS credential
+  store, native HTTP execution (with timeout/cancellation), authentication inheritance, OpenAPI
+  and Postman import/export, and the optional server-sync client. Tauri command handlers stay
+  thin: validate input, delegate to application logic, map results.
+- **Persistence** — projects are readable JSON files and folders in a location you pick; there is
+  no local database. Personal/machine-specific settings (last-open project, window state) live in
+  the OS app-data directory, outside the portable project files. See
+  [docs/FILE_FORMAT.md](docs/FILE_FORMAT.md).
+- **Variables and environments** — environments belong to a project and apply to all its
+  collections and requests. In local mode, reusable values live in the OS credential store, never
+  in project JSON. See [docs/ENVIRONMENTS.md](docs/ENVIRONMENTS.md).
+- **Security boundary** — remote API responses are rendered as untrusted data and never executed
+  in the privileged application context; native filesystem/HTTP/credential access is only
+  reachable through the narrow, validated Tauri command surface.
 
-Only OpenAPI server URLs and authentication create project variables, with readable names
-such as `baseUrl`. Normal parameter values remain editable at each request. The variable
-list explains their origins. Use
-**Rename** in the import preview to change a name once across all imported request references.
-Set the server variable's value once in **Variables**, optionally per environment.
+### Self-hosted server (`server/`)
 
-**Import Postman…** accepts Collection v2.1 JSON and separate environment exports. Choose the
-imported collection whose variable mapping an environment should use. Review new names and
-unsupported scripts/runtime features before confirming. Dynamic values, unsupported auth
-and multipart files can be imported with a persistent request review lock: configure them,
-confirm the review and Save to enable sending. See [Postman migration](docs/POSTMAN_IMPORT.md).
+An independent, optional ASP.NET Core 10 service backed by PostgreSQL. It is never required to
+run the desktop app locally — it exists purely for teams that want shared, versioned projects:
 
-**Export OpenAPI…** previews the saved project, a collection, a folder subtree or one request
-as OpenAPI 3.1.0 YAML. Project export creates one document per non-empty collection. Local
-values and payload examples are excluded; conflicts block saving. See [OpenAPI export](docs/OPENAPI_EXPORT.md).
+- Local account registration with admin approval, or OIDC browser sign-in as an alternative.
+- Personal and team project snapshots with revision checks to detect concurrent edits.
+- Ordinary shared values as plain project data; secret values are encrypted client-side
+  (Argon2id key-wrapping + authenticated encryption) and scoped to one user — the server never
+  sees plaintext secrets.
+- The desktop client treats server projects as an explicit, synced workspace with offline
+  snapshots, not a hidden background sync queue.
 
-## Requirements
+See [server/README.md](server/README.md) and [docs/SELF_HOSTED_BACKEND.md](docs/SELF_HOSTED_BACKEND.md)
+for the full contract, and [docs/SERVER_VALUES.md](docs/SERVER_VALUES.md) /
+[docs/OIDC.md](docs/OIDC.md) for the value-sync and login details.
 
-- Node.js 24.11.0 and npm 11.6.1, recorded in `.nvmrc` and `package.json`.
-- Rust 1.92.0 with rustfmt and Clippy, pinned in `rust-toolchain.toml`.
-- Native [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for the host OS:
-  Xcode command-line tools on macOS, the Visual Studio C++ build tools and WebView2 on
-  Windows, and the documented WebKitGTK and build dependencies on Linux, plus OpenSSL
-  development packages for native HTTP TLS.
+## Repository layout
 
-On macOS, the npm desktop commands prefer the standalone Command Line Tools SDK when
-installed, unless `DEVELOPER_DIR` is already set. This does not change the system-wide
-Xcode selection or accept any license. If raw Cargo commands fail because Xcode awaits
-license acceptance, prefix them with `DEVELOPER_DIR=/Library/Developer/CommandLineTools`
-when that standalone SDK is installed. Otherwise complete Xcode setup yourself.
+```text
+src/            React UI, draft/interaction state, typed native interface (native.ts)
+src-tauri/      Rust application core: storage, HTTP, auth, credentials, server client
+server/         Optional self-hosted sync server (ASP.NET Core + PostgreSQL) and its tests
+docs/           Product scope, milestones, and durable file/API/security contracts
+scripts/        Dev tooling (Tauri wrapper, server e2e runner, notice generation)
+assets/         Application icon source and third-party notices
+AGENTS.md       Engineering rules and required validation for contributors (human or AI)
+```
 
-The Tauri CLI is a local development dependency; no global CLI installation is needed.
-No Fluxkit backend, account, database, CDN, or telemetry service is required. Dependency
-installation needs internet access or an appropriately populated package cache.
+## Getting started (desktop app)
 
-## Development
+### Requirements
+
+- [Node.js](https://nodejs.org/) `24.11.0` and npm `11.6.1` (pinned in `.nvmrc` / `package.json`).
+- [Rust](https://www.rust-lang.org/) `1.92.0` with `rustfmt` and `clippy` (pinned in
+  `rust-toolchain.toml`).
+- Native [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS:
+  - **macOS** — Xcode command-line tools.
+  - **Windows** — Visual Studio C++ build tools and WebView2.
+  - **Linux** — WebKitGTK and the other documented build dependencies.
+  - All platforms also need OpenSSL development packages for native HTTP/TLS.
+
+No Fluxkit account, backend, database, or telemetry service is required to run or develop the
+desktop app. The Tauri CLI itself is a local dev dependency — no global install needed.
+
+> **macOS note:** if a raw `cargo` command fails because Xcode is waiting on a license prompt, and
+> you have the standalone Command Line Tools SDK installed, prefix the command with
+> `DEVELOPER_DIR=/Library/Developer/CommandLineTools`. The npm desktop scripts already do this
+> automatically unless `DEVELOPER_DIR` is already set.
+
+### Run it
 
 ```sh
 npm ci
 npm run desktop:dev
 ```
 
-For UI-only browser preview, run `npm run dev` and open the printed local URL. Browser
-preview does not emulate native capabilities; its footer identifies it as a preview.
-The development server binds to loopback on port 1420 and fails if the port is occupied.
-The production application loads bundled files, without a frontend development server.
+This launches the Tauri desktop shell with a live-reloading frontend. For a UI-only preview
+without native capabilities (no filesystem, HTTP, or credential access), run `npm run dev` and
+open the printed local URL — the preview footer identifies it as a browser preview.
 
-## Validation
+### Build
+
+```sh
+npm run desktop:build
+```
+
+Builds the frontend and the native host executable. Run `npm run tauri -- build` for full
+installer bundles once you need distributable packages — signing, notarization, and auto-update
+are separate, not-yet-implemented scope. The bundle identifier `app.fluxkit.desktop` is a
+development placeholder.
+
+## Getting started (self-hosted server)
+
+The server is entirely optional — skip this section if you only want the local desktop app.
+
+### Local development
+
+Install the .NET 10 SDK and PostgreSQL 17+, then:
+
+```sh
+export ConnectionStrings__Database="Host=localhost;Database=fluxkit;Username=fluxkit;Password=<local secret>"
+export Auth__SigningKey="<unique random value, at least 32 bytes>"
+export Bootstrap__AdminUsername="admin"
+export Bootstrap__AdminPassword="<strong unique password>"
+dotnet run --project server/Fluxkit.Server
+```
+
+### Docker Compose
+
+```sh
+cd server
+cp .env.example .env
+# edit .env and replace every CHANGE_ME value with a unique secret
+docker compose up -d --build
+```
+
+The service binds to loopback only by default; put it behind your own HTTPS reverse proxy before
+exposing it to real clients. Full details, including OIDC setup, are in
+[server/README.md](server/README.md).
+
+## Testing and validation
+
+Frontend:
 
 ```sh
 npm run typecheck
@@ -124,81 +205,57 @@ npm run lint
 npm run format:check
 npm test
 npm run build
+```
+
+Rust:
+
+```sh
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --locked
 cargo build --manifest-path src-tauri/Cargo.toml --locked
 ```
 
-Frontend tests cover HTTP dispatch/cancellation/response views, project/collection/folder workflows, explicit saving, conflicts, form
-attachments, project isolation, unsaved-change protection, and native connection outcomes.
-Rust tests cover durable round-trips, invalid files, revision conflicts, locks, stable identity,
-portable attachments, recovery copies, filesystem boundaries, and HTTP exchanges against
-controlled local servers (including redirects, failures, upload, and streamed downloads).
-Rust HTTP tests require permission to bind loopback ports.
-
-Run `npm run test:server:e2e` for the isolated Keycloak/HTTPS browser and native-protocol
-suite. It builds disposable containers, validates approval/access/revisions and encrypted values,
-and cleans up without host trust changes. See [the E2E guide](server/e2e/README.md) for prerequisites
-and exact coverage.
-
-Build the host desktop executable, including the frontend:
+Server (requires a disposable PostgreSQL instance, see [server/README.md](server/README.md)):
 
 ```sh
-npm run desktop:build
+dotnet restore server/Fluxkit.Server.Tests/Fluxkit.Server.Tests.csproj --locked-mode
+dotnet test server/Fluxkit.Server.Tests/Fluxkit.Server.Tests.csproj --no-restore
 ```
 
-Generate host installer bundles with `npm run tauri -- build` once release packaging is
-in scope. Signing, notarization, distribution, and automatic updates are separate work.
-The bundle identifier `app.fluxkit.desktop` is a development identifier; confirm ownership
-before publishing. The icon source is `assets/fluxkit.svg`; regenerate platform assets
-with `npm run tauri -- icon assets/fluxkit.svg`.
+Full server/Keycloak/HTTPS end-to-end suite (builds disposable containers, cleans up after
+itself):
 
-## Repository layout
+```sh
+npm run test:server:e2e
+```
 
-- `src/`: React UI, draft interaction state, and typed native interface.
-- `src-tauri/`: Rust host, validated local storage, native dialogs, commands, and security setup.
-- `docs/`: agreed product scope and milestones.
-- `AGENTS.md`: engineering rules and required checks.
+Run the checks relevant to what you changed; see [AGENTS.md](AGENTS.md) for the full required
+validation matrix and [docs/VALIDATION.md](docs/VALIDATION.md) for recorded platform results.
 
-## Self-hosted backend
+## Contributing
 
-An initial ASP.NET Core and PostgreSQL backend foundation is in `server/`. To configure
-Docker Compose, copy `server/.env.example` to `server/.env`, replace all placeholder values,
-and follow [the server setup guide](server/README.md). The desktop client can configure a server,
-register/sign in to local accounts, upload a saved local project copy, and open server snapshots
-with offline cache fallback. Authorized online workspaces support editing and explicit sync.
-After a conflict, **Load server version** retains saved edits in a read-only recovery copy for
-manual merge and retry. Close server projects before switching accounts or signing out.
-Use [shared values, transfer preview and the encrypted vault](docs/SERVER_VALUES.md) to
-choose which values to synchronize. [OIDC setup](docs/OIDC.md) supports browser sign-in as an
-alternative to local accounts. Full deployment/platform validation remains open.
-See [the backend scope and remaining work](docs/SELF_HOSTED_BACKEND.md).
+Contributions are welcome — bug reports, fixes, documentation, and small, focused features.
 
-Native project commands accept session handles issued by the folder chooser or validated
-last-project restoration; the frontend
-cannot submit arbitrary filesystem paths. Only the bundled main window receives their
-permissions. Window event/destroy permissions support the unsaved-change close guard.
-No filesystem, shell, HTTP, or credential plugins are exposed to the frontend. Production content security policy allows bundled
-resources and native IPC; development adds only the loopback development server.
+1. Read [AGENTS.md](AGENTS.md) first. It is the binding engineering contract for this repository:
+   scope discipline, architecture boundaries, security/privacy rules, and the validation every
+   change must pass before it's considered done.
+2. Check [docs/PRODUCT.md](docs/PRODUCT.md) and [docs/MILESTONES.md](docs/MILESTONES.md) so new
+   work fits the agreed product scope instead of duplicating or contradicting it.
+3. Keep changes small and cohesive: implement the active request completely, avoid speculative
+   abstractions or unrelated refactors, and update the relevant doc under `docs/` alongside any
+   contract change.
+4. Add or update tests for behavior you change (Vitest/React Testing Library on the frontend,
+   Rust tests in `src-tauri`, xUnit in `server/Fluxkit.Server.Tests`), and run the validation
+   commands above for whatever you touched.
+5. Never commit real credentials, tokens, or private project data — tests and examples must use
+   synthetic values only.
+6. Open a pull request describing the change, the reasoning behind non-obvious decisions, and
+   which validation steps you ran (and which you couldn't, and why).
 
-## Platform validation
-
-macOS, Windows, and Linux are target platforms. Record actual host build and smoke-test
-results in [development validation](docs/VALIDATION.md); do not infer support for another
-platform from a successful local build. Cross-platform CI and release validation are
-planned for the release milestone.
-
-Use **Test authentication** in scope settings or the request Auth tab to verify current
-settings without saving them. Basic/Bearer/API Key send GET to a chosen protected test URL;
-OAuth2/Custom Login test their configured login and discard the test token. Unsaved session
-and saved requests can use **Move…** next to Save, or the clickable location in the
-breadcrumbs. Choose a collection/folder and confirm **Save & move** to save edits and relocate
-within the project. Drag a request tab or saved tree request onto a collection/folder to open
-the same confirmation. In **Headers → Automatic and sent headers**, inspect
-masked current headers locally or review the last dispatch. Fluxkit sends a versioned
-User-Agent and Accept by default; manual values take priority.
+If you're planning something larger than a small fix, please open an issue or discussion first so
+the approach can be agreed before significant work goes in.
 
 ## License
 
-GPL-3.0; see [LICENSE](LICENSE).
+Fluxkit is licensed under [GPL-3.0](LICENSE).
