@@ -491,7 +491,11 @@ await using (var scope = app.Services.CreateAsyncScope())
         {
             admin = new FluxkitUser { Id = Guid.NewGuid(), UserName = adminName, Status = "active", IsServerAdmin = true };
             var result = await users.CreateAsync(admin, adminPassword);
-            if (!result.Succeeded) throw new InvalidOperationException("Bootstrap administrator could not be created.");
+            if (!result.Succeeded)
+            {
+                var errors = string.Join("; ", result.Errors.Select(error => error.Description));
+                throw new InvalidOperationException($"Bootstrap administrator could not be created: {errors}");
+            }
             db.Projects.Add(AuthTokens.CreatePersonalProject(admin.Id, adminName));
             await db.SaveChangesAsync();
         }

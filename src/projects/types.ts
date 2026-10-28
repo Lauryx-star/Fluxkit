@@ -98,6 +98,19 @@ export function requestData(draft: Draft): SavedRequest {
 export function isDirty(draft: Draft): boolean {
   return draft.savedSnapshot !== JSON.stringify(requestData(draft));
 }
+/** Disambiguates projects that share a name, such as a local project uploaded to a server. */
+export function projectKindLabel(project: ProjectView): string {
+  if (project.serverRecovery) {
+    return ' (Recovery copy)';
+  }
+  if (project.readOnly) {
+    return ' (Server, read-only)';
+  }
+  if (project.serverOwned || project.serverSync) {
+    return ' (Server)';
+  }
+  return ' (Local)';
+}
 export function fromRequest(
   id: number,
   request: SavedRequest,

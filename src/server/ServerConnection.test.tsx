@@ -57,6 +57,7 @@ function show(projects: ProjectView[] = []) {
 it('adds a member through the server dialog', async () => {
   const user = userEvent.setup();
   show();
+  await user.click(await screen.findByRole('tab', { name: 'Projects' }));
   await user.click(await screen.findByRole('button', { name: 'Manage members' }));
   await user.type(screen.getByLabelText('Add approved account by username'), 'new-user');
   await user.click(screen.getByRole('button', { name: 'Add member' }));
@@ -92,6 +93,7 @@ it('keeps sync conflicts visible and requires an explicit recovery choice', asyn
     'The server project changed. Local edits remain saved.',
   );
   show([workspace]);
+  await user.click(await screen.findByRole('tab', { name: 'Workspaces' }));
   await user.click(await screen.findByRole('button', { name: 'Sync saved changes' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('Local edits remain saved');
   expect(onRefreshProject).not.toHaveBeenCalled();
@@ -113,6 +115,7 @@ it('retains the recovery dialog and error when unsaved editors or network failur
     new Error('Save or close unsaved editors before loading the server version.'),
   );
   show([workspace]);
+  await user.click(await screen.findByRole('tab', { name: 'Workspaces' }));
   await user.click(await screen.findByRole('button', { name: 'Load server version' }));
   await user.click(screen.getByRole('button', { name: 'Keep recovery copy and load' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('Save or close unsaved editors');

@@ -140,7 +140,8 @@ beforeEach(() => {
 async function setupCollection() {
   const user = userEvent.setup();
   render(<App />);
-  await user.click(screen.getByRole('button', { name: 'New project' }));
+  await openSettings(user);
+  await user.click(screen.getByRole('button', { name: 'New local project' }));
   await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Shop');
   await user.click(screen.getByRole('button', { name: 'Create' }));
   await user.click(await screen.findByRole('button', { name: 'Create collection' }));
@@ -148,6 +149,10 @@ async function setupCollection() {
   await user.click(screen.getByRole('button', { name: 'Create' }));
   await screen.findByRole('button', { name: 'New request in Shop API' });
   return user;
+}
+
+async function openSettings(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: 'Settings' }));
 }
 
 describe('local project workflows', () => {
@@ -395,7 +400,8 @@ describe('local project workflows', () => {
     await user.click(screen.getByRole('button', { name: 'New request in Shop API' }));
     const other = fixture('Other');
     vi.mocked(native.chooseProject).mockResolvedValueOnce(other);
-    await user.click(screen.getByRole('button', { name: 'Open project' }));
+    await openSettings(user);
+    await user.click(screen.getByRole('button', { name: 'Open local project' }));
     await waitFor(() =>
       expect(screen.getByRole('combobox', { name: 'Active project' })).toHaveValue(other.handle),
     );
@@ -431,6 +437,7 @@ describe('authentication workflows', () => {
       screen.getByRole('textbox', { name: 'Request URL' }),
       'https://example.test/unsaved',
     );
+    await openSettings(user);
     await user.click(screen.getByRole('button', { name: 'Project authentication' }));
     const dialog = within(screen.getByRole('dialog', { name: 'Authentication: Shop' }));
     await selectOption(
@@ -544,8 +551,11 @@ describe('authentication workflows', () => {
       screen.getByRole('textbox', { name: 'Request URL' }),
       'https://example.test/session',
     );
-    await user.click(screen.getByRole('button', { name: 'Open project' }));
+    await openSettings(user);
+    await user.click(screen.getByRole('button', { name: 'Open local project' }));
+    await openSettings(user);
     await screen.findByRole('button', { name: 'Project authentication' });
+    await user.click(screen.getByRole('button', { name: 'Close settings' }));
     expect(screen.getByLabelText('Effective authentication')).toHaveTextContent('None · Session');
     await user.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() =>
@@ -592,6 +602,7 @@ it('previews and imports a new collection while preserving open unsaved requests
     });
     return { project: structuredClone(stored), error: null };
   });
+  await openSettings(user);
   await user.click(screen.getByRole('button', { name: 'Import OpenAPI…' }));
   expect(await screen.findByRole('dialog', { name: 'Import OpenAPI' })).toBeVisible();
   expect(native.commitOpenApiImport).not.toHaveBeenCalled();
@@ -622,6 +633,7 @@ it('cancels previews without writing and shows recoverable native import failure
     blockers: [],
   };
   vi.mocked(native.chooseOpenApiImport).mockResolvedValue(preview);
+  await openSettings(user);
   await user.click(screen.getByRole('button', { name: 'Import OpenAPI…' }));
   await screen.findByRole('dialog', { name: 'Import OpenAPI' });
   await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
@@ -632,6 +644,7 @@ it('cancels previews without writing and shows recoverable native import failure
     project: structuredClone(stored),
     error: 'OS store locked. Imported definitions remain visible.',
   });
+  await openSettings(user);
   await user.click(screen.getByRole('button', { name: 'Import OpenAPI…' }));
   await screen.findByRole('dialog');
   await user.click(screen.getByRole('button', { name: 'Import collection' }));
@@ -660,6 +673,7 @@ it('routes Postman selection through native preview and preserves an unsaved dra
     blockers: [],
   };
   vi.mocked(native.choosePostmanImport).mockResolvedValue(preview);
+  await openSettings(user);
   await user.click(screen.getByRole('button', { name: 'Import Postman…' }));
   await user.click(screen.getByRole('button', { name: 'Choose collection JSON…' }));
   expect(await screen.findByText('Scripts are omitted.')).toBeVisible();
@@ -690,6 +704,7 @@ it('exports the saved project through a preview without sending unsaved draft co
   };
   vi.mocked(native.previewOpenApiExport).mockResolvedValue(preview);
   vi.mocked(native.saveOpenApiExport).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  await openSettings(user);
   await user.click(screen.getByRole('button', { name: 'Export OpenAPI…' }));
   expect(screen.getByRole('status')).toHaveTextContent('unsaved request changes');
   await user.click(screen.getByRole('button', { name: 'Preview export' }));
@@ -764,7 +779,8 @@ describe('last project at startup', () => {
     render(<App />);
     expect(await screen.findByRole('alert')).toHaveTextContent('Use Open project');
     expect(native.rememberProject).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Open project' }));
+    await openSettings(user);
+    await user.click(screen.getByRole('button', { name: 'Open local project' }));
     expect(await screen.findByRole('combobox', { name: 'Active project' })).toHaveValue(
       stored.handle,
     );
@@ -778,7 +794,8 @@ describe('last project at startup', () => {
     vi.mocked(native.chooseProject).mockResolvedValue(second);
     render(<App />);
     await screen.findByRole('combobox', { name: 'Active project' });
-    await user.click(screen.getByRole('button', { name: 'Open project' }));
+    await openSettings(user);
+    await user.click(screen.getByRole('button', { name: 'Open local project' }));
     await waitFor(() => expect(native.rememberProject).toHaveBeenLastCalledWith(second.handle));
     await selectOption(
       user,
@@ -798,12 +815,14 @@ describe('last project at startup', () => {
       'Could not access local workspace settings.',
     );
     render(<App />);
-    await user.click(screen.getByRole('button', { name: 'Open project' }));
+    await openSettings(user);
+    await user.click(screen.getByRole('button', { name: 'Open local project' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('workspace settings');
     expect(screen.getByRole('combobox', { name: 'Active project' })).toHaveValue(stored.handle);
     expect(screen.getByRole('button', { name: 'Create collection' })).toBeEnabled();
   });
   it('keeps project actions disabled until the startup restore has completed', async () => {
+    const user = userEvent.setup();
     let finish: ((view: ProjectView | null) => void) | undefined;
     vi.mocked(native.restoreLastProject).mockImplementationOnce(
       () =>
@@ -812,12 +831,13 @@ describe('last project at startup', () => {
         }),
     );
     render(<App />);
-    expect(screen.getByRole('button', { name: 'Open project' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'New project' })).toBeDisabled();
+    await openSettings(user);
+    expect(screen.getByRole('button', { name: 'Open local project' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'New local project' })).toBeDisabled();
     await act(async () => {
       finish?.(null);
     });
-    expect(screen.getByRole('button', { name: 'Open project' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Open local project' })).toBeEnabled();
   });
 });
 
@@ -926,7 +946,11 @@ describe('save before quitting', () => {
   it('keeps session-only drafts open when no save destination exists', async () => {
     const user = userEvent.setup();
     render(<App />);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Open project' })).toBeEnabled());
+    await openSettings(user);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Open local project' })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('button', { name: 'Close settings' }));
     await user.click(within(screen.getByRole('main')).getByRole('button', { name: 'New request' }));
     await user.type(
       screen.getByRole('textbox', { name: 'Request URL' }),
@@ -971,6 +995,7 @@ describe('save before quitting', () => {
   });
   it('keeps invalid authentication changes open instead of quitting', async () => {
     const user = await setupCollection();
+    await openSettings(user);
     await user.click(screen.getByRole('button', { name: 'Project authentication' }));
     await selectOption(
       user,
@@ -1156,6 +1181,7 @@ it('applies a native preview rename before committing the same import plan', asy
     requests: [{ ...preview.requests[0]!, url: '{{apiServer}}/items' }],
   });
   vi.mocked(native.commitOpenApiImport).mockResolvedValue({ project: stored, error: null });
+  await openSettings(user);
   await user.click(screen.getByRole('button', { name: 'Import OpenAPI…' }));
   await user.click(await screen.findByText('Show variable definitions'));
   await user.click(screen.getByRole('button', { name: 'Rename baseUrl before import' }));

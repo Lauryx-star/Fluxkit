@@ -124,19 +124,21 @@ export function CompositionEditor({
       >
         Add {label} input
       </button>
-      <details>
-        <summary>Composition and Base64</summary>
-        {(['separator', 'prefix', 'suffix'] as const).map((key) => (
-          <label className="dialog-label" key={key}>
-            {key}
-            <input
-              aria-label={`${label} ${key}`}
-              value={value[key]}
-              maxLength={4096}
-              onChange={(e) => onChange({ ...value, [key]: e.target.value })}
-            />
-          </label>
-        ))}
+      <details className="token-advanced">
+        <summary>Advanced: composition &amp; Base64</summary>
+        <div className="field-row">
+          {(['separator', 'prefix', 'suffix'] as const).map((key) => (
+            <label className="dialog-label" key={key}>
+              {key}
+              <input
+                aria-label={`${label} ${key}`}
+                value={value[key]}
+                maxLength={4096}
+                onChange={(e) => onChange({ ...value, [key]: e.target.value })}
+              />
+            </label>
+          ))}
+        </div>
         <label className="token-checkbox">
           <input
             type="checkbox"
@@ -228,7 +230,8 @@ function Entries({
   return (
     <details className="token-entries">
       <summary>
-        {label} ({entries.length})
+        <span>{label}</span>
+        <span className="count-badge">{entries.length}</span>
       </summary>
       {entries.map((entry, index) => (
         <fieldset className="token-composition" key={index}>
@@ -290,18 +293,37 @@ function StatusCodes({
   return (
     <fieldset className="token-composition">
       <legend>Accepted success statuses</legend>
-      <p>{value.length ? value.join(', ') : 'Choose at least one status.'}</p>
-      <label className="dialog-label">
-        HTTP status
-        <input
-          aria-label={`${label} success status`}
-          type="number"
-          min={200}
-          max={599}
-          value={code}
-          onChange={(e) => setCode(Number(e.target.value))}
-        />
-      </label>
+      {value.length ? (
+        <div className="status-chip-row">
+          {value.map((status) => (
+            <button
+              type="button"
+              className="status-chip"
+              key={status}
+              aria-label={`Remove ${label} success status ${status}`}
+              onClick={() => onChange(value.filter((v) => v !== status))}
+            >
+              {status}
+              <span aria-hidden="true">✕</span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="auth-help">Choose at least one status.</p>
+      )}
+      <div className="field-row">
+        <label className="dialog-label">
+          HTTP status
+          <input
+            aria-label={`${label} success status`}
+            type="number"
+            min={200}
+            max={599}
+            value={code}
+            onChange={(e) => setCode(Number(e.target.value))}
+          />
+        </label>
+      </div>
       <button
         type="button"
         className="secondary-button"
@@ -310,16 +332,6 @@ function StatusCodes({
       >
         Accept status
       </button>
-      {value.map((status) => (
-        <button
-          type="button"
-          className="secondary-button"
-          key={status}
-          onClick={() => onChange(value.filter((v) => v !== status))}
-        >
-          Remove {status}
-        </button>
-      ))}
     </fieldset>
   );
 }
@@ -573,61 +585,63 @@ export function TokenAuthEditor({
           )}
           <fieldset className="token-composition">
             <legend>Use token in API requests</legend>
-            <label className="dialog-label">
-              Token placement
-              <Select
-                aria-label="Token placement"
-                value={value.config.placement.placement}
-                onValueChange={(selectedValue) =>
-                  onChange({
-                    ...value,
-                    config: {
-                      ...value.config,
-                      placement: {
-                        ...value.config.placement,
-                        placement: selectedValue as 'header' | 'query',
+            <div className="field-row">
+              <label className="dialog-label">
+                Token placement
+                <Select
+                  aria-label="Token placement"
+                  value={value.config.placement.placement}
+                  onValueChange={(selectedValue) =>
+                    onChange({
+                      ...value,
+                      config: {
+                        ...value.config,
+                        placement: {
+                          ...value.config.placement,
+                          placement: selectedValue as 'header' | 'query',
+                        },
                       },
-                    },
-                  })
-                }
-              >
-                <option value="header">Header</option>
-                <option value="query">Query parameter</option>
-              </Select>
-            </label>
-            <label className="dialog-label">
-              Token field name
-              <input
-                aria-label="Token field name"
-                required
-                value={value.config.placement.name}
-                onChange={(e) =>
-                  onChange({
-                    ...value,
-                    config: {
-                      ...value.config,
-                      placement: { ...value.config.placement, name: e.target.value },
-                    },
-                  })
-                }
-              />
-            </label>
-            <label className="dialog-label">
-              Token prefix
-              <input
-                aria-label="Token prefix"
-                value={value.config.placement.prefix}
-                onChange={(e) =>
-                  onChange({
-                    ...value,
-                    config: {
-                      ...value.config,
-                      placement: { ...value.config.placement, prefix: e.target.value },
-                    },
-                  })
-                }
-              />
-            </label>
+                    })
+                  }
+                >
+                  <option value="header">Header</option>
+                  <option value="query">Query parameter</option>
+                </Select>
+              </label>
+              <label className="dialog-label">
+                Token field name
+                <input
+                  aria-label="Token field name"
+                  required
+                  value={value.config.placement.name}
+                  onChange={(e) =>
+                    onChange({
+                      ...value,
+                      config: {
+                        ...value.config,
+                        placement: { ...value.config.placement, name: e.target.value },
+                      },
+                    })
+                  }
+                />
+              </label>
+              <label className="dialog-label">
+                Token prefix
+                <input
+                  aria-label="Token prefix"
+                  value={value.config.placement.prefix}
+                  onChange={(e) =>
+                    onChange({
+                      ...value,
+                      config: {
+                        ...value.config,
+                        placement: { ...value.config.placement, prefix: e.target.value },
+                      },
+                    })
+                  }
+                />
+              </label>
+            </div>
           </fieldset>
         </>
       )}

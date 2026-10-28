@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
-export function Modal({ children, label }: { children: ReactNode; label: string }) {
+export function Modal({
+  children,
+  label,
+  variant,
+  onDismiss,
+}: {
+  children: ReactNode;
+  label: string;
+  variant?: 'blur';
+  onDismiss?: () => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const previous = document.activeElement;
@@ -12,14 +22,25 @@ export function Modal({ children, label }: { children: ReactNode; label: string 
     };
   }, []);
   return (
-    <div className="modal-backdrop">
+    <div
+      className={`modal-backdrop${variant === 'blur' ? ' modal-backdrop-blur' : ''}`}
+      onMouseDown={(event) => {
+        if (onDismiss && event.target === event.currentTarget) {
+          onDismiss();
+        }
+      }}
+    >
       <div
         ref={ref}
-        className="modal"
+        className={`modal${variant === 'blur' ? ' modal-blur' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-label={label}
         onKeyDown={(event) => {
+          if (event.key === 'Escape' && onDismiss) {
+            onDismiss();
+            return;
+          }
           if (event.key !== 'Tab') {
             return;
           }
