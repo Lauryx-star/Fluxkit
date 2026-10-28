@@ -53,6 +53,15 @@ vi.mock('../native', () => ({
   commitOpenApiImport: vi.fn(),
   discardOpenApiImport: vi.fn(),
 }));
+const events = vi.hoisted(() => ({
+  handlers: new Map<string, (event: { payload: unknown }) => void>(),
+}));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
+    events.handlers.set(name, handler);
+    return () => events.handlers.delete(name);
+  },
+}));
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({
     onCloseRequested: async (handler: NonNullable<typeof lifecycle.close>) => {
@@ -156,6 +165,21 @@ async function openSettings(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('local project workflows', () => {
+  it('shows a failed automatic server publish without discarding the saved workspace', async () => {
+    await setupCollection();
+    const failed = events.handlers.get('server-sync-failed');
+    expect(failed).toBeDefined();
+    act(() =>
+      failed!({
+        payload: {
+          handle: stored.handle,
+          message: 'Saved in the workspace, but not yet on the server: synthetic conflict',
+        },
+      }),
+    );
+    expect(await screen.findByText(/not yet on the server: synthetic conflict/)).toBeVisible();
+    expect(screen.getByRole('button', { name: 'New request in Shop API' })).toBeVisible();
+  });
   it('sends the unsaved draft with a 60-second default and displays response views', async () => {
     const user = await setupCollection();
     await user.click(screen.getByRole('button', { name: 'New request in Shop API' }));

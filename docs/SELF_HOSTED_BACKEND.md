@@ -86,9 +86,13 @@ The current implementation supports local-account and OIDC server modes. The des
 server URL, register/sign in, list accessible projects, manage team membership when authorized as
 a project administrator, create team projects and approve/disable accounts as a server admin, and
 upload a saved local project as a new personal server copy. Permitted online projects with write
-access open in a separate local workspace; an explicit Sync saved changes operation publishes its
-snapshot with an `If-Match` revision check. A revision conflict preserves local edits and rejects
-the sync. Offline snapshots and restored server workspaces are read-only. Immutable snapshots are
+access open in a separate local workspace. Every saved change there (requests, collections,
+folders, moves, project auth/name, variable/environment definitions, imports) is published
+automatically as a snapshot with an `If-Match` revision check; publishes are serialized. A failed
+publish (offline, revision conflict, attachments) keeps the local save, shows the reason and is
+retried by the next save or by **Sync saved changes** under Server workspaces. A revision conflict
+preserves local edits and rejects the sync; use Load server version to continue. Each publish
+uploads the complete snapshot. Offline snapshots and restored server workspaces are read-only. Immutable snapshots are
 cached by revision; authorization failures never fall back to stale project data. Upload and
 workspace snapshot sync omit request history, reusable values and file attachment content;
 transfer includes only explicitly selected ordinary values and client-encrypted secrets; local file attachments block these operations to avoid broken references.

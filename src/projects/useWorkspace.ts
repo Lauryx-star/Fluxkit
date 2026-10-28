@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import * as native from '../native';
 import {
@@ -192,6 +193,31 @@ export function useWorkspace(
       .catch(() =>
         setError('Window-close protection is unavailable. Save your changes before closing.'),
       );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [desktop]);
+
+  // Server workspaces publish each save automatically. A failed publish keeps the local save;
+  // show why the server copy is behind.
+  useEffect(() => {
+    if (!desktop) {
+      return;
+    }
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<{ handle: string; message: string }>('server-sync-failed', (event) => {
+      setError(event.payload.message);
+    })
+      .then((stop) => {
+        if (disposed) {
+          stop();
+        } else {
+          unlisten = stop;
+        }
+      })
+      .catch(() => {});
     return () => {
       disposed = true;
       unlisten?.();

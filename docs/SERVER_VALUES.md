@@ -15,7 +15,10 @@ signing out, changing accounts/server or quitting also removes available keys. P
 operations cannot restore a key after a lock/account change. Only one expensive key operation
 runs at once, on a blocking worker.
 
-In the environment manager, new variables default to secret. Explicitly marking a variable
+Local projects keep every secret and ordinary value in the OS credential store. In server
+workspaces, ordinary values are shared project data and secret values live only in the account
+vault, encrypted with a key wrapped by the vault master password. In the environment manager,
+new variables default to secret. Explicitly marking a variable
 ordinary preserves its UUID and does not upload an OS value. Save definitions and use
 **Sync saved changes**, then **Reload** variables before saving values for new definitions.
 Ordinary values are readable by all project members; secrets require the unlocked vault.

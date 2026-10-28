@@ -263,8 +263,9 @@ export function ServerConnection({
             </p>
             <p>
               Projects can be edited when your account has write access and the server is online.
-              Offline snapshots are read-only; use Sync saved changes to publish local workspace
-              edits.
+              Every saved change in a server workspace is published to the server automatically.
+              Offline snapshots are read-only. After a failed publish, the next save retries it;
+              Sync saved changes under Server workspaces retries it immediately.
             </p>
             <label className="dialog-label">
               Server URL

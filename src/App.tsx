@@ -43,6 +43,7 @@ import { BodyEditor } from './projects/BodyEditor';
 import { NameDialog, ConfirmDialog, QuitDialog } from './projects/Dialogs';
 import { EnvironmentControls } from './environments/EnvironmentControls';
 import { ServerConnection } from './server/ServerConnection';
+import { VaultLock } from './server/VaultLock';
 import { SettingsDialog } from './projects/SettingsDialog';
 import { VariableContext } from './environments/VariableContext';
 import { VariableInput } from './environments/VariableInput';
@@ -84,6 +85,16 @@ export default function App() {
   const [variablesOpen, setVariablesOpen] = useState(false);
   const [serverConnectionOpen, setServerConnectionOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Reload the status-bar vault state when the dialogs that can change it close.
+  const vaultDialogsOpen = settingsOpen || serverConnectionOpen;
+  const [vaultRefresh, setVaultRefresh] = useState(0);
+  const [vaultDialogsWereOpen, setVaultDialogsWereOpen] = useState(vaultDialogsOpen);
+  if (vaultDialogsWereOpen !== vaultDialogsOpen) {
+    setVaultDialogsWereOpen(vaultDialogsOpen);
+    if (!vaultDialogsOpen) {
+      setVaultRefresh((value) => value + 1);
+    }
+  }
   const [checkingVariables, setCheckingVariables] = useState(false);
   const [variableCheck, setVariableCheck] = useState<{
     requestId: string;
@@ -1251,6 +1262,12 @@ export default function App() {
                 <>
                   Local workspace <span className="status-divider">/</span> No cloud required
                 </>
+              )}
+              {serverStatus !== 'local' && (
+                <VaultLock
+                  refreshKey={vaultRefresh}
+                  onSetup={() => setServerConnectionOpen(true)}
+                />
               )}
               <button
                 className="icon-button settings-trigger"

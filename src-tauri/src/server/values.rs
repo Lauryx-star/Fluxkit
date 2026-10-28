@@ -17,7 +17,7 @@ use std::{
 use tauri::{Manager, State};
 use zeroize::Zeroizing;
 
-const UNSYNCED_DEFINITIONS: &str = "The server does not know this variable or environment yet, or its secret setting changed locally. Use Sync saved changes in the server dialog to publish the variable definitions first, then save the value again.";
+pub(crate) const UNSYNCED_DEFINITIONS: &str = "The server does not know this variable or environment yet, or its secret setting changed locally. Use Sync saved changes in the server dialog to publish the variable definitions first, then save the value again.";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

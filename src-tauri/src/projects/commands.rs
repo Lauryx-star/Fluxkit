@@ -2,8 +2,50 @@ use super::{
     model::{Attachment, Collection},
     store::{CollectionView, ProjectStore, ProjectView},
 };
+use serde::Serialize;
 use std::sync::{Arc, Mutex};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncFailure {
+    handle: String,
+    message: String,
+}
+
+/// Server workspaces publish every saved change automatically; local projects are unaffected.
+/// The local save already succeeded, so a failed publish is reported through the
+/// `server-sync-failed` event instead of failing the save. The change stays in the workspace
+/// and the next save (or Sync saved changes) publishes it.
+async fn publish(app: &tauri::AppHandle, state: &State<'_, ProjectState>, handle: &str) {
+    let check = handle.to_string();
+    let server = run(state, move |store| {
+        store.with_environment(&check, |root, _| {
+            Ok(super::store::server_owner(root)?.is_some())
+        })
+    })
+    .await;
+    if !matches!(server, Ok(true)) {
+        return;
+    }
+    let synced =
+        crate::server::server_sync_project(app.clone(), state.clone(), handle.to_string()).await;
+    if synced.is_ok() {
+        // A sync raises the project revision that value writes must name; reload it now.
+        if let Ok(Some(context)) = crate::server::values::context(state, handle, false).await {
+            let _ = crate::server::values::refresh(app, &context).await;
+        }
+    }
+    if let Err(error) = synced {
+        let _ = app.emit(
+            "server-sync-failed",
+            SyncFailure {
+                handle: handle.to_string(),
+                message: format!("Saved in the workspace, but not yet on the server: {error}"),
+            },
+        );
+    }
+}
 
 #[tauri::command]
 pub async fn environment_action(
@@ -30,6 +72,8 @@ pub async fn environment_action(
         .state::<crate::server::values::ValueState>()
         .inner()
         .clone();
+    let publishes = matches!(action, super::environments::Action::Save { .. });
+    let published = handle.clone();
     let action = if let Some(context) = remote_context {
         if let super::environments::Action::SetValue {
             variable,
@@ -39,16 +83,43 @@ pub async fn environment_action(
             expected_value_revision,
         } = action
         {
-            crate::server::values::set_value(
+            let saved = crate::server::values::set_value(
                 &app,
                 &context,
                 &variable,
                 environment.as_deref(),
-                value,
+                value.clone(),
                 &expected,
                 expected_value_revision,
             )
-            .await?;
+            .await;
+            match saved {
+                // The server rejected the slot (400, nothing written) because the variable or
+                // environment only exists locally. Publish the saved workspace, then save once
+                // more. Definitions on disk are unchanged, so `expected` stays valid.
+                Err(error) if error == crate::server::values::UNSYNCED_DEFINITIONS => {
+                    crate::server::server_sync_project(app.clone(), state.clone(), handle.clone())
+                        .await
+                        .map_err(|error| {
+                            format!("The value was not saved: publishing the new variable definitions to the server failed. {error}")
+                        })?;
+                    let context = crate::server::values::context(&state, &handle, true)
+                        .await?
+                        .ok_or("This workspace is no longer a server workspace.")?;
+                    crate::server::values::refresh(&app, &context).await?;
+                    crate::server::values::set_value(
+                        &app,
+                        &context,
+                        &variable,
+                        environment.as_deref(),
+                        value,
+                        &expected,
+                        expected_value_revision,
+                    )
+                    .await?;
+                }
+                other => other?,
+            }
             super::environments::Action::Load
         } else {
             crate::server::values::refresh(&app, &context).await?;
@@ -57,7 +128,7 @@ pub async fn environment_action(
     } else {
         action
     };
-    run(&state, move |store| {
+    let reply = run(&state, move |store| {
         if matches!(
             &action,
             super::environments::Action::Save { .. } | super::environments::Action::SetValue { .. }
@@ -78,7 +149,11 @@ pub async fn environment_action(
             Ok(reply)
         })
     })
-    .await
+    .await?;
+    if publishes {
+        publish(&app, &state, &published).await;
+    }
+    Ok(reply)
 }
 
 #[derive(Default)]
@@ -172,38 +247,50 @@ pub async fn reload_project(
 
 #[tauri::command]
 pub async fn rename_project(
+    app: tauri::AppHandle,
     state: State<'_, ProjectState>,
     handle: String,
     name: String,
     expected: String,
 ) -> Result<ProjectView, String> {
-    run(&state, move |store| store.rename(&handle, name, &expected)).await
+    let published = handle.clone();
+    let view = run(&state, move |store| store.rename(&handle, name, &expected)).await?;
+    publish(&app, &state, &published).await;
+    Ok(view)
 }
 
 #[tauri::command]
 pub async fn save_collection(
+    app: tauri::AppHandle,
     state: State<'_, ProjectState>,
     handle: String,
     collection: Collection,
     expected: Option<String>,
 ) -> Result<CollectionView, String> {
-    run(&state, move |store| {
+    let published = handle.clone();
+    let view = run(&state, move |store| {
         store.save_collection(&handle, collection, expected)
     })
-    .await
+    .await?;
+    publish(&app, &state, &published).await;
+    Ok(view)
 }
 
 #[tauri::command]
 pub async fn remove_collection(
+    app: tauri::AppHandle,
     state: State<'_, ProjectState>,
     handle: String,
     id: String,
     expected: String,
 ) -> Result<(), String> {
+    let published = handle.clone();
     run(&state, move |store| {
         store.remove_collection(&handle, &id, &expected)
     })
-    .await
+    .await?;
+    publish(&app, &state, &published).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -250,27 +337,35 @@ pub async fn close_project(
 
 #[tauri::command]
 pub async fn save_project_auth(
+    app: tauri::AppHandle,
     state: State<'_, ProjectState>,
     handle: String,
     auth: Option<super::model::Auth>,
     expected: String,
 ) -> Result<ProjectView, String> {
-    run(&state, move |store| {
+    let published = handle.clone();
+    let view = run(&state, move |store| {
         store.save_auth(&handle, auth, &expected)
     })
-    .await
+    .await?;
+    publish(&app, &state, &published).await;
+    Ok(view)
 }
 
 #[tauri::command]
 pub async fn move_request(
+    app: tauri::AppHandle,
     state: State<'_, ProjectState>,
     handle: String,
     input: super::moving::MoveInput,
 ) -> Result<Vec<CollectionView>, String> {
     let owner = handle.clone();
-    run(&state, move |store| {
+    let published = handle.clone();
+    let views = run(&state, move |store| {
         store.ensure_writable(&handle)?;
         store.with_environment(&handle, |root, _| super::moving::apply(root, &owner, input))
     })
-    .await
+    .await?;
+    publish(&app, &state, &published).await;
+    Ok(views)
 }

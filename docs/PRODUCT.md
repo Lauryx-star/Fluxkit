@@ -146,8 +146,8 @@ no private collections in a team project.
 
 The server is intended to store versioned project snapshots, ordinary project values, memberships,
 and per-user encrypted secret envelopes. Request history always remains local. Online project changes
-are saved in a separate local workspace and explicitly synchronized with revision checks; offline
-snapshots are read-only. Local project files remain after upload. Local OS credential-store values
+are saved in a separate local workspace and published to the server automatically after every
+save, with revision checks; offline snapshots are read-only. Local project files remain after upload. Local OS credential-store values
 are not uploaded until their ordinary-value and secret ownership rules are implemented.
 
 Local accounts require administrator approval before accessing project data. OIDC is an

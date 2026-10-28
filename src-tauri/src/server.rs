@@ -1131,9 +1131,24 @@ pub async fn server_save_project_snapshot(
         .map_err(|_| "The server returned an invalid project snapshot.".to_string())
 }
 
+/// Serializes workspace syncs: automatic publishes after saves, imports and the manual retry
+/// must not race each other's revision checks.
+#[derive(Default)]
+pub struct SyncState(tauri::async_runtime::Mutex<()>);
+
 #[tauri::command]
 pub async fn server_sync_project(
     app: tauri::AppHandle,
+    projects: tauri::State<'_, super::projects::commands::ProjectState>,
+    handle: String,
+) -> Result<ServerProjectSnapshot, String> {
+    let sync = app.state::<SyncState>();
+    let _serialized = sync.0.lock().await;
+    sync_project(&app, projects, handle).await
+}
+
+async fn sync_project(
+    app: &tauri::AppHandle,
     projects: tauri::State<'_, super::projects::commands::ProjectState>,
     handle: String,
 ) -> Result<ServerProjectSnapshot, String> {

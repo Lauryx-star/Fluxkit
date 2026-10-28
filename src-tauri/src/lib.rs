@@ -32,6 +32,7 @@ pub fn run() {
         .manage(ProjectState::default())
         .manage(server::oidc::OidcState::default())
         .manage(server::values::ValueState::default())
+        .manage(server::SyncState::default())
         .manage(server::transfer::TransferState::default())
         .manage(HttpState::default())
         .manage(imports::commands::ImportState::default())

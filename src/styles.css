@@ -460,7 +460,9 @@ h1 > span {
   flex-direction: column;
 }
 .split-bottom {
-  flex: 1 1 auto;
+  /* Zero basis: the response only takes the space left by the request pane, so its content
+     length can never push the divider or override the dragged ratio. */
+  flex: 1 1 0;
   min-height: 140px;
   overflow: hidden;
   display: flex;
@@ -840,6 +842,17 @@ textarea::placeholder {
 .status-divider {
   padding: 0 8px;
   color: #64735a;
+}
+.vault-trigger {
+  margin-left: 10px;
+  padding: 3px;
+  color: #99a68f;
+}
+.vault-trigger.vault-unlocked {
+  color: var(--accent);
+}
+.vault-trigger:hover {
+  color: var(--accent);
 }
 .settings-trigger {
   margin-left: 10px;
