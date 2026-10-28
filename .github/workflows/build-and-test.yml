@@ -23,7 +23,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: ".nvmrc"
+          node-version-file: '.nvmrc'
           cache: npm
 
       - name: Install dependencies
@@ -88,7 +88,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92.0"
+          toolchain: '1.92.0'
           components: rustfmt, clippy
 
       - name: Cache Cargo
@@ -126,7 +126,7 @@ jobs:
           --health-timeout=5s
           --health-retries=5
     env:
-      FLUXKIT_TEST_DATABASE: "Host=localhost;Port=5432;Database=postgres;Username=fluxkit;Password=fluxkit_ci_only"
+      FLUXKIT_TEST_DATABASE: 'Host=localhost;Port=5432;Database=postgres;Username=fluxkit;Password=fluxkit_ci_only'
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -134,7 +134,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "10.0.x"
+          dotnet-version: '10.0.x'
 
       - name: Build server
         run: dotnet build server/Fluxkit.Server/Fluxkit.Server.csproj --configuration Release
@@ -155,7 +155,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: ".nvmrc"
+          node-version-file: '.nvmrc'
           cache: npm
 
       - name: Install dependencies
