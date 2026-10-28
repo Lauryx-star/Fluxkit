@@ -202,9 +202,9 @@ it('changes legacy classification only after explicit confirmation and retains t
   );
 });
 
-it('submits the loaded shared-value revision and preserves editor input after a conflict', async () => {
+it('submits the loaded revision of the edited value slot and preserves editor input after a conflict', async () => {
   view.data.variables[0]!.secret = false;
-  view.serverValues = { shared: 7, secrets: 3 };
+  view.serverValues = { slots: { 'var/env': 7, 'var/default': 7, 'other/env': 3 } };
   const implementation = vi.mocked(environmentAction).getMockImplementation()!;
   vi.mocked(environmentAction).mockImplementation(async (handle, action) => {
     if (action.kind === 'setValue') {

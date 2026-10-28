@@ -79,7 +79,7 @@ fn ensure_dir(path: &Path) -> Result<(), String> {
     safe(path, true)
 }
 
-fn lock(root: &Path) -> Result<File, String> {
+pub(crate) fn lock(root: &Path) -> Result<File, String> {
     safe(root, true)?;
     let private = root.join(".fluxkit");
     ensure_dir(&private)?;
@@ -268,33 +268,6 @@ impl ProjectStore {
             return Err("Server workspace metadata does not match the local project.".into());
         }
         Ok(marker)
-    }
-
-    pub(crate) fn update_server_workspace_revision(
-        &self,
-        handle: &str,
-        server_url: &str,
-        project_id: Uuid,
-        revision: i64,
-    ) -> Result<(), String> {
-        let root = self.root(handle)?;
-        let path = root.join(".fluxkit/server-workspace.json");
-        safe(&path, false)?;
-        let current: ServerWorkspaceMarker = decode(&read(&path)?)?;
-        if current.server_url != server_url || current.server_project_id != project_id {
-            return Err(
-                "Server workspace metadata changed. Reload the project before syncing.".into(),
-            );
-        }
-        if revision <= current.revision {
-            return Err("The server returned an invalid project revision.".into());
-        }
-        let bytes = serde_json::to_vec_pretty(&ServerWorkspaceMarker {
-            revision,
-            ..current
-        })
-        .map_err(|_| "Could not update server workspace metadata.".to_string())?;
-        atomic(&path, &bytes, false)
     }
 
     /// Authorizes the project handle and holds its advisory lock for local value operations.

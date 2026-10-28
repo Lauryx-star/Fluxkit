@@ -1,9 +1,10 @@
 # Self-hosted backend
 
 Fluxkit remains usable in local mode without a server. The server is a separate ASP.NET Core
-10 service backed by PostgreSQL. It stores project snapshots and never receives request
-history. Client migration keeps a read-only local snapshot for offline access; local history
-remains separate.
+10 service backed by PostgreSQL. It stores each project as normalized rows (collections,
+folders, requests, environments, variables and values), each with its own revision, and never
+receives request history. The desktop keeps a read-only local copy for offline access; local
+history remains separate.
 
 ## Ownership and access
 
@@ -13,7 +14,7 @@ remains separate.
 - A server administrator approves registrations and creates team projects. A project
   administrator manages that team's memberships. A member can read and modify project data.
 - Ordinary variable values are project data. A secret value is stored separately as an
-  opaque envelope scoped by `(project, user, variable, environment)`.
+  opaque client-encrypted value scoped by `(user, variable, environment)`.
 - Server administrators and other team members do not get a secret decryption key.
 
 The API checks active account status on each authenticated request. Personal-project access
@@ -36,41 +37,61 @@ The initial API exposes:
 | `POST /api/admin/users/{id}/approve` | Approve an account and create its personal project |
 | `GET /api/admin/users` | List user status and server-admin flag |
 | `PUT /api/admin/users/{id}/status` | Disable or re-enable an approved account |
-| `GET /api/projects` | List only owned or member projects |
-| `POST /api/projects` | Create a blank team project as server admin |
-| `GET /api/projects/{id}` | Read a permitted project snapshot |
-| `POST /api/projects/{id}/takeover` | Create a project and its own encrypted-secret envelopes |
-| `PUT /api/projects/{id}` | Replace a snapshot using `If-Match` revision |
+| `GET /api/projects` | List only owned or member projects, with creation date and collection count |
+| `POST /api/projects` | Create a team project (server admin), optionally with an initial tree and values |
+| `DELETE /api/projects/{id}` | Delete an empty team project as server admin, `If-Match` project revision |
+| `GET /api/projects/{id}` | Read a permitted project's metadata |
+| `GET /api/projects/{id}/tree` | Read the whole project as rows, with the current feed position |
+| `GET /api/projects/{id}/changes?since=` | Read what changed after a feed position |
+| `POST /api/projects/{id}/changes` | Apply a batch of row changes atomically |
 | `GET /api/projects/{id}/members` | List team members as a project admin |
 | `POST /api/projects/{id}/members` | Add an approved user with a project role |
 | `PUT /api/projects/{id}/members/{userId}` | Change a member's project role |
-| `DELETE /api/projects/{id}/members/{userId}` | Remove a member; preserve that user's secret envelopes |
+| `DELETE /api/projects/{id}/members/{userId}` | Remove a member; preserve that user's encrypted values |
 | `GET/PUT /api/account/vault` | Read/update the caller's wrapped account key |
-| `GET/PUT /api/projects/{id}/values` | Read/update shared ordinary values |
-| `GET/PUT /api/projects/{id}/vault-values` | Read/update the caller's encrypted secret bundle |
-| `GET/PUT/DELETE /api/projects/{id}/secrets/...` | Access only the caller's encrypted values |
+| `GET /api/projects/{id}/values` | Read shared ordinary values with per-value revisions |
+| `PUT/DELETE /api/projects/{id}/values/{variable}/{environment}` | Write one shared value, `If-Match` its revision |
+| `GET /api/projects/{id}/vault-values` | Read the caller's encrypted secret values |
+| `PUT/DELETE /api/projects/{id}/vault-values/{variable}/{environment}` | Write one of the caller's encrypted values |
+| `POST /api/projects/{id}/values/batch` | Write many shared and own encrypted values atomically (imports) |
 
-Authenticated calls use bearer tokens. Project replacement requires `If-Match` with the
-current numeric revision. The database compares and increments that revision in one conditional
-UPDATE; simultaneous writers cannot both replace the same revision. Stale writes return HTTP 409
-and are never silently applied. Missing preconditions return HTTP 428.
-Snapshot payloads use `{ project, collections, environments }`; the server checks project
-identity, top-level shape and size before PostgreSQL stores the JSON document.
+Authenticated calls use bearer tokens.
 
-Takeover is idempotency-by-identity: project UUIDs cannot be created twice. The client keeps the
-original local files after a successful upload. Server projects use a separate local workspace;
-that workspace is retained for offline read-only use and is not a destructive migration.
+### Rows, revisions and the change feed
+
+Every collection, folder, request, environment and variable is one row with its own numeric
+revision; the project row holds its name and authentication. Order is a sortable `position`
+string. A batch is a list of `put`/`delete` operations; every operation on an existing row
+carries its `expectedRevision`. The server applies a batch all-or-nothing in one transaction:
+when any row changed meanwhile, nothing is written and HTTP 409 lists each conflict with
+`kind`, `id`, current `revision` (absent when deleted), `updatedAt` and `updatedBy`. Edits of
+different rows by different members therefore never conflict. A delete removes the row and
+everything below it (folders, requests, values); delete wins over concurrent edits of children.
+The server checks the tree: parents in the same collection, no folder cycles, unique variable
+and environment names, size and count limits.
+
+Every applied change appends to the project's change feed with who and when (not the data).
+`GET /changes?since=n` returns the latest state of every row changed after `n` plus the new
+feed position; a client too far behind (or with an invalid position) gets HTTP 410 and reloads
+the tree. Values use per-slot revisions the same way: `If-Match: 0` creates, a stale revision
+returns 409, a missing precondition 428. Stale writes are never silently applied.
+
+Uploading a local project creates a new server project in one request: the tree is applied as
+put operations and the selected values are stored in the same transaction. The client keeps the
+original local files. Server projects use a separate local workspace that is retained for
+offline read-only use.
+
+Only server administrators delete projects, and only empty ones (no collections, environments
+or variables). The client closes open copies first and removes its local copies afterwards.
 
 ## Shared values and encrypted secrets
 
-The desktop now synchronizes ordinary values separately from project snapshots and encrypts
-personal secrets in Rust before upload. Local-to-server transfer has an explicit selection,
+The desktop synchronizes ordinary values per value slot and encrypts personal secrets in Rust
+before upload. Local-to-server transfer has an explicit selection,
 preparation and final upload preview. See [SERVER_VALUES.md](SERVER_VALUES.md) for the UI flow,
 revision contract, cryptographic format, cache ownership and recovery limitations.
 
-The legacy `/secrets/...` envelope endpoints remain available for compatibility. The desktop
-uses the new account vault and per-project value bundles; legacy envelopes are not automatically
-converted. Neither API derives keys or decrypts secrets.
+The server never derives keys or decrypts secrets.
 
 ## Account modes and current scope
 
@@ -85,17 +106,16 @@ for setup, the desktop handoff, cancellation, mode-switch limits and validation 
 The current implementation supports local-account and OIDC server modes. The desktop can configure the
 server URL, register/sign in, list accessible projects, manage team membership when authorized as
 a project administrator, create team projects and approve/disable accounts as a server admin, and
-upload a saved local project as a new personal server copy. Permitted online projects with write
-access open in a separate local workspace. Every saved change there (requests, collections,
-folders, moves, project auth/name, variable/environment definitions, imports) is published
-automatically as a snapshot with an `If-Match` revision check; publishes are serialized. A failed
-publish (offline, revision conflict, attachments) keeps the local save, shows the reason and is
-retried by the next save or by **Sync saved changes** under Server workspaces. A revision conflict
-preserves local edits and rejects the sync; use Load server version to continue. Each publish
-uploads the complete snapshot. Offline snapshots and restored server workspaces are read-only. Immutable snapshots are
-cached by revision; authorization failures never fall back to stale project data. Upload and
-workspace snapshot sync omit request history, reusable values and file attachment content;
-transfer includes only explicitly selected ordinary values and client-encrypted secrets; local file attachments block these operations to avoid broken references.
+upload a saved local project as a new server copy. Permitted online projects with write access
+open in a separate local workspace. Every change there (requests, collections, folders, moves,
+project auth/name, variable/environment definitions, imports) is written to the server as it is
+saved: the desktop compares the saved files with the last known server state, sends only the
+changed rows with their revisions, and keeps the local save only when the server accepted it.
+A rejected change rolls the workspace back to the last known server state and is reported with
+what changed and by whom. Other members' changes are loaded from the change feed every 15
+seconds, when the window regains focus, and on **Refresh from server**. Offline copies are
+read-only. Request history and file attachment content are never uploaded; local file
+attachments block upload and saves to avoid broken references.
 Request history remains local by design.
 
 Variable definitions carry an optional `secret` classification. New variables default to
@@ -121,24 +141,20 @@ allow another account to reuse them. Version-1 session entries and server caches
 account owner are not adopted automatically; sign in again and open projects from Server
 connection. Legacy cache/workspace files remain on disk for manual recovery of saved edits.
 
-After a sync conflict, choose **Load server version**, then **Keep recovery copy and load**.
-Save or close unsaved editors first. Fluxkit fetches an authorized current snapshot and creates
-a separate workspace generation, retaining the previous saved files as a read-only recovery
-project. Both projects appear in the workspace. Copy desired changes manually into the new
-workspace and use **Sync saved changes** again. This is an explicit manual merge, not an
-automatic merge or a force-overwrite of server data. Local edits made while fetching abort the
-refresh. Authorization failures and unavailable servers preserve the existing workspace.
+### Concurrent edits in the desktop
 
-Active-workspace selection is an atomic pointer to an independently staged generation. Snapshot
-cache revisions are also staged before becoming discoverable. A failed operation can leave a
-retained generation, but does not overwrite previous saved edits. If a sync reached the server
-but its response or local revision update failed, the next explicit sync compares parsed JSON
-snapshots. Identical content acknowledges the current server revision without repeating PUT;
-different content at a newer revision requires the recovery flow. Offline access prefers a saved
-workspace in read-only mode, preserving visibility of unsynced edits; only when none exists does
-it use the latest cached server snapshot. Recovery projects are explicitly labelled in the
-project picker and restore as recovery copies after restart. There is no automatic request
-replay or offline write queue.
+Open request editors follow the server automatically while they are unedited. When a request
+with unsaved edits changes on the server, the editor keeps the edits, shows a notice and asks
+before saving over the newer server version; a request deleted on the server can be saved again
+to recreate it. When a save is rejected because the server changed in the meantime, a dialog
+offers **Load server version** (discard the edits in that request) or **Keep my version**
+(load the server state, then save the edits on top of it). There is no offline write queue and
+no automatic request replay.
+
+The workspace keeps the last known server tree in `.fluxkit/server-tree.json`; the regular
+project files are rendered from it and are overwritten when the server state is loaded.
+Read-only copies are staged per feed position before becoming discoverable, so an open copy is
+never rewritten underneath its viewer.
 
 ## Deployment
 
@@ -161,7 +177,8 @@ feature; no automatic email/name linking is performed. Validation is recorded in
 Remaining work:
 
 1. **Extend platform validation.** Complete signed-in GUI workflows and OS-store integration on
-   each supported platform; automatic conflict merge remains outside this slice.
+   each supported platform; field-level merging of one request edited by two people remains
+   outside this slice (the second save asks before overwriting).
 2. **Review deployment/security.** Validate operator TLS/proxy configuration, backup/restore,
    upgrades and deployment load before calling the backend release complete. The isolated
    [real-provider HTTPS E2E suite](../server/e2e/README.md) now covers Keycloak, proxy, database,

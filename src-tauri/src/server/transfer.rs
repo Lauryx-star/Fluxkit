@@ -223,6 +223,7 @@ fn prepare(
                 variable_id: slot.variable_id.clone(),
                 environment_id: slot.environment_id.clone(),
                 value: value.to_string(),
+                revision: 0,
             });
         }
     }
@@ -234,7 +235,7 @@ pub async fn server_commit_transfer(
     projects: State<'_, ProjectState>,
     handle: String,
     id: String,
-) -> Result<super::ServerProjectSnapshot, String> {
+) -> Result<super::ServerProject, String> {
     let root = app
         .path()
         .app_data_dir()
@@ -266,15 +267,38 @@ pub async fn server_commit_transfer(
         .prepared
         .as_ref()
         .ok_or("Prepare the transfer first.")?;
-    let response = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(30)).build().map_err(|_| "Could not create a server connection.")?
-        .post(super::api_url(&plan.owner.server_url, &format!("/api/projects/{}/takeover", plan.project))?)
-        .bearer_auth(&session.access_token).json(&serde_json::json!({"name": plan.preview.name, "kind": "personal", "snapshot": plan.snapshot, "encryptedSecrets": [], "sharedValues": prepared.shared, "vaultValues": prepared.secrets})).send().await
+    #[derive(Deserialize)]
+    struct Snapshot {
+        project: crate::projects::model::Project,
+        collections: Vec<crate::projects::model::Collection>,
+        environments: Definitions,
+    }
+    let snapshot: Snapshot = serde_json::from_str(&plan.snapshot)
+        .map_err(|_| "The local project could not be read for upload.".to_string())?;
+    let tree = super::sync::upload_tree(
+        &snapshot.project,
+        &snapshot.collections,
+        &snapshot.environments,
+    )?;
+    let response = super::http_client()?
+        .post(super::api_url(&plan.owner.server_url, "/api/projects")?)
+        .bearer_auth(&session.access_token)
+        .json(&serde_json::json!({
+            "id": plan.project,
+            "name": plan.preview.name,
+            "kind": "personal",
+            "tree": tree,
+            "sharedValues": prepared.shared,
+            "vaultValues": prepared.secrets
+        }))
+        .send()
+        .await
         .map_err(|_| "The upload response was interrupted. Local files remain unchanged. Check the server project list before preparing a new transfer; the server may have saved this copy.".to_string())?;
     if !response.status().is_success() {
         return Err(super::response_error(response).await);
     }
     super::ensure_session(&session)?;
-    super::read_snapshot(response).await
+    super::values::read_json(response).await
 }
 #[tauri::command]
 pub fn server_discard_transfer(app: tauri::AppHandle, id: String) -> Result<(), String> {

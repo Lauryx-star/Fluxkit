@@ -171,17 +171,18 @@ be exercised on each platform before claiming that platform's integration is ver
 
 ## Server values and account isolation
 
-Server workspaces resolve ordinary values from a shared project bundle and secrets from the
-caller's client-encrypted bundle, with no OS plaintext fallback. The account vault must be
+Server workspaces resolve ordinary values from shared project values and secrets from the
+caller's client-encrypted values, with no OS plaintext fallback. The account vault must be
 unlocked before secret resolution. Older definitions without `secret` remain secret. Changing
-classification is explicit and does not read or upload any stored value. Remove synchronized
-values before deleting their definitions or changing their classification.
+classification is explicit and does not read or upload any stored value; the server removes
+values of the old kind, and deleting a definition removes its values.
 
-Server `setValue` additionally carries `expectedValueRevision`; replies include
-`view.serverValues: { shared, secrets }`. Both the loaded definition revision and the relevant
-value revision must match. On conflicts, input is preserved; Reload fetches current revisions
-before an explicit retry. Sync saved definition changes before writing their server values;
-a rejected value save names this. Imports sync and store values themselves
+Server `setValue` additionally carries `expectedValueRevision`, the revision of the edited slot
+(`0` when it has no value yet); replies include `view.serverValues: { slots }`, keyed by
+`variableId/environmentId` (`default` for the default slot). Both the loaded definition revision
+and the slot revision must match. On conflicts, input is preserved; Reload fetches current
+revisions before an explicit retry. Saved definitions are already on the server, so values for
+new definitions can be stored right away. Imports store values themselves
 ([SERVER_VALUES.md](SERVER_VALUES.md#imports-into-server-workspaces)).
 
 Caches, environment selection and acquired tokens are scoped to verified server URL and account

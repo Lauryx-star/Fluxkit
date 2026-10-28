@@ -40,9 +40,11 @@ CREATE TABLE "Projects" (
     "OwnerId" uuid NOT NULL,
     "Name" character varying(200) NOT NULL,
     "Kind" character varying(16) NOT NULL,
-    "Snapshot" jsonb NOT NULL,
+    "Auth" jsonb,
     "Revision" bigint NOT NULL,
+    "CreatedAt" timestamp with time zone NOT NULL,
     "UpdatedAt" timestamp with time zone NOT NULL,
+    "UpdatedBy" uuid,
     CONSTRAINT "PK_Projects" PRIMARY KEY ("Id")
 );
 
@@ -53,6 +55,14 @@ CREATE TABLE "AspNetRoleClaims" (
     "ClaimValue" text,
     CONSTRAINT "PK_AspNetRoleClaims" PRIMARY KEY ("Id"),
     CONSTRAINT "FK_AspNetRoleClaims_AspNetRoles_RoleId" FOREIGN KEY ("RoleId") REFERENCES "AspNetRoles" ("Id") ON DELETE CASCADE
+);
+
+CREATE TABLE "AccountVaults" (
+    "UserId" uuid NOT NULL,
+    "Revision" bigint NOT NULL,
+    "Profile" jsonb NOT NULL,
+    CONSTRAINT "PK_AccountVaults" PRIMARY KEY ("UserId"),
+    CONSTRAINT "FK_AccountVaults_AspNetUsers_UserId" FOREIGN KEY ("UserId") REFERENCES "AspNetUsers" ("Id") ON DELETE CASCADE
 );
 
 CREATE TABLE "AspNetUserClaims" (
@@ -90,21 +100,31 @@ CREATE TABLE "AspNetUserTokens" (
     CONSTRAINT "FK_AspNetUserTokens_AspNetUsers_UserId" FOREIGN KEY ("UserId") REFERENCES "AspNetUsers" ("Id") ON DELETE CASCADE
 );
 
-CREATE TABLE "EncryptedSecrets" (
+CREATE TABLE "Collections" (
+    "Id" uuid NOT NULL,
+    "Name" character varying(200) NOT NULL,
+    "Auth" jsonb,
+    "OpenApi" jsonb,
+    "Postman" jsonb,
     "ProjectId" uuid NOT NULL,
-    "UserId" uuid NOT NULL,
-    "VariableId" uuid NOT NULL,
-    "EnvironmentId" character varying(64) NOT NULL,
-    "Salt" character varying(128) NOT NULL,
-    "Nonce" character varying(64) NOT NULL,
-    "Ciphertext" character varying(16384) NOT NULL,
-    "WrappedKey" character varying(16384) NOT NULL,
-    "WrappedKeyNonce" character varying(64) NOT NULL,
-    "Algorithm" character varying(32) NOT NULL,
-    "KdfParameters" character varying(1024) NOT NULL,
-    CONSTRAINT "PK_EncryptedSecrets" PRIMARY KEY ("ProjectId", "UserId", "VariableId", "EnvironmentId"),
-    CONSTRAINT "FK_EncryptedSecrets_AspNetUsers_UserId" FOREIGN KEY ("UserId") REFERENCES "AspNetUsers" ("Id") ON DELETE CASCADE,
-    CONSTRAINT "FK_EncryptedSecrets_Projects_ProjectId" FOREIGN KEY ("ProjectId") REFERENCES "Projects" ("Id") ON DELETE CASCADE
+    "Position" character varying(128) NOT NULL,
+    "Revision" bigint NOT NULL,
+    "UpdatedAt" timestamp with time zone NOT NULL,
+    "UpdatedBy" uuid,
+    CONSTRAINT "PK_Collections" PRIMARY KEY ("Id"),
+    CONSTRAINT "FK_Collections_Projects_ProjectId" FOREIGN KEY ("ProjectId") REFERENCES "Projects" ("Id") ON DELETE CASCADE
+);
+
+CREATE TABLE "Environments" (
+    "Id" uuid NOT NULL,
+    "Name" character varying(200) NOT NULL,
+    "ProjectId" uuid NOT NULL,
+    "Position" character varying(128) NOT NULL,
+    "Revision" bigint NOT NULL,
+    "UpdatedAt" timestamp with time zone NOT NULL,
+    "UpdatedBy" uuid,
+    CONSTRAINT "PK_Environments" PRIMARY KEY ("Id"),
+    CONSTRAINT "FK_Environments_Projects_ProjectId" FOREIGN KEY ("ProjectId") REFERENCES "Projects" ("Id") ON DELETE CASCADE
 );
 
 CREATE TABLE "Memberships" (
@@ -115,6 +135,96 @@ CREATE TABLE "Memberships" (
     CONSTRAINT "PK_Memberships" PRIMARY KEY ("ProjectId", "UserId"),
     CONSTRAINT "FK_Memberships_AspNetUsers_UserId" FOREIGN KEY ("UserId") REFERENCES "AspNetUsers" ("Id") ON DELETE CASCADE,
     CONSTRAINT "FK_Memberships_Projects_ProjectId" FOREIGN KEY ("ProjectId") REFERENCES "Projects" ("Id") ON DELETE CASCADE
+);
+
+CREATE TABLE "ProjectChanges" (
+    "Seq" bigint GENERATED ALWAYS AS IDENTITY,
+    "ProjectId" uuid NOT NULL,
+    "EntityKind" character varying(16) NOT NULL,
+    "EntityId" uuid NOT NULL,
+    "Operation" character varying(8) NOT NULL,
+    "Revision" bigint NOT NULL,
+    "ChangedBy" uuid,
+    "ChangedAt" timestamp with time zone NOT NULL,
+    CONSTRAINT "PK_ProjectChanges" PRIMARY KEY ("Seq"),
+    CONSTRAINT "FK_ProjectChanges_Projects_ProjectId" FOREIGN KEY ("ProjectId") REFERENCES "Projects" ("Id") ON DELETE CASCADE
+);
+
+CREATE TABLE "Variables" (
+    "Id" uuid NOT NULL,
+    "Name" character varying(200) NOT NULL,
+    "Secret" boolean NOT NULL,
+    "ProjectId" uuid NOT NULL,
+    "Position" character varying(128) NOT NULL,
+    "Revision" bigint NOT NULL,
+    "UpdatedAt" timestamp with time zone NOT NULL,
+    "UpdatedBy" uuid,
+    CONSTRAINT "PK_Variables" PRIMARY KEY ("Id"),
+    CONSTRAINT "FK_Variables_Projects_ProjectId" FOREIGN KEY ("ProjectId") REFERENCES "Projects" ("Id") ON DELETE CASCADE
+);
+
+CREATE TABLE "Folders" (
+    "Id" uuid NOT NULL,
+    "CollectionId" uuid NOT NULL,
+    "ParentId" uuid,
+    "Name" character varying(200) NOT NULL,
+    "Auth" jsonb,
+    "ProjectId" uuid NOT NULL,
+    "Position" character varying(128) NOT NULL,
+    "Revision" bigint NOT NULL,
+    "UpdatedAt" timestamp with time zone NOT NULL,
+    "UpdatedBy" uuid,
+    CONSTRAINT "PK_Folders" PRIMARY KEY ("Id"),
+    CONSTRAINT "FK_Folders_Collections_CollectionId" FOREIGN KEY ("CollectionId") REFERENCES "Collections" ("Id") ON DELETE CASCADE,
+    CONSTRAINT "FK_Folders_Folders_ParentId" FOREIGN KEY ("ParentId") REFERENCES "Folders" ("Id") ON DELETE CASCADE,
+    CONSTRAINT "FK_Folders_Projects_ProjectId" FOREIGN KEY ("ProjectId") REFERENCES "Projects" ("Id") ON DELETE CASCADE
+);
+
+CREATE TABLE "SharedValues" (
+    "VariableId" uuid NOT NULL,
+    "EnvironmentId" character varying(64) NOT NULL,
+    "ProjectId" uuid NOT NULL,
+    "Value" character varying(2560) NOT NULL,
+    "Revision" bigint NOT NULL,
+    "UpdatedAt" timestamp with time zone NOT NULL,
+    "UpdatedBy" uuid,
+    CONSTRAINT "PK_SharedValues" PRIMARY KEY ("VariableId", "EnvironmentId"),
+    CONSTRAINT "FK_SharedValues_Projects_ProjectId" FOREIGN KEY ("ProjectId") REFERENCES "Projects" ("Id") ON DELETE CASCADE,
+    CONSTRAINT "FK_SharedValues_Variables_VariableId" FOREIGN KEY ("VariableId") REFERENCES "Variables" ("Id") ON DELETE CASCADE
+);
+
+CREATE TABLE "VaultValues" (
+    "UserId" uuid NOT NULL,
+    "VariableId" uuid NOT NULL,
+    "EnvironmentId" character varying(64) NOT NULL,
+    "ProjectId" uuid NOT NULL,
+    "Nonce" character varying(64) NOT NULL,
+    "Ciphertext" character varying(4096) NOT NULL,
+    "Revision" bigint NOT NULL,
+    "UpdatedAt" timestamp with time zone NOT NULL,
+    CONSTRAINT "PK_VaultValues" PRIMARY KEY ("UserId", "VariableId", "EnvironmentId"),
+    CONSTRAINT "FK_VaultValues_AspNetUsers_UserId" FOREIGN KEY ("UserId") REFERENCES "AspNetUsers" ("Id") ON DELETE CASCADE,
+    CONSTRAINT "FK_VaultValues_Projects_ProjectId" FOREIGN KEY ("ProjectId") REFERENCES "Projects" ("Id") ON DELETE CASCADE,
+    CONSTRAINT "FK_VaultValues_Variables_VariableId" FOREIGN KEY ("VariableId") REFERENCES "Variables" ("Id") ON DELETE CASCADE
+);
+
+CREATE TABLE "Requests" (
+    "Id" uuid NOT NULL,
+    "CollectionId" uuid NOT NULL,
+    "FolderId" uuid,
+    "Name" character varying(200) NOT NULL,
+    "Method" character varying(32) NOT NULL,
+    "Url" text NOT NULL,
+    "Details" jsonb NOT NULL,
+    "ProjectId" uuid NOT NULL,
+    "Position" character varying(128) NOT NULL,
+    "Revision" bigint NOT NULL,
+    "UpdatedAt" timestamp with time zone NOT NULL,
+    "UpdatedBy" uuid,
+    CONSTRAINT "PK_Requests" PRIMARY KEY ("Id"),
+    CONSTRAINT "FK_Requests_Collections_CollectionId" FOREIGN KEY ("CollectionId") REFERENCES "Collections" ("Id") ON DELETE CASCADE,
+    CONSTRAINT "FK_Requests_Folders_FolderId" FOREIGN KEY ("FolderId") REFERENCES "Folders" ("Id") ON DELETE CASCADE,
+    CONSTRAINT "FK_Requests_Projects_ProjectId" FOREIGN KEY ("ProjectId") REFERENCES "Projects" ("Id") ON DELETE CASCADE
 );
 
 CREATE INDEX "IX_AspNetRoleClaims_RoleId" ON "AspNetRoleClaims" ("RoleId");
@@ -133,44 +243,42 @@ CREATE INDEX "IX_AspNetUsers_Status" ON "AspNetUsers" ("Status");
 
 CREATE UNIQUE INDEX "UserNameIndex" ON "AspNetUsers" ("NormalizedUserName");
 
-CREATE INDEX "IX_EncryptedSecrets_UserId" ON "EncryptedSecrets" ("UserId");
+CREATE INDEX "IX_Collections_ProjectId" ON "Collections" ("ProjectId");
+
+CREATE INDEX "IX_Environments_ProjectId" ON "Environments" ("ProjectId");
+
+CREATE UNIQUE INDEX "IX_Environments_ProjectId_Name" ON "Environments" ("ProjectId", "Name");
+
+CREATE INDEX "IX_Folders_CollectionId" ON "Folders" ("CollectionId");
+
+CREATE INDEX "IX_Folders_ParentId" ON "Folders" ("ParentId");
+
+CREATE INDEX "IX_Folders_ProjectId" ON "Folders" ("ProjectId");
 
 CREATE INDEX "IX_Memberships_UserId" ON "Memberships" ("UserId");
 
+CREATE INDEX "IX_ProjectChanges_ProjectId_Seq" ON "ProjectChanges" ("ProjectId", "Seq");
+
 CREATE INDEX "IX_Projects_OwnerId" ON "Projects" ("OwnerId");
 
-INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
-VALUES ('20261026072628_InitialSchema', '10.0.13');
+CREATE INDEX "IX_Requests_CollectionId" ON "Requests" ("CollectionId");
 
-COMMIT;
+CREATE INDEX "IX_Requests_FolderId" ON "Requests" ("FolderId");
 
-START TRANSACTION;
-ALTER TABLE "Projects" ADD "SharedValues" jsonb NOT NULL DEFAULT '[]';
+CREATE INDEX "IX_Requests_ProjectId" ON "Requests" ("ProjectId");
 
-ALTER TABLE "Projects" ADD "SharedValuesRevision" bigint NOT NULL DEFAULT 0;
+CREATE INDEX "IX_SharedValues_ProjectId" ON "SharedValues" ("ProjectId");
 
-CREATE TABLE "AccountVaults" (
-    "UserId" uuid NOT NULL,
-    "Revision" bigint NOT NULL,
-    "Profile" jsonb NOT NULL,
-    CONSTRAINT "PK_AccountVaults" PRIMARY KEY ("UserId"),
-    CONSTRAINT "FK_AccountVaults_AspNetUsers_UserId" FOREIGN KEY ("UserId") REFERENCES "AspNetUsers" ("Id") ON DELETE CASCADE
-);
+CREATE INDEX "IX_Variables_ProjectId" ON "Variables" ("ProjectId");
 
-CREATE TABLE "ProjectSecrets" (
-    "ProjectId" uuid NOT NULL,
-    "UserId" uuid NOT NULL,
-    "Revision" bigint NOT NULL,
-    "Values" jsonb NOT NULL,
-    CONSTRAINT "PK_ProjectSecrets" PRIMARY KEY ("ProjectId", "UserId"),
-    CONSTRAINT "FK_ProjectSecrets_AspNetUsers_UserId" FOREIGN KEY ("UserId") REFERENCES "AspNetUsers" ("Id") ON DELETE CASCADE,
-    CONSTRAINT "FK_ProjectSecrets_Projects_ProjectId" FOREIGN KEY ("ProjectId") REFERENCES "Projects" ("Id") ON DELETE CASCADE
-);
+CREATE UNIQUE INDEX "IX_Variables_ProjectId_Name" ON "Variables" ("ProjectId", "Name");
 
-CREATE INDEX "IX_ProjectSecrets_UserId" ON "ProjectSecrets" ("UserId");
+CREATE INDEX "IX_VaultValues_ProjectId_UserId" ON "VaultValues" ("ProjectId", "UserId");
+
+CREATE INDEX "IX_VaultValues_VariableId" ON "VaultValues" ("VariableId");
 
 INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
-VALUES ('20261027075315_SharedValuesAndAccountVault', '10.0.13');
+VALUES ('20261028124858_InitialSchema', '10.0.13');
 
 COMMIT;
 

@@ -214,31 +214,72 @@ async function run() {
     { ...admin, body: { username: memberAccount.userName, role: 'member' } },
     204,
   );
-  const shared = randomUUID();
-  const snapshot = (name) =>
-    JSON.stringify({
-      project: { schemaVersion: 1, id, name },
-      collections: [],
-      environments: {
-        schemaVersion: 1,
-        environments: [],
-        variables: [{ id: shared, name: 'baseUrl', secret: false }],
-      },
-    });
-  await api('PUT', `/api/projects/${id}`, {
-    ...admin,
-    headers: { 'If-Match': '1' },
-    body: { snapshot: snapshot('HTTPS fixture team') },
+  // Two people work on the same team project: rows have their own revisions, so edits of
+  // different requests never conflict, while the same request accepts exactly one writer.
+  const tree = () => api('GET', `/api/projects/${id}/tree`, admin);
+  const batch = (session, operations) =>
+    http('POST', origin + `/api/projects/${id}/changes`, { ...session, body: { operations } });
+  const put = (kind, entity, expectedRevision, data) => ({
+    op: 'put',
+    kind,
+    id: entity,
+    expectedRevision,
+    data,
   });
-  await api('PUT', `/api/projects/${id}/values`, {
+  const requestData = (url, position) => ({
+    collectionId: collection,
+    folderId: null,
+    name: 'Synthetic request',
+    method: 'GET',
+    url,
+    details: { params: [], headers: [], body: { kind: 'none', text: '', fields: [] } },
+    position,
+  });
+  const collection = randomUUID();
+  const first = randomUUID();
+  const second = randomUUID();
+  const shared = randomUUID();
+  const start = (await tree()).seq;
+  const seeded = await batch(member, [
+    put('collection', collection, null, { name: 'HTTPS fixture API', position: 'g' }),
+    put('request', first, null, requestData('https://synthetic.invalid/one', 'g')),
+    put('request', second, null, requestData('https://synthetic.invalid/two', 'n')),
+    put('variable', shared, null, { name: 'baseUrl', secret: false, position: 'g' }),
+  ]);
+  assert.equal(seeded.status, 200);
+  const parallel = await Promise.all([
+    batch(admin, [put('request', first, 1, requestData('https://synthetic.invalid/admin', 'g'))]),
+    batch(member, [
+      put('request', second, 1, requestData('https://synthetic.invalid/member', 'n')),
+    ]),
+  ]);
+  assert.deepEqual(
+    parallel.map((reply) => reply.status),
+    [200, 200],
+  );
+  const competing = await Promise.all(
+    ['admin', 'member'].map((name) =>
+      batch(name === 'admin' ? admin : member, [
+        put('request', first, 2, requestData(`https://synthetic.invalid/${name}-again`, 'g')),
+      ]),
+    ),
+  );
+  assert.deepEqual(competing.map((reply) => reply.status).sort(), [200, 409]);
+  const loser = competing.find((reply) => reply.status === 409);
+  const conflict = JSON.parse(loser.text).conflicts[0];
+  assert.equal(conflict.id, first);
+  assert.equal(conflict.revision, 3);
+  const feed = await api('GET', `/api/projects/${id}/changes?since=${start}`, admin);
+  assert.deepEqual(
+    new Set(feed.changes.map((change) => change.id)),
+    new Set([collection, first, second, shared]),
+  );
+  passed('Two members edit different requests concurrently; one writer wins the same request');
+
+  await api('PUT', `/api/projects/${id}/values/${shared}/default`, {
     ...member,
     headers: { 'If-Match': '0' },
-    body: {
-      projectRevision: 2,
-      values: [
-        { variableId: shared, environmentId: 'default', value: 'Shared synthetic HTTPS value' },
-      ],
-    },
+    body: { value: 'Shared synthetic HTTPS value' },
   });
   assert.equal(
     (await api('GET', `/api/projects/${id}/values`, admin)).values[0].value,
@@ -246,61 +287,64 @@ async function run() {
   );
   await api(
     'PUT',
-    `/api/projects/${id}/values`,
-    { ...admin, headers: { 'If-Match': '0' }, body: { projectRevision: 2, values: [] } },
+    `/api/projects/${id}/values/${shared}/default`,
+    { ...admin, headers: { 'If-Match': '0' }, body: { value: 'Stale synthetic value' } },
     409,
   );
-  const writes = await Promise.all(
-    ['First synthetic writer', 'Second synthetic writer'].map((name) =>
-      http('PUT', origin + `/api/projects/${id}`, {
-        ...member,
-        headers: { 'If-Match': '2' },
-        body: { snapshot: snapshot(name) },
-      }),
-    ),
-  );
-  assert.deepEqual(writes.map((reply) => reply.status).sort(), [200, 409]);
-  const winner = await api('GET', `/api/projects/${id}`, admin);
-  assert.equal(winner.revision, 3);
-  assert.ok(['First synthetic writer', 'Second synthetic writer'].includes(winner.name));
-  assert.equal((await api('GET', `/api/projects/${id}/values`, member)).values.length, 1);
-  passed('Team membership, shared values and competing snapshot/value revisions over HTTPS');
+  await api('PUT', `/api/projects/${id}/values/${shared}/default`, {
+    ...admin,
+    headers: { 'If-Match': '1' },
+    body: { value: 'Updated synthetic value' },
+  });
+  passed('Shared values use per-slot revisions over HTTPS');
 
   const copyId = randomUUID();
   const copyVariable = randomUUID();
-  const copy = {
-    project: { schemaVersion: 1, id: copyId, name: 'Synthetic project transfer' },
-    collections: [],
-    environments: {
-      schemaVersion: 1,
-      environments: [],
-      variables: [{ id: copyVariable, name: 'baseUrl' }],
-    },
-  };
-  const selected = [
-    { variableId: copyVariable, environmentId: 'default', value: 'Selected synthetic value' },
-  ];
-  const transfer = () => ({
-    name: copy.project.name,
+  const transfer = (secret) => ({
+    name: 'Synthetic project transfer',
+    id: copyId,
     kind: 'personal',
-    snapshot: JSON.stringify(copy),
-    encryptedSecrets: [],
-    sharedValues: selected,
+    tree: {
+      variables: [{ id: copyVariable, data: { name: 'baseUrl', secret, position: 'g' } }],
+    },
+    sharedValues: [
+      { variableId: copyVariable, environmentId: 'default', value: 'Selected synthetic value' },
+    ],
     vaultValues: [],
   });
-  await api('POST', `/api/projects/${copyId}/takeover`, { ...member, body: transfer() }, 400);
+  await api('POST', '/api/projects', { ...member, body: transfer(true) }, 400);
   await api('GET', `/api/projects/${copyId}`, member, 404);
-  copy.environments.variables[0].secret = false;
-  await api('POST', `/api/projects/${copyId}/takeover`, { ...member, body: transfer() }, 201);
+  await api('POST', '/api/projects', { ...member, body: transfer(false) }, 201);
   assert.equal(
     (await api('GET', `/api/projects/${copyId}/values`, member)).values[0].value,
-    selected[0].value,
+    'Selected synthetic value',
   );
-  await api('POST', `/api/projects/${copyId}/takeover`, { ...member, body: transfer() }, 409);
+  await api('POST', '/api/projects', { ...member, body: transfer(false) }, 409);
   await api('GET', `/api/projects/${copyId}`, admin, 404);
   passed(
-    'Project transfer is atomic, preserves secret classification and rejects duplicate identities',
+    'Project upload is atomic, preserves secret classification and rejects duplicate identities',
   );
+
+  const empty = await api(
+    'POST',
+    '/api/projects',
+    { ...admin, body: { name: 'HTTPS fixture empty team' } },
+    201,
+  );
+  await api('DELETE', `/api/projects/${id}`, { ...admin, headers: { 'If-Match': '1' } }, 409);
+  await api(
+    'DELETE',
+    `/api/projects/${empty.id}`,
+    { ...member, headers: { 'If-Match': '1' } },
+    403,
+  );
+  await api(
+    'DELETE',
+    `/api/projects/${empty.id}`,
+    { ...admin, headers: { 'If-Match': String(empty.revision) } },
+    204,
+  );
+  passed('Only server administrators delete, and only empty projects');
 
   await api(
     'PUT',

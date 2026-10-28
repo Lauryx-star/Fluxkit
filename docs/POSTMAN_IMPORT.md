@@ -5,7 +5,8 @@ Postman Collection v2.1 export. To import an environment, select an already impo
 collection in **Collection for environment mapping**, then **Choose environment JSON…**.
 Review the compatibility report and source-name to local-variable mapping before confirming.
 Cancelling before confirmation writes no project definitions, collection or OS values.
-In a server workspace the import is synced to the server and can store its values there; see
+In a server workspace the import is saved on the server in one atomic step and can store its
+values there; see
 [SERVER_VALUES.md](SERVER_VALUES.md#imports-into-server-workspaces) for the classification of
 secret and ordinary variables.
 

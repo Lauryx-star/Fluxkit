@@ -1,8 +1,10 @@
 //! Native boundary for an optional self-hosted Fluxkit server connection.
 pub(crate) mod crypto;
 pub(crate) mod oidc;
+pub(crate) mod sync;
 pub(crate) mod transfer;
 pub(crate) mod values;
+pub(crate) mod workspace;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -101,18 +103,10 @@ pub struct ServerProject {
     can_edit: bool,
     #[serde(default)]
     can_manage_members: bool,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ServerProjectSnapshot {
-    id: String,
-    name: String,
-    kind: String,
-    snapshot: String,
-    revision: i64,
     #[serde(default)]
-    can_edit: bool,
+    created_at: Option<String>,
+    #[serde(default)]
+    collection_count: Option<i64>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -141,14 +135,6 @@ pub struct ServerAccountAdminView {
     username: String,
     status: String,
     is_server_admin: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SnapshotContents {
-    project: super::projects::model::Project,
-    collections: Vec<super::projects::model::Collection>,
-    environments: super::projects::environments::Definitions,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -246,42 +232,29 @@ fn ensure_directory(path: &Path) -> Result<(), String> {
     }
 }
 
+pub(crate) fn http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|_| "Could not create a secure server connection.".into())
+}
+
+/// A read-only copy of a server project the account cannot edit, one directory per feed
+/// position so an open copy is never rewritten underneath its viewer.
 fn cache_snapshot(
     root: &Path,
     identity: &ServerIdentity,
-    value: &ServerProjectSnapshot,
+    tree: &sync::RemoteTree,
 ) -> Result<PathBuf, String> {
-    if value.revision < 1 || value.snapshot.len() > 32 * 1024 * 1024 {
-        return Err("The server project snapshot exceeds the local cache limit.".into());
-    }
-    let project_id = uuid::Uuid::parse_str(&value.id)
+    let project_id = uuid::Uuid::parse_str(&tree.project.id)
         .map_err(|_| "The server returned an invalid project identifier.".to_string())?;
-    let contents: SnapshotContents = serde_json::from_str(&value.snapshot)
-        .map_err(|_| "The server returned an invalid project snapshot.".to_string())?;
-    contents.project.validate()?;
-    contents.environments.validate()?;
-    if contents.project.id != project_id.to_string() || contents.project.name != value.name {
-        return Err("The server project metadata does not match its snapshot.".into());
-    }
-    if contents.collections.len() > 1_000 {
-        return Err("The server project contains too many collections.".into());
-    }
-    for collection in &contents.collections {
-        collection.validate()?;
-        if collection.requests.iter().any(|request| {
-            request.body.file.is_some()
-                || request.body.fields.iter().any(|field| field.file.is_some())
-        }) {
-            return Err("The server snapshot references unavailable file attachments.".into());
-        }
-    }
-
-    let server_url = &identity.server_url;
+    let revision = tree.seq + 1;
     let cache_root = root.join("server-snapshots");
     ensure_directory(&cache_root)?;
     let project_root = cache_root.join(project_id.to_string());
     ensure_directory(&project_root)?;
-    let snapshot_root = project_root.join(value.revision.to_string());
+    let snapshot_root = project_root.join(revision.to_string());
     if snapshot_root.exists() {
         super::projects::store::safe(&snapshot_root, true)?;
         let marker = snapshot_root.join(".fluxkit/server-cache.json");
@@ -289,10 +262,10 @@ fn cache_snapshot(
         let marker_data: ServerCacheMarker =
             serde_json::from_slice(&super::projects::store::read(&marker)?)
                 .map_err(|_| "The local server snapshot marker is invalid.".to_string())?;
-        if marker_data.server_url != *server_url
+        if marker_data.server_url != identity.server_url
             || marker_data.account_id != Some(identity.account_id)
             || marker_data.server_project_id != project_id
-            || marker_data.revision != value.revision
+            || marker_data.revision != revision
         {
             return Err("The local server snapshot belongs to a different server revision.".into());
         }
@@ -303,67 +276,48 @@ fn cache_snapshot(
         .tempdir_in(&project_root)
         .map_err(|_| "Could not stage the server snapshot.".to_string())?;
     let stage_root = staging.path();
-    let collections_root = stage_root.join("collections");
-    ensure_directory(&collections_root)?;
-    let private_root = stage_root.join(".fluxkit");
-    ensure_directory(&private_root)?;
-
-    let project_bytes = super::projects::store::encode(&contents.project)?;
-    super::projects::store::atomic(
-        &stage_root.join("project.fluxkit.json"),
-        &project_bytes,
-        true,
-    )?;
-    for collection in contents.collections {
-        let bytes = super::projects::store::encode(&collection)?;
-        super::projects::store::atomic(
-            &collections_root.join(format!("{}.json", collection.id)),
-            &bytes,
-            true,
-        )?;
-    }
-    let environment_bytes = super::projects::store::encode(&contents.environments)?;
-    super::projects::store::atomic(
-        &stage_root.join("environments.fluxkit.json"),
-        &environment_bytes,
-        true,
-    )?;
+    ensure_directory(&stage_root.join("collections"))?;
+    ensure_directory(&stage_root.join(".fluxkit"))?;
+    workspace::write_mirror(stage_root, tree)?;
     let marker = serde_json::to_vec(&ServerCacheMarker {
-        server_url: server_url.to_string(),
+        server_url: identity.server_url.clone(),
         account_id: Some(identity.account_id),
         server_project_id: project_id,
-        revision: value.revision,
+        revision,
     })
     .map_err(|_| "Could not write server snapshot metadata.".to_string())?;
-    super::projects::store::atomic(&private_root.join("server-cache.json"), &marker, true)?;
+    super::projects::store::atomic(
+        &stage_root.join(".fluxkit/server-cache.json"),
+        &marker,
+        true,
+    )?;
     fs::rename(stage_root, &snapshot_root)
         .map_err(|_| "Could not activate the server snapshot.".to_string())?;
     Ok(snapshot_root)
 }
 
+/// The editable mirror of a server project, created once per account and project and
+/// rewritten from the server's tree each time the project is opened online.
 fn server_workspace(
     root: &Path,
     identity: &ServerIdentity,
-    value: &ServerProjectSnapshot,
-    cached_root: &Path,
-    refresh: bool,
+    tree: &sync::RemoteTree,
 ) -> Result<PathBuf, String> {
-    let project_id = uuid::Uuid::parse_str(&value.id)
+    let project_id = uuid::Uuid::parse_str(&tree.project.id)
         .map_err(|_| "The server returned an invalid project identifier.".to_string())?;
-    let server_url = &identity.server_url;
     let workspaces = root.join("server-workspaces");
     ensure_directory(root)?;
     ensure_directory(&workspaces)?;
     let pointer = workspaces.join(format!("{project_id}.json"));
-    if pointer.try_exists().map_err(|_| SETTINGS_ERROR)? && !refresh {
+    if pointer.try_exists().map_err(|_| SETTINGS_ERROR)? {
         let generation: uuid::Uuid =
             super::projects::store::decode(&super::projects::store::read(&pointer)?)?;
         let destination = workspaces.join(generation.to_string());
         super::projects::store::safe(&destination, true)?;
-        let marker_path = destination.join(".fluxkit/server-workspace.json");
-        let marker: super::projects::store::ServerWorkspaceMarker =
-            super::projects::store::decode(&super::projects::store::read(&marker_path)?)?;
-        if marker.server_url != *server_url
+        let marker: super::projects::store::ServerWorkspaceMarker = super::projects::store::decode(
+            &super::projects::store::read(&destination.join(".fluxkit/server-workspace.json"))?,
+        )?;
+        if marker.server_url != identity.server_url
             || marker.account_id != Some(identity.account_id)
             || marker.server_project_id != project_id
         {
@@ -371,50 +325,36 @@ fn server_workspace(
                 "A local server workspace belongs to a different account or server.".into(),
             );
         }
+        let _lock = super::projects::store::lock(&destination)?;
+        workspace::write_mirror(&destination, tree)?;
         return Ok(destination);
     }
     let generation = uuid::Uuid::new_v4();
     let destination = workspaces.join(generation.to_string());
-
     let staging = tempfile::Builder::new()
         .prefix(".fluxkit-workspace-")
         .tempdir_in(&workspaces)
         .map_err(|_| "Could not create a server workspace.".to_string())?;
     let stage_root = staging.path();
-    let collections_root = stage_root.join("collections");
-    let private_root = stage_root.join(".fluxkit");
-    ensure_directory(&collections_root)?;
-    ensure_directory(&private_root)?;
-    for filename in ["project.fluxkit.json", "environments.fluxkit.json"] {
-        let bytes = super::projects::store::read(&cached_root.join(filename))?;
-        super::projects::store::atomic(&stage_root.join(filename), &bytes, true)?;
-    }
-    let source_collections = cached_root.join("collections");
-    super::projects::store::safe(&source_collections, true)?;
-    for entry in fs::read_dir(&source_collections)
-        .map_err(|_| "Could not read the server snapshot collections.".to_string())?
-    {
-        let entry =
-            entry.map_err(|_| "Could not read the server snapshot collections.".to_string())?;
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
-        let bytes = super::projects::store::read(&path)?;
-        super::projects::store::atomic(&collections_root.join(entry.file_name()), &bytes, true)?;
-    }
+    ensure_directory(&stage_root.join("collections"))?;
+    ensure_directory(&stage_root.join(".fluxkit"))?;
+    workspace::write_mirror(stage_root, tree)?;
     let marker = serde_json::to_vec_pretty(&super::projects::store::ServerWorkspaceMarker {
-        server_url: server_url.to_string(),
+        server_url: identity.server_url.clone(),
         account_id: Some(identity.account_id),
         server_project_id: project_id,
-        revision: value.revision,
+        revision: tree.project.revision.max(1),
     })
     .map_err(|_| "Could not write server workspace metadata.".to_string())?;
-    super::projects::store::atomic(&private_root.join("server-workspace.json"), &marker, true)?;
+    super::projects::store::atomic(
+        &stage_root.join(".fluxkit/server-workspace.json"),
+        &marker,
+        true,
+    )?;
     fs::rename(staging.path(), &destination)
         .map_err(|_| "Could not activate the server workspace.".to_string())?;
     let bytes = serde_json::to_vec(&generation).map_err(|_| SETTINGS_ERROR)?;
-    super::projects::store::atomic(&pointer, &bytes, !pointer.exists())?;
+    super::projects::store::atomic(&pointer, &bytes, true)?;
     Ok(destination)
 }
 
@@ -721,11 +661,78 @@ pub async fn server_admin_set_user_status(
     }
 }
 
+/// Deletes an empty server project (server administrators only) and this device's local
+/// mirror and read-only copies of it. Open views of the project are closed first by the UI.
+#[tauri::command]
+pub async fn server_delete_project(
+    app: tauri::AppHandle,
+    project_id: String,
+    revision: i64,
+) -> Result<(), String> {
+    let id = uuid::Uuid::parse_str(&project_id)
+        .map_err(|_| "Invalid project identifier.".to_string())?;
+    let root = app.path().app_data_dir().map_err(|_| SETTINGS_ERROR)?;
+    let session = session_for(&root)?;
+    let response = http_client()?
+        .delete(api_url(
+            &session.identity.server_url,
+            &format!("/api/projects/{id}"),
+        )?)
+        .bearer_auth(&session.access_token)
+        .header(reqwest::header::IF_MATCH, format!("\"{revision}\""))
+        .send()
+        .await
+        .map_err(|_| {
+            "Could not reach the Fluxkit server. The project was not deleted.".to_string()
+        })?;
+    if response.status() == reqwest::StatusCode::CONFLICT {
+        #[derive(Deserialize)]
+        struct Refusal {
+            error: Option<String>,
+        }
+        let refusal: Option<Refusal> = response.json().await.ok();
+        return Err(refusal
+            .and_then(|refusal| refusal.error)
+            .unwrap_or_else(|| "The project is not empty or changed meanwhile.".into()));
+    }
+    if !response.status().is_success() {
+        return Err(response_error(response).await);
+    }
+    ensure_session(&session)?;
+    let scoped = account_root(&root, &session.identity)?;
+    remove_local_copies(&scoped, id)
+}
+
+fn remove_local_copies(scoped: &Path, id: uuid::Uuid) -> Result<(), String> {
+    let workspaces = scoped.join("server-workspaces");
+    let pointer = workspaces.join(format!("{id}.json"));
+    if pointer.exists() {
+        super::projects::store::safe(&pointer, false)?;
+        let generation: uuid::Uuid =
+            super::projects::store::decode(&super::projects::store::read(&pointer)?)?;
+        let directory = workspaces.join(generation.to_string());
+        if directory.exists() {
+            super::projects::store::safe(&directory, true)?;
+            fs::remove_dir_all(&directory).map_err(|_| "The project was deleted on the server, but its local copy could not be removed.".to_string())?;
+        }
+        fs::remove_file(&pointer).map_err(|_| {
+            "The project was deleted on the server, but its local copy could not be removed."
+                .to_string()
+        })?;
+    }
+    let snapshots = scoped.join("server-snapshots").join(id.to_string());
+    if snapshots.exists() {
+        super::projects::store::safe(&snapshots, true)?;
+        fs::remove_dir_all(&snapshots).map_err(|_| "The project was deleted on the server, but its offline copies could not be removed.".to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn server_create_team_project(
     app: tauri::AppHandle,
     name: String,
-) -> Result<ServerProjectSnapshot, String> {
+) -> Result<ServerProject, String> {
     if name.trim().is_empty() || name.trim().len() > 200 {
         return Err("Project names must contain between 1 and 200 characters.".into());
     }
@@ -1004,412 +1011,28 @@ pub async fn server_open_project(
     if current.server_url.is_empty() {
         return Err("Configure a server URL first.".into());
     }
-    let response = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|_| "Could not create a secure server connection.".to_string())?
-        .get(api_url(
-            &current.server_url,
-            &format!("/api/projects/{project_id}"),
-        )?)
-        .bearer_auth(&session.access_token)
-        .send()
-        .await;
-    let (snapshot_root, online_edit) = match response {
-        Ok(response)
-            if response.status().is_server_error()
-                || response.status() == reqwest::StatusCode::REQUEST_TIMEOUT =>
-        {
-            (offline_project(&scoped_root, &session.identity, id)?, false)
-        }
-        Ok(response) => {
-            if !response.status().is_success() {
-                return Err(response_error(response).await);
-            }
-            let snapshot = read_snapshot(response).await?;
-            if snapshot.id != id.to_string() {
-                return Err("The server returned a different project than requested.".into());
-            }
-            let cached = cache_snapshot(&scoped_root, &session.identity, &snapshot)?;
-            if snapshot.can_edit {
-                (
-                    server_workspace(&scoped_root, &session.identity, &snapshot, &cached, false)?,
-                    true,
-                )
-            } else {
-                (cached, false)
-            }
-        }
-        Err(error) if error.is_connect() || error.is_timeout() => {
-            (offline_project(&scoped_root, &session.identity, id)?, false)
-        }
-        Err(_) => return Err("Could not reach the Fluxkit server.".into()),
+    let _serialized = workspace::guard(&app).await;
+    let (path, online_edit) = match workspace::fetch_tree(&session, &id.to_string()).await? {
+        Some(tree) if tree.project.can_edit => (
+            server_workspace(&scoped_root, &session.identity, &tree)?,
+            true,
+        ),
+        Some(tree) => (
+            cache_snapshot(&scoped_root, &session.identity, &tree)?,
+            false,
+        ),
+        None => (offline_project(&scoped_root, &session.identity, id)?, false),
     };
     ensure_session(&session)?;
     super::projects::commands::run(&projects, move |store| {
         store.require_server_identity(&session.identity)?;
         if online_edit {
-            store.open_server_workspace(&snapshot_root)
+            store.open_server_workspace(&path)
         } else {
-            store.open(&snapshot_root)
+            store.open(&path)
         }
     })
     .await
-}
-
-#[tauri::command]
-pub async fn server_project_snapshot(
-    app: tauri::AppHandle,
-    project_id: String,
-) -> Result<ServerProjectSnapshot, String> {
-    uuid::Uuid::parse_str(&project_id).map_err(|_| "Invalid project identifier.".to_string())?;
-    let root = app.path().app_data_dir().map_err(|_| SETTINGS_ERROR)?;
-    let current = settings(&root)?;
-    if current.server_url.is_empty() {
-        return Err("Configure a server URL first.".into());
-    }
-    let response = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|_| "Could not create a secure server connection.".to_string())?
-        .get(api_url(
-            &current.server_url,
-            &format!("/api/projects/{project_id}"),
-        )?)
-        .bearer_auth(read_token(&current.server_url)?)
-        .send()
-        .await
-        .map_err(|_| "Could not reach the Fluxkit server.".to_string())?;
-    if !response.status().is_success() {
-        return Err(response_error(response).await);
-    }
-    response
-        .json()
-        .await
-        .map_err(|_| "The server returned an invalid project snapshot.".to_string())
-}
-
-#[tauri::command]
-pub async fn server_save_project_snapshot(
-    app: tauri::AppHandle,
-    project_id: String,
-    revision: i64,
-    snapshot: String,
-) -> Result<ServerProjectSnapshot, String> {
-    uuid::Uuid::parse_str(&project_id).map_err(|_| "Invalid project identifier.".to_string())?;
-    if revision < 1 || snapshot.len() > 32 * 1024 * 1024 {
-        return Err("Invalid revision or project snapshot size.".into());
-    }
-    let root = app.path().app_data_dir().map_err(|_| SETTINGS_ERROR)?;
-    let current = settings(&root)?;
-    if current.server_url.is_empty() {
-        return Err("Configure a server URL first.".into());
-    }
-    let response = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|_| "Could not create a secure server connection.".to_string())?
-        .put(api_url(
-            &current.server_url,
-            &format!("/api/projects/{project_id}"),
-        )?)
-        .bearer_auth(read_token(&current.server_url)?)
-        .header(reqwest::header::IF_MATCH, format!("\"{revision}\""))
-        .json(&serde_json::json!({ "snapshot": snapshot }))
-        .send()
-        .await
-        .map_err(|_| "Could not reach the Fluxkit server.".to_string())?;
-    if !response.status().is_success() {
-        return Err(response_error(response).await);
-    }
-    response
-        .json()
-        .await
-        .map_err(|_| "The server returned an invalid project snapshot.".to_string())
-}
-
-/// Serializes workspace syncs: automatic publishes after saves, imports and the manual retry
-/// must not race each other's revision checks.
-#[derive(Default)]
-pub struct SyncState(tauri::async_runtime::Mutex<()>);
-
-#[tauri::command]
-pub async fn server_sync_project(
-    app: tauri::AppHandle,
-    projects: tauri::State<'_, super::projects::commands::ProjectState>,
-    handle: String,
-) -> Result<ServerProjectSnapshot, String> {
-    let sync = app.state::<SyncState>();
-    let _serialized = sync.0.lock().await;
-    sync_project(&app, projects, handle).await
-}
-
-async fn sync_project(
-    app: &tauri::AppHandle,
-    projects: tauri::State<'_, super::projects::commands::ProjectState>,
-    handle: String,
-) -> Result<ServerProjectSnapshot, String> {
-    let snapshot_handle = handle.clone();
-    let (marker, project_id, _name, snapshot) =
-        super::projects::commands::run(&projects, move |store| {
-            let marker = store.server_workspace_marker(&snapshot_handle)?;
-            let (project_id, name, snapshot) = store.snapshot(&snapshot_handle)?;
-            Ok((marker, project_id, name, snapshot))
-        })
-        .await?;
-    let id = uuid::Uuid::parse_str(&project_id)
-        .map_err(|_| "The local project has an invalid identity.".to_string())?;
-    if id != marker.server_project_id {
-        return Err("This project is not the server workspace recorded on disk.".into());
-    }
-    let root = app.path().app_data_dir().map_err(|_| SETTINGS_ERROR)?;
-    let current = settings(&root)?;
-    let session = session_for(&root)?;
-    let scoped_root = account_root(&root, &session.identity)?;
-    if current.server_url != marker.server_url
-        || marker.account_id != Some(session.identity.account_id)
-    {
-        return Err("The configured server differs from this workspace. Switch back to its server URL before syncing.".into());
-    }
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|_| "Could not create a secure server connection.".to_string())?;
-    let remote_response = client
-        .get(api_url(
-            &current.server_url,
-            &format!("/api/projects/{id}"),
-        )?)
-        .bearer_auth(&session.access_token)
-        .send()
-        .await
-        .map_err(|_| "Could not reach the Fluxkit server. Local edits remain saved.".to_string())?;
-    if !remote_response.status().is_success() {
-        return Err(response_error(remote_response).await);
-    }
-    let remote = read_snapshot(remote_response).await?;
-    ensure_session(&session)?;
-    if let Some(revision) = acknowledged_revision(&marker, &remote, &snapshot)? {
-        if revision > marker.revision {
-            let update_handle = handle.clone();
-            let identity = session.identity.clone();
-
-            super::projects::commands::run(&projects, move |store| {
-                store.require_server_identity(&identity)?;
-                store.update_server_workspace_revision(
-                    &update_handle,
-                    &identity.server_url,
-                    id,
-                    revision,
-                )
-            })
-            .await?;
-        }
-        cache_snapshot(&scoped_root, &session.identity, &remote)?;
-        return Ok(remote);
-    }
-    let response = client
-        .put(api_url(
-            &current.server_url,
-            &format!("/api/projects/{id}"),
-        )?)
-        .bearer_auth(&session.access_token)
-        .header(
-            reqwest::header::IF_MATCH,
-            format!("\"{}\"", marker.revision),
-        )
-        .json(&serde_json::json!({ "snapshot": snapshot }))
-        .send()
-        .await
-        .map_err(|_| "Could not reach the Fluxkit server. Local edits remain saved.".to_string())?;
-    if !response.status().is_success() {
-        if response.status() == reqwest::StatusCode::CONFLICT {
-            return Err("The server project changed during synchronization. Local edits remain saved; this sync was rejected.".into());
-        }
-        return Err(response_error(response).await);
-    }
-    let saved = read_snapshot(response).await?;
-    if saved.id != id.to_string() || saved.revision <= marker.revision {
-        return Err("The server returned an unexpected project revision.".into());
-    }
-    ensure_session(&session)?;
-    let saved_revision = saved.revision;
-    let server_url = marker.server_url.clone();
-    let marker_project_id = marker.server_project_id;
-    super::projects::commands::run(&projects, move |store| {
-        store.update_server_workspace_revision(
-            &handle,
-            &server_url,
-            marker_project_id,
-            saved_revision,
-        )
-    })
-    .await?;
-    let cache_result = cache_snapshot(&scoped_root, &session.identity, &saved);
-    if cache_result.is_err() {
-        return Err(
-            "Project changes reached the server, but the offline snapshot could not be refreshed."
-                .into(),
-        );
-    }
-    Ok(saved)
-}
-
-/// Reconcile a lost successful response without replaying the snapshot write.
-fn acknowledged_revision(
-    marker: &super::projects::store::ServerWorkspaceMarker,
-    remote: &ServerProjectSnapshot,
-    local: &str,
-) -> Result<Option<i64>, String> {
-    if remote.id != marker.server_project_id.to_string() || remote.revision < marker.revision {
-        return Err("The server returned an unexpected project or revision.".into());
-    }
-    if same_snapshot(&remote.snapshot, local)? {
-        return Ok(Some(remote.revision));
-    }
-    if remote.revision != marker.revision {
-        return Err("The server project changed. Local edits remain saved. Use Load server version to keep a recovery copy and continue from the current server revision.".into());
-    }
-    Ok(None)
-}
-
-fn same_snapshot(left: &str, right: &str) -> Result<bool, String> {
-    let left: serde_json::Value =
-        serde_json::from_str(left).map_err(|_| "Invalid server snapshot.".to_string())?;
-    let right: serde_json::Value =
-        serde_json::from_str(right).map_err(|_| "Invalid local snapshot.".to_string())?;
-    Ok(left == right)
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceRecovery {
-    workspace: super::projects::store::ProjectView,
-    recovery: super::projects::store::ProjectView,
-}
-
-/// Fetch a fresh authorized snapshot, preserving the previous saved workspace for manual merge.
-#[tauri::command]
-pub async fn server_refresh_project(
-    app: tauri::AppHandle,
-    projects: tauri::State<'_, super::projects::commands::ProjectState>,
-    handle: String,
-) -> Result<WorkspaceRecovery, String> {
-    let root = app.path().app_data_dir().map_err(|_| SETTINGS_ERROR)?;
-    let session = session_for(&root)?;
-    let identity = session.identity.clone();
-    let before_handle = handle.clone();
-    let (marker, before) = super::projects::commands::run(&projects, move |store| {
-        store.require_server_identity(&identity)?;
-        Ok((
-            store.server_workspace_marker(&before_handle)?,
-            store.snapshot(&before_handle)?.2,
-        ))
-    })
-    .await?;
-    if marker.server_url != session.identity.server_url
-        || marker.account_id != Some(session.identity.account_id)
-    {
-        return Err("This workspace belongs to another server account.".into());
-    }
-    let response = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|_| "Could not create a server connection.")?
-        .get(api_url(
-            &session.identity.server_url,
-            &format!("/api/projects/{}", marker.server_project_id),
-        )?)
-        .bearer_auth(&session.access_token)
-        .send()
-        .await
-        .map_err(|_| "The server must be online to load its current version.")?;
-    if !response.status().is_success() {
-        return Err(response_error(response).await);
-    }
-    let remote = read_snapshot(response).await?;
-    if remote.id != marker.server_project_id.to_string()
-        || !remote.can_edit
-        || remote.revision < marker.revision
-    {
-        return Err("The current server project is unavailable for workspace recovery.".into());
-    }
-    ensure_session(&session)?;
-    let scoped_root = account_root(&root, &session.identity)?;
-    super::projects::commands::run(&projects, move |store| {
-        recover_workspace(
-            store,
-            &handle,
-            &before,
-            &scoped_root,
-            &session.identity,
-            &remote,
-        )
-    })
-    .await
-}
-
-fn recover_workspace(
-    store: &mut super::projects::store::ProjectStore,
-    handle: &str,
-    before: &str,
-    scoped_root: &Path,
-    identity: &ServerIdentity,
-    remote: &ServerProjectSnapshot,
-) -> Result<WorkspaceRecovery, String> {
-    store.require_server_identity(identity)?;
-    let old_root = store.ensure_writable(handle)?;
-    let marker = store.server_workspace_marker(handle)?;
-    if remote.id != marker.server_project_id.to_string()
-        || !remote.can_edit
-        || remote.revision < marker.revision
-    {
-        return Err("The current server project is unavailable for workspace recovery.".into());
-    }
-    // Recheck after network I/O. Keep old files in place, including all local edits.
-    if store.snapshot(handle)?.2 != before {
-        return Err(
-            "The local workspace changed during refresh. Save your changes and try again.".into(),
-        );
-    }
-    let cached = cache_snapshot(scoped_root, identity, remote)?;
-    let destination = server_workspace(scoped_root, identity, remote, &cached, true)?;
-    let recovery_marker = old_root.join(".fluxkit/server-recovery");
-    if !recovery_marker.exists() {
-        super::projects::store::atomic(
-            &recovery_marker,
-            b"Saved edits retained for manual recovery.\n",
-            true,
-        )?;
-    }
-    let recovery = store.open(&old_root)?;
-    let workspace = store.open_server_workspace(&destination)?;
-    Ok(WorkspaceRecovery {
-        workspace,
-        recovery,
-    })
-}
-
-async fn read_snapshot(response: reqwest::Response) -> Result<ServerProjectSnapshot, String> {
-    let mut response = response;
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| "Could not read the server snapshot.")?
-    {
-        if bytes.len() + chunk.len() > 34 * 1024 * 1024 {
-            return Err("The server snapshot exceeds the local limit.".into());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    serde_json::from_slice(&bytes)
-        .map_err(|_| "The server returned an invalid project snapshot.".into())
 }
 
 #[cfg(test)]

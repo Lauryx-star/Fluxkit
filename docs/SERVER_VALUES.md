@@ -19,26 +19,29 @@ Local projects keep every secret and ordinary value in the OS credential store. 
 workspaces, ordinary values are shared project data and secret values live only in the account
 vault, encrypted with a key wrapped by the vault master password. In the environment manager,
 new variables default to secret. Explicitly marking a variable
-ordinary preserves its UUID and does not upload an OS value. Save definitions and use
-**Sync saved changes**, then **Reload** variables before saving values for new definitions.
+ordinary preserves its UUID and does not upload an OS value. Definitions are saved on the
+server as soon as they are saved, so values can be stored right afterwards. When the server
+still rejects a value because its variable/environment no longer exists there or its
+classification differs (HTTP 400, nothing written), reload the project and try again.
 Ordinary values are readable by all project members; secrets require the unlocked vault.
 Reveal and request execution resolve only the requested slots in Rust. Values are limited to
-2,560 UTF-8 bytes per slot and 1,000 slots per shared or personal project bundle.
+2,560 UTF-8 bytes per slot and 2,000 values per batch request.
 
-Value saves are online operations. A conflict preserves editor input; **Reload** obtains
-current revisions before an explicit retry. Before removing a variable/environment or changing
-classification, explicitly remove its existing shared/own-secret values. Other users' encrypted
-rows are retained. Local imports retain their existing OS-store behavior.
+Each value is one slot with its own revision, so members editing different values never
+conflict. Value saves are online operations. A conflict preserves editor input; **Reload**
+obtains current revisions before an explicit retry. Removing an environment removes its values
+on the server, and removing a variable removes its values. Changing a classification removes the
+values of the old kind for every member (shared plaintext when a variable becomes secret, all
+members' encrypted values when it becomes ordinary); enter the values again afterwards. Local
+imports retain their existing OS-store behavior.
 
 ## Imports into server workspaces
 
-An OpenAPI or Postman import into an editable server workspace is saved locally first and then
-synced like **Sync saved changes**, so its collection and variable definitions reach the server
-without a separate step. The sync uploads the whole saved workspace, including other saved but
-not yet synced edits; the import preview states this. With **Save available variable values on
-the server** checked, the import then adds its values: ordinary values join the shared project
-bundle (readable by all project members), secret values are encrypted into the importer's
-personal vault bundle. Secret values require an unlocked vault; otherwise the import stops
+An OpenAPI or Postman import into an editable server workspace writes its collection and
+variable definitions to the server in one atomic batch; when the server refuses it, nothing is
+kept locally either. With **Save available variable values on the server** checked, the import
+then adds its values in one batch: ordinary values become shared project values (readable by all
+project members), secret values are encrypted into the importer's own vault values. Secret values require an unlocked vault; otherwise the import stops
 before writing anything. Only new import-owned slots are written: reused existing variables keep
 their values, an identical existing value is skipped and a different shared value or an existing
 secret slot is never overwritten. No OS credential store access occurs for server workspaces.
@@ -50,10 +53,10 @@ parameters, scope/token URL) are ordinary. A secret-typed environment value for 
 mapped variable is not adopted. OpenAPI: server URLs and OAuth token endpoints are ordinary,
 credentials are secret. Change a classification later in the environment manager.
 
-Each step is recorded on the open preview. When the sync or value upload fails, the import is
-already saved in the workspace; **Retry import** resumes at the failed step without saving the
-collection again. Closing the preview drops the remaining steps: then use **Sync saved changes**
-and enter values in Project variables.
+Each step is recorded on the open preview. When the definitions are refused, retrying the import
+starts again from the beginning. When only the value upload fails, the import is already saved
+on the server; **Retry import** resumes with the values. Closing the preview drops the remaining
+steps: then enter values in Project variables.
 
 A forgotten master password has no recovery/reset flow: without the password or an already
 unlocked key, the account's synchronized secrets are inaccessible. **Change master password**
@@ -70,16 +73,16 @@ Selected secrets require an unlocked vault before any OS reads and are encrypted
 A definitions-only transfer reads no values. Prepared ordinary values remain native memory
 until upload, cancellation or plan disposal; they are cleared on disposal where practical.
 
-The final upload creates a personal server copy using the original project UUID. Project,
-selected shared values and personal ciphertexts are committed together. Existing identities
+The final upload creates a personal server copy using the original project UUID. Project rows,
+selected shared values and personal ciphertexts are committed together in one request. Existing identities
 return a conflict. Source files and OS values remain untouched. Plans expire after ten minutes,
 are limited to two, and are bound to the signed-in account and unchanged saved source snapshot.
 Expiration is checked on plan operations; expired buffers are discarded on the next such
 operation or session cleanup, rather than by a background timer.
 Preparation captures selected values; changing an OS value afterwards requires a new preparation.
 
-Saved literal request content is part of the snapshot and may itself contain sensitive data;
-the preview calls this out. Local file attachments block transfer/snapshot sync. History,
+Saved literal request content is uploaded with the requests and may itself contain sensitive
+data; the preview calls this out. Local file attachments block transfer and server saves. History,
 acquired authentication tokens and unsaved editors are excluded. Interrupted uploads are never
 replayed automatically: check the server project list before trying a new transfer.
 
@@ -88,23 +91,21 @@ replayed automatically: check the server project list before trying a new transf
 All routes require approved active accounts and project access where applicable. JSON uses
 camelCase. `environmentId` is a canonical environment UUID or the literal `default`.
 
-| Route | GET response | PUT body and precondition |
-| --- | --- | --- |
-| `/api/account/vault` | `{ revision, profile }`, null profile/revision 0 if absent | `{ profile }`, `If-Match` profile revision |
-| `/api/projects/{id}/values` | `{ revision, projectRevision, values }` | `{ projectRevision, values }`, `If-Match` shared revision |
-| `/api/projects/{id}/vault-values` | `{ revision, projectRevision, values }` | `{ projectRevision, values }`, `If-Match` caller's bundle revision |
+| Route | Purpose and precondition |
+| --- | --- |
+| `GET/PUT /api/account/vault` | `{ revision, profile }`; PUT `{ profile }` with `If-Match` profile revision |
+| `GET /api/projects/{id}/values` | `{ values }`, each `{ variableId, environmentId, value, revision }` |
+| `PUT /api/projects/{id}/values/{variableId}/{environmentId}` | `{ value }`, `If-Match` slot revision (`0` creates) |
+| `GET /api/projects/{id}/vault-values` | The caller's `{ values }`, each `{ variableId, environmentId, nonce, ciphertext, revision }` |
+| `PUT /api/projects/{id}/vault-values/{variableId}/{environmentId}` | `{ nonce, ciphertext }`, `If-Match` slot revision (`0` creates) |
+| `DELETE` on either slot route | `If-Match` slot revision |
+| `POST /api/projects/{id}/values/batch` | `{ shared, vault }` slots with `expectedRevision` each; all-or-nothing |
 
-A shared slot is `{ variableId, environmentId, value }`. A personal secret slot is
-`{ variableId, environmentId, nonce, ciphertext }`. PUT replaces the relevant bundle, never
-another user's bundle. Empty bundles remove their values. Duplicate/unknown slots, wrong
-classification, oversized values and unsupported cryptographic parameters are rejected.
-Project revision and value revision checks protect concurrent definition and value changes;
-stale preconditions return 409 and missing preconditions 428. Database conditional updates,
-concurrency tokens and a project-row lock serialize the relevant writes.
-
-Transfer extends the existing takeover body with `sharedValues` and `vaultValues` arrays;
-legacy `encryptedSecrets` remains separate. Old `/secrets/...` envelopes are retained for
-compatibility and are not automatically migrated into the new vault bundles.
+A write never touches another user's encrypted values. Duplicate/unknown slots, wrong
+classification, oversized values and unsupported cryptographic parameters are rejected (400).
+Stale revisions return 409 and missing preconditions 428. Uploading a local project
+(`POST /api/projects`) carries `sharedValues` and `vaultValues` with the project tree and applies
+them in the same transaction.
 
 ## Cryptographic format, version 1
 
@@ -143,20 +144,19 @@ the UI thread. Bundled upstream license notices are regenerated from the locked 
 ## Caches, offline access and upgrade
 
 Account-scoped application data may contain shared ordinary plaintext, personal ciphertext and
-the wrapped account-key profile. They are separate from portable project snapshots and scoped
-by server URL/account UUID. There is no secret-plaintext/key/password file or browser-storage
+the wrapped account-key profile. They are separate from the project files and scoped by server
+URL/account UUID. There is no secret-plaintext/key/password file or browser-storage
 fallback. Previously stored server-scoped OS variable entries remain dormant; they are neither
 automatically uploaded nor consulted. Acquired authentication tokens keep their OS storage.
 
 Connection failures, timeouts and server 5xx responses may use cached read data. Authorization
 failures never use stale data. Cached secrets still require explicit vault unlock; an offline
-unlock can use the cached profile. Offline project snapshots stay read-only, and writes are
-never queued. After an interrupted value write, Reload checks the server outcome before retry.
+unlock can use the cached profile. Offline project copies stay read-only, and writes are never
+queued. After an interrupted value write, Reload checks the server outcome before retry.
 A changed wrapped-profile revision locks any previously loaded key.
 
-The additive EF migration introduces shared-value columns and account-vault/personal-bundle
-tables, preserving existing projects and legacy envelopes. Migrations run at startup. Back up
-before upgrading and test restoration; migration downgrade deletes the new storage and is not
-secret recovery. OIDC is documented in [OIDC.md](OIDC.md). Independent security review, complete
+The normalized schema replaces the earlier snapshot schema with a new initial migration; it
+does not convert databases created by earlier development builds, which must start empty.
+Migrations run at startup. Back up before upgrading and test restoration. OIDC is documented in [OIDC.md](OIDC.md). Independent security review, complete
 signed-in GUI/platform tests and
 operator backup/restore/deployment validation remain open.

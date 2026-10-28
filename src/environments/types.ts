@@ -14,7 +14,8 @@ export interface EnvironmentView {
   data: Definitions;
   selectedEnvironment: string | null;
   selectionMissing: boolean;
-  serverValues?: { shared: number; secrets: number };
+  /** Server revision of each stored value, keyed by `variableId/environmentId` (`default` for none). */
+  serverValues?: { slots: Record<string, number> };
 }
 export type EnvironmentAction =
   | { kind: 'load' }

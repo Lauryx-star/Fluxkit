@@ -80,6 +80,12 @@ export interface Draft {
   collectionId: string | null;
   folderId: string | null;
   savedSnapshot: string | null;
+  /** Server workspaces: the request changed on the server while this editor had edits. */
+  serverChanged?: boolean;
+  /** Server workspaces: the request was deleted on the server while this editor had edits. */
+  serverDeleted?: boolean;
+  /** Server workspaces: the latest server version seen for an edited editor. */
+  serverSnapshot?: string;
 }
 export function requestData(draft: Draft): SavedRequest {
   return {

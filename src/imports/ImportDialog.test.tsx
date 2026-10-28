@@ -269,7 +269,7 @@ describe('Postman preview', () => {
 });
 
 describe('server workspace import', () => {
-  it('explains the sync, enables value storage and shows shared/secret classification', async () => {
+  it('explains the atomic server save, enables value storage and shows shared/secret classification', async () => {
     const user = userEvent.setup();
     const onImport = vi.fn();
     render(
@@ -291,7 +291,9 @@ describe('server workspace import', () => {
         onCancel={vi.fn()}
       />,
     );
-    expect(screen.getByRole('note')).toHaveTextContent('other saved, not yet synced edits');
+    expect(screen.getByRole('note')).toHaveTextContent(
+      'if the server refuses them, nothing is kept',
+    );
     const checkbox = screen.getByRole('checkbox', {
       name: 'Save available variable values on the server',
     });

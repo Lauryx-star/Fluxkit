@@ -39,6 +39,9 @@ pub struct CipherValue {
     pub environment_id: String,
     nonce: String,
     ciphertext: String,
+    /// Server slot revision; 0 for a value not stored yet. Not part of the ciphertext.
+    #[serde(default)]
+    pub revision: i64,
 }
 fn random<const N: usize>() -> Result<[u8; N], String> {
     let mut bytes = [0; N];
@@ -195,6 +198,7 @@ pub fn encrypt(
         environment_id: environment.into(),
         nonce: STANDARD.encode(nonce),
         ciphertext: STANDARD.encode(ciphertext),
+        revision: 0,
     })
 }
 pub fn decrypt(

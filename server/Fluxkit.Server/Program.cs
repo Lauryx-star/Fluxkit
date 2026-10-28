@@ -110,6 +110,7 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 ValueEndpoints.Map(app);
+ProjectEndpoints.Map(app);
 app.MapGet("/health/ready", async (FluxkitDb db, CancellationToken cancellationToken) =>
 {
     await db.Database.CanConnectAsync(cancellationToken);
@@ -228,6 +229,8 @@ app.MapGet("/api/projects", async (ClaimsPrincipal principal, FluxkitDb db, Canc
             project.Name,
             project.Kind,
             project.Revision,
+            project.CreatedAt,
+            CollectionCount = db.Collections.Count(collection => collection.ProjectId == project.Id),
             CanEdit = project.Kind == "personal"
                 ? project.OwnerId == userId
                 : db.Memberships.Any(membership => membership.ProjectId == project.Id
@@ -239,28 +242,6 @@ app.MapGet("/api/projects", async (ClaimsPrincipal principal, FluxkitDb db, Canc
         })
         .ToListAsync(ct);
     return Results.Ok(projects);
-}).RequireAuthorization();
-
-app.MapPost("/api/projects", async (
-    CreateTeamProjectInput input, ClaimsPrincipal principal, FluxkitDb db, CancellationToken ct) =>
-{
-    if (!principal.IsInRole("serverAdmin")) return Results.Forbid();
-    if (input is null || input.Name is null) return Results.BadRequest();
-    var name = input.Name.Trim();
-    if (name.Length is < 1 or > 200) return Results.BadRequest();
-    var id = Guid.NewGuid();
-    var snapshot = System.Text.Json.JsonSerializer.Serialize(new
-    {
-        project = new { schemaVersion = 1, id, name },
-        collections = Array.Empty<object>(),
-        environments = new { schemaVersion = 1, environments = Array.Empty<object>(), variables = Array.Empty<object>() }
-    });
-    var ownerId = UserId(principal);
-    var project = new ProjectRecord { Id = id, OwnerId = ownerId, Name = name, Kind = "team", Snapshot = snapshot };
-    db.Projects.Add(project);
-    db.Memberships.Add(new ProjectMembership { ProjectId = id, UserId = ownerId, Role = "projectAdmin" });
-    await db.SaveChangesAsync(ct);
-    return Results.Created($"/api/projects/{id}", ToView(project));
 }).RequireAuthorization();
 
 app.MapGet("/api/projects/{id:guid}/members", async (
@@ -336,144 +317,11 @@ app.MapGet("/api/projects/{id:guid}", async (
         project.Id,
         project.Name,
         project.Kind,
-        project.Snapshot,
         project.Revision,
+        project.CreatedAt,
         canEdit,
         etag = $"\"{project.Revision}\""
     });
-}).RequireAuthorization();
-
-app.MapPost("/api/projects/{id:guid}/takeover", async (
-    Guid id, TakeoverInput input, ClaimsPrincipal principal, FluxkitDb db, CancellationToken ct) =>
-{
-    var userId = UserId(principal);
-    if (input is null || input.Snapshot is null || input.Name is null || input.Kind is null
-        || input.EncryptedSecrets is null) return Results.BadRequest();
-    if (Encoding.UTF8.GetByteCount(input.Snapshot) > 32 * 1024 * 1024
-        || input.EncryptedSecrets.Count > 1000)
-        return Results.BadRequest(new { error = "Project snapshot exceeds the server limit." });
-    if (!TryReadSnapshot(input.Snapshot, id, out var snapshotName)
-        || !string.Equals(snapshotName, input.Name.Trim(), StringComparison.Ordinal))
-        return Results.BadRequest(new { error = "Project snapshot identity or name is invalid." });
-    var existing = await db.Projects.SingleOrDefaultAsync(project => project.Id == id, ct);
-    if (existing is not null) return Results.Conflict(new { error = "Project identity already exists on this server." });
-    if (input.Kind is not ("personal" or "team")) return Results.BadRequest();
-    if (input.Kind == "team" && !principal.IsInRole("serverAdmin")) return Results.Forbid();
-    var project = new ProjectRecord
-    {
-        Id = id,
-        OwnerId = userId,
-        Name = input.Name.Trim(),
-        Kind = input.Kind,
-        Snapshot = input.Snapshot,
-        Revision = 1
-    };
-    if (project.Name.Length is < 1 or > 200) return Results.BadRequest();
-    var shared = input.SharedValues ?? [];
-    var encrypted = input.VaultValues ?? [];
-    if (!ValueEndpoints.ValidShared(input.Snapshot, shared)
-        || !ValueEndpoints.ValidSecrets(input.Snapshot, encrypted)
-        || (encrypted.Count > 0 && !await db.AccountVaults.AnyAsync(vault => vault.UserId == userId, ct)))
-    {
-        return Results.BadRequest(new { error = "Invalid value transfer. Secrets require a configured account vault." });
-    }
-    project.SharedValues = ValueEndpoints.Encode(shared);
-    project.SharedValuesRevision = shared.Count == 0 ? 0 : 1;
-    db.Projects.Add(project);
-    if (encrypted.Count > 0)
-    {
-        db.ProjectSecrets.Add(new ProjectSecrets { ProjectId = id, UserId = userId, Values = ValueEndpoints.Encode(encrypted) });
-    }
-    if (project.Kind == "team")
-        db.Memberships.Add(new ProjectMembership { ProjectId = id, UserId = userId, Role = "projectAdmin" });
-    foreach (var secret in input.EncryptedSecrets)
-    {
-        if (!ValidEnvelope(secret)) return Results.BadRequest();
-        db.EncryptedSecrets.Add(ToEntity(id, secret, userId));
-    }
-    try { await db.SaveChangesAsync(ct); }
-    catch (DbUpdateException) { return Results.Conflict(new { error = "Project takeover could not be committed." }); }
-    return Results.Created($"/api/projects/{id}", ToView(project));
-}).RequireAuthorization();
-
-app.MapPut("/api/projects/{id:guid}", async (
-    Guid id, UpdateProjectInput input, ClaimsPrincipal principal, FluxkitDb db,
-    HttpRequest request, HttpResponse response, CancellationToken ct) =>
-{
-    var project = await AuthorizedProject(id, UserId(principal), db, ct);
-    if (project is null) return Results.NotFound();
-    if (!await CanEdit(principal, project, db, ct)) return Results.Forbid();
-    if (!TryRevision(request, project.Revision, out var conflict))
-        return conflict!;
-    if (input is null || input.Snapshot is null) return Results.BadRequest();
-    if (Encoding.UTF8.GetByteCount(input.Snapshot) > 32 * 1024 * 1024
-        || !TryReadSnapshot(input.Snapshot, id, out var snapshotName)) return Results.BadRequest();
-    var expectedRevision = project.Revision;
-    var updatedAt = DateTimeOffset.UtcNow;
-    // Compare and replace in one database statement, including competing requests that
-    // passed the HTTP precondition check before either of them committed.
-    var changed = await db.Projects
-        .Where(candidate => candidate.Id == id && candidate.Revision == expectedRevision)
-        .ExecuteUpdateAsync(update => update
-            .SetProperty(candidate => candidate.Snapshot, input.Snapshot)
-            .SetProperty(candidate => candidate.Name, snapshotName)
-            .SetProperty(candidate => candidate.Revision, expectedRevision + 1)
-            .SetProperty(candidate => candidate.UpdatedAt, updatedAt), ct);
-    if (changed == 0)
-        return Results.Conflict(new { error = "Project changed on the server. Reload before saving." });
-    project.Snapshot = input.Snapshot;
-    project.Name = snapshotName;
-    project.Revision = expectedRevision + 1;
-    project.UpdatedAt = updatedAt;
-    response.Headers.ETag = $"\"{project.Revision}\"";
-    return Results.Ok(ToView(project));
-}).RequireAuthorization();
-
-app.MapGet("/api/projects/{id:guid}/secrets", async (
-    Guid id, ClaimsPrincipal principal, FluxkitDb db, CancellationToken ct) =>
-{
-    var userId = UserId(principal);
-    if (await AuthorizedProject(id, userId, db, ct) is null) return Results.NotFound();
-    var values = await db.EncryptedSecrets.AsNoTracking()
-        .Where(secret => secret.ProjectId == id && secret.UserId == userId)
-        .Select(secret => new SecretEnvelope(secret.VariableId, secret.EnvironmentId, secret.Salt,
-            secret.Nonce, secret.Ciphertext, secret.WrappedKey, secret.WrappedKeyNonce,
-            secret.Algorithm, secret.KdfParameters))
-        .ToListAsync(ct);
-    return Results.Ok(values);
-}).RequireAuthorization();
-
-app.MapPut("/api/projects/{id:guid}/secrets", async (
-    Guid id, SecretEnvelope value, ClaimsPrincipal principal, FluxkitDb db, CancellationToken ct) =>
-{
-    var userId = UserId(principal);
-    if (await AuthorizedProject(id, userId, db, ct) is null) return Results.NotFound();
-    if (!ValidEnvelope(value)) return Results.BadRequest(new { error = "Invalid encrypted secret envelope." });
-    var row = await db.EncryptedSecrets.SingleOrDefaultAsync(secret =>
-        secret.ProjectId == id && secret.UserId == userId && secret.VariableId == value.VariableId
-        && secret.EnvironmentId == value.EnvironmentId, ct);
-    if (row is null) db.EncryptedSecrets.Add(ToEntity(id, value, userId));
-    else
-    {
-        row.Salt = value.Salt; row.Nonce = value.Nonce; row.Ciphertext = value.Ciphertext;
-        row.WrappedKey = value.WrappedKey; row.WrappedKeyNonce = value.WrappedKeyNonce;
-        row.Algorithm = value.Algorithm;
-        row.KdfParameters = value.KdfParameters;
-    }
-    await db.SaveChangesAsync(ct);
-    return Results.NoContent();
-}).RequireAuthorization();
-
-app.MapDelete("/api/projects/{id:guid}/secrets/{variableId:guid}/{environmentId}", async (
-    Guid id, Guid variableId, string environmentId, ClaimsPrincipal principal, FluxkitDb db,
-    CancellationToken ct) =>
-{
-    var userId = UserId(principal);
-    if (await AuthorizedProject(id, userId, db, ct) is null) return Results.NotFound();
-    await db.EncryptedSecrets.Where(secret => secret.ProjectId == id && secret.UserId == userId
-        && secret.VariableId == variableId && secret.EnvironmentId == environmentId)
-        .ExecuteDeleteAsync(ct);
-    return Results.NoContent();
 }).RequireAuthorization();
 
 await using (var scope = app.Services.CreateAsyncScope())
@@ -531,110 +379,14 @@ static async Task<bool> IsProjectAdmin(ClaimsPrincipal principal, ProjectRecord 
         membership.ProjectId == project.Id && membership.UserId == userId && membership.Role == "projectAdmin", ct);
 }
 
-static bool TryRevision(HttpRequest request, long current, out IResult? error)
-{
-    error = null;
-    if (!request.Headers.TryGetValue("If-Match", out var header)
-        || !long.TryParse(header.ToString().Trim('"'), out var expected))
-    {
-        error = Results.StatusCode(StatusCodes.Status428PreconditionRequired);
-        return false;
-    }
-    if (expected != current)
-    {
-        error = Results.Conflict(new { error = "Project changed on the server. Reload before saving.", currentRevision = current });
-        return false;
-    }
-    return true;
-}
-
 static object ToView(ProjectRecord project) => new
 {
     project.Id,
     project.Name,
     project.Kind,
-    project.Snapshot,
     project.Revision,
+    project.CreatedAt,
     etag = $"\"{project.Revision}\""
 };
-
-static bool TryReadSnapshot(string snapshot, Guid projectId, out string name)
-{
-    name = "";
-    try
-    {
-        using var document = System.Text.Json.JsonDocument.Parse(snapshot);
-        var root = document.RootElement;
-        var project = root.GetProperty("project");
-        if (!Guid.TryParse(project.GetProperty("id").GetString(), out var id) || id != projectId)
-            return false;
-        name = project.GetProperty("name").GetString() ?? "";
-        if (name.Trim().Length is < 1 or > 200) return false;
-        return root.GetProperty("collections").ValueKind == System.Text.Json.JsonValueKind.Array
-            && root.GetProperty("environments").ValueKind == System.Text.Json.JsonValueKind.Object;
-    }
-    catch (Exception exception) when (exception is System.Text.Json.JsonException
-        or InvalidOperationException or KeyNotFoundException or FormatException)
-    {
-        return false;
-    }
-}
-
-
-static bool ValidEnvelope(SecretEnvelope value) =>
-    value is not null && value.EnvironmentId is not null && value.Salt is not null
-    && value.Nonce is not null && value.Ciphertext is not null && value.WrappedKey is not null
-    && value.WrappedKeyNonce is not null && value.KdfParameters is not null
-    && value.Algorithm == "AES-256-GCM" && value.VariableId != Guid.Empty
-    && value.EnvironmentId.Length <= 64 && IsBase64(value.Salt, 16)
-    && IsBase64(value.Nonce, 12) && IsBase64(value.WrappedKeyNonce, 12)
-    && IsBase64(value.Ciphertext, 16, 16_384) && IsBase64(value.WrappedKey, 48, 48)
-    && ValidKdfParameters(value.KdfParameters);
-
-static EncryptedSecretRecord ToEntity(Guid projectId, SecretEnvelope value, Guid userId) => new()
-{
-    ProjectId = projectId,
-    UserId = userId,
-    VariableId = value.VariableId,
-    EnvironmentId = value.EnvironmentId,
-    Salt = value.Salt,
-    Nonce = value.Nonce,
-    Ciphertext = value.Ciphertext,
-    WrappedKey = value.WrappedKey,
-    Algorithm = value.Algorithm,
-    WrappedKeyNonce = value.WrappedKeyNonce,
-    KdfParameters = value.KdfParameters
-};
-
-static bool IsBase64(string value, int minimumBytes, int maximumBytes = int.MaxValue)
-{
-    try
-    {
-        var bytes = Convert.FromBase64String(value);
-        return bytes.Length >= minimumBytes && bytes.Length <= maximumBytes;
-    }
-    catch (FormatException) { return false; }
-}
-
-static bool ValidKdfParameters(string value)
-{
-    if (value.Length > 1024) return false;
-    try
-    {
-        using var document = System.Text.Json.JsonDocument.Parse(value);
-        var root = document.RootElement;
-        return root.ValueKind == System.Text.Json.JsonValueKind.Object
-            && root.GetProperty("algorithm").GetString() == "Argon2id"
-            && root.GetProperty("version").GetInt32() == 19
-            && root.GetProperty("memoryKiB").GetInt32() is >= 65_536 and <= 262_144
-            && root.GetProperty("iterations").GetInt32() is >= 3 and <= 10
-            && root.GetProperty("parallelism").GetInt32() is >= 1 and <= 4;
-    }
-    catch (Exception exception) when (exception is System.Text.Json.JsonException
-        or InvalidOperationException or KeyNotFoundException or FormatException)
-    {
-        return false;
-    }
-}
 
 public partial class Program { }

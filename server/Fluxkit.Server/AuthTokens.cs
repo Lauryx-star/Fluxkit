@@ -26,13 +26,7 @@ public static class AuthTokens
     {
         var id = Guid.NewGuid();
         var name = $"{username}'s personal project";
-        var snapshot = System.Text.Json.JsonSerializer.Serialize(new
-        {
-            project = new { schemaVersion = 1, id, name },
-            collections = Array.Empty<object>(),
-            environments = new { schemaVersion = 1, environments = Array.Empty<object>(), variables = Array.Empty<object>() }
-        });
-        return new ProjectRecord { Id = id, OwnerId = ownerId, Name = name, Kind = "personal", Snapshot = snapshot };
+        return new ProjectRecord { Id = id, OwnerId = ownerId, Name = name, Kind = "personal", UpdatedBy = ownerId };
     }
 
 }

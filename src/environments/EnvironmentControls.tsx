@@ -233,14 +233,7 @@ function EnvironmentManager({
       value,
       expected,
       ...(view?.serverValues
-        ? {
-            expectedValueRevision:
-              view.serverValues[
-                (view.data.variables.find((entry) => entry.id === variable)?.secret ?? true)
-                  ? 'secrets'
-                  : 'shared'
-              ],
-          }
+        ? { expectedValueRevision: slotRevision(view.serverValues, variable, environment) }
         : {}),
     });
     if (reply) {
@@ -547,13 +540,11 @@ function EnvironmentManager({
                     value: null,
                     ...(view?.serverValues
                       ? {
-                          expectedValueRevision:
-                            view.serverValues[
-                              (view.data.variables.find((entry) => entry.id === variable)?.secret ??
-                              true)
-                                ? 'secrets'
-                                : 'shared'
-                            ],
+                          expectedValueRevision: slotRevision(
+                            view.serverValues,
+                            variable,
+                            environment,
+                          ),
                         }
                       : {}),
                     expected: view.revision,
@@ -632,4 +623,13 @@ function EnvironmentManager({
       </div>
     </Modal>
   );
+}
+
+/** The server revision of one stored value; 0 means the value does not exist there yet. */
+function slotRevision(
+  values: { slots: Record<string, number> },
+  variable: string,
+  environment: string | null | undefined,
+) {
+  return values.slots[`${variable}/${environment || 'default'}`] ?? 0;
 }

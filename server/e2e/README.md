@@ -51,14 +51,17 @@ The checks exercise:
    legitimate result.
 5. Pending accounts, administrator approval, repeat login with stable Fluxkit identity,
    personal-project isolation and one personal project per approved user.
-6. Team membership, shared value access, stale shared-value writes and simultaneous snapshot
-   writers (one succeeds, one conflicts; the winning revision remains stored).
-7. Atomic project transfer with selected ordinary values, rejection of plaintext legacy secrets,
-   duplicate identity protection and ownership checks.
+6. Team membership and two members editing concurrently: different requests both succeed,
+   simultaneous writers of the same request get one success and one conflict naming the current
+   revision, and the change feed reports every changed row. Shared values use per-slot
+   revisions; stale writes conflict.
+7. Atomic project upload with selected ordinary values, rejection of plaintext values for secret
+   variables, duplicate identity protection and ownership checks; only server administrators
+   delete projects, and only empty ones.
 8. Account suspension and team membership removal revoking access.
 9. Native Rust Argon2id account-key setup, AES-GCM value encryption/upload/download/decryption,
    master-password rewrapping, old-password rejection, shared-value access by another member
-   and isolation of ciphertext/account-key profiles. Values stay out of definition snapshots.
+   and isolation of ciphertext/account-key profiles. Values stay out of the project rows.
 
 The browser test talks to the real handoff API as the desktop would. The native phase uses the
 application's existing crypto/value protocol functions without touching the OS credential store.

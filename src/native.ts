@@ -18,10 +18,8 @@ export interface ServerProject {
   revision: number;
   canManageMembers?: boolean;
   canEdit?: boolean;
-}
-
-export interface ServerProjectSnapshot extends ServerProject {
-  snapshot: string;
+  createdAt?: string | null;
+  collectionCount?: number | null;
 }
 
 export interface ServerProjectMember {
@@ -67,18 +65,16 @@ export function logoutFromServer() {
 export function listServerProjects() {
   return invoke<ServerProject[]>('server_projects');
 }
-export function getServerProjectSnapshot(projectId: string) {
-  return invoke<ServerProjectSnapshot>('server_project_snapshot', { projectId });
-}
 export function openServerProject(projectId: string) {
   return invoke<import('./projects/types').ProjectView>('server_open_project', { projectId });
 }
-export function saveServerProjectSnapshot(projectId: string, revision: number, snapshot: string) {
-  return invoke<ServerProjectSnapshot>('server_save_project_snapshot', {
-    projectId,
-    revision,
-    snapshot,
-  });
+/** Pulls the server's latest state into an open server workspace. */
+export function refreshServerWorkspace(handle: string) {
+  return invoke<import('./projects/types').ProjectView>('server_refresh_workspace', { handle });
+}
+/** Deletes an empty team project; only server administrators may do this. */
+export function deleteServerProject(projectId: string, revision: number) {
+  return invoke<void>('server_delete_project', { projectId, revision });
 }
 export interface VaultStatus {
   configured: boolean;
@@ -112,20 +108,10 @@ export function prepareServerTransfer(handle: string, id: string, selections: Tr
   return invoke<TransferPreview>('server_prepare_transfer', { handle, id, selections });
 }
 export function commitServerTransfer(handle: string, id: string) {
-  return invoke<ServerProjectSnapshot>('server_commit_transfer', { handle, id });
+  return invoke<ServerProject>('server_commit_transfer', { handle, id });
 }
 export function discardServerTransfer(id: string) {
   return invoke<void>('server_discard_transfer', { id });
-}
-export function syncServerProject(handle: string) {
-  return invoke<ServerProjectSnapshot>('server_sync_project', { handle });
-}
-export interface WorkspaceRecovery {
-  workspace: import('./projects/types').ProjectView;
-  recovery: import('./projects/types').ProjectView;
-}
-export function refreshServerProject(handle: string) {
-  return invoke<WorkspaceRecovery>('server_refresh_project', { handle });
 }
 export function listServerProjectMembers(projectId: string) {
   return invoke<ServerProjectMember[]>('server_project_members', { projectId });
@@ -160,7 +146,7 @@ export function setServerUserStatus(userId: string, status: 'active' | 'disabled
   return invoke<void>('server_admin_set_user_status', { userId, status });
 }
 export function createServerTeamProject(name: string) {
-  return invoke<ServerProjectSnapshot>('server_create_team_project', { name });
+  return invoke<ServerProject>('server_create_team_project', { name });
 }
 
 export function isDesktop(): boolean {

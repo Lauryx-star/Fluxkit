@@ -32,7 +32,7 @@ pub fn run() {
         .manage(ProjectState::default())
         .manage(server::oidc::OidcState::default())
         .manage(server::values::ValueState::default())
-        .manage(server::SyncState::default())
+        .manage(server::workspace::SyncState::default())
         .manage(server::transfer::TransferState::default())
         .manage(HttpState::default())
         .manage(imports::commands::ImportState::default())
@@ -87,10 +87,8 @@ pub fn run() {
             server::server_logout,
             server::server_projects,
             server::server_open_project,
-            server::server_project_snapshot,
-            server::server_save_project_snapshot,
-            server::server_sync_project,
-            server::server_refresh_project,
+            server::workspace::server_refresh_workspace,
+            server::server_delete_project,
             server::transfer::server_preview_transfer,
             server::transfer::server_prepare_transfer,
             server::transfer::server_commit_transfer,

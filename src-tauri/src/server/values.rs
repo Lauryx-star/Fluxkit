@@ -17,13 +17,14 @@ use std::{
 use tauri::{Manager, State};
 use zeroize::Zeroizing;
 
-pub(crate) const UNSYNCED_DEFINITIONS: &str = "The server does not know this variable or environment yet, or its secret setting changed locally. Use Sync saved changes in the server dialog to publish the variable definitions first, then save the value again.";
+const UNKNOWN_SLOT: &str = "The server does not accept this value: its variable or environment no longer exists there, or its secret setting differs. Reload the project and try again.";
 
+/// Server revision of every value slot the user can see, keyed `variableId/environmentId`.
+/// A slot without an entry does not exist yet (expected revision 0).
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValueRevisions {
-    pub shared: i64,
-    pub secrets: i64,
+    pub slots: std::collections::BTreeMap<String, i64>,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -31,12 +32,13 @@ pub struct SharedValue {
     pub variable_id: String,
     pub environment_id: String,
     pub value: String,
+    #[serde(default)]
+    pub revision: i64,
 }
+/// The value slots of one project as the server lists them: one row per slot.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Bundle<T> {
-    pub revision: i64,
-    pub project_revision: i64,
     pub values: Vec<T>,
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -122,18 +124,25 @@ impl ValueState {
     ) -> Result<ValueRevisions, String> {
         self.with(|inner| {
             let scope = scope(identity, project);
-            Ok(ValueRevisions {
-                shared: inner
-                    .shared
-                    .get(&scope)
-                    .ok_or("Reload shared values.")?
-                    .revision,
-                secrets: inner
-                    .secrets
-                    .get(&scope)
-                    .ok_or("Reload secret metadata.")?
-                    .revision,
-            })
+            let shared = inner.shared.get(&scope).ok_or("Reload shared values.")?;
+            let secrets = inner.secrets.get(&scope).ok_or("Reload secret metadata.")?;
+            let slots = shared
+                .values
+                .iter()
+                .map(|value| {
+                    (
+                        format!("{}/{}", value.variable_id, value.environment_id),
+                        value.revision,
+                    )
+                })
+                .chain(secrets.values.iter().map(|value| {
+                    (
+                        format!("{}/{}", value.variable_id, value.environment_id),
+                        value.revision,
+                    )
+                }))
+                .collect();
+            Ok(ValueRevisions { slots })
         })
     }
     pub fn access(
@@ -323,30 +332,44 @@ async fn put<T: Serialize, R: DeserializeOwned>(
     revision: i64,
     body: &T,
 ) -> Result<R, String> {
-    put_with(session, path, revision, body, None).await
-}
-/// The server rejects values for variables/environments missing from its definition snapshot,
-/// or with a different secret classification, with 400. `bad_request` explains that case.
-async fn put_with<T: Serialize, R: DeserializeOwned>(
-    session: &super::Session,
-    path: &str,
-    revision: i64,
-    body: &T,
-    bad_request: Option<&str>,
-) -> Result<R, String> {
     let response = client()?.put(super::api_url(&session.identity.server_url, path)?)
         .bearer_auth(&session.access_token).header(reqwest::header::IF_MATCH, format!("\"{revision}\""))
-        .json(body).send().await.map_err(|_| "The server response was interrupted. Reload values to check whether the change was saved; no automatic retry was made.".to_string())?;
-    if response.status() == reqwest::StatusCode::BAD_REQUEST {
-        if let Some(message) = bad_request {
-            return Err(message.into());
-        }
-    }
+        .json(body).send().await.map_err(|_| "The server response was interrupted. Reload to check whether the change was saved; no automatic retry was made.".to_string())?;
     if !response.status().is_success() {
         return Err(super::response_error(response).await);
     }
-    let reply = read_json(response).await?;
-    Ok(reply)
+    read_json(response).await
+}
+/// One value-slot request. `revision` goes into `If-Match`; 400 means the server's
+/// definitions disagree (unknown slot or classification), 409 a changed slot.
+async fn send_slot(
+    session: &super::Session,
+    method: reqwest::Method,
+    path: &str,
+    revision: i64,
+    body: Option<serde_json::Value>,
+) -> Result<Option<i64>, String> {
+    let mut request = client()?
+        .request(method, super::api_url(&session.identity.server_url, path)?)
+        .bearer_auth(&session.access_token)
+        .header(reqwest::header::IF_MATCH, format!("\"{revision}\""));
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request.send().await.map_err(|_| "The server response was interrupted. Reload values to check whether the change was saved; no automatic retry was made.".to_string())?;
+    match response.status() {
+        reqwest::StatusCode::BAD_REQUEST => Err(UNKNOWN_SLOT.into()),
+        reqwest::StatusCode::CONFLICT => Err("This value was changed by someone else meanwhile. Reload variables; your input is still open.".into()),
+        reqwest::StatusCode::NO_CONTENT => Ok(None),
+        status if status.is_success() => {
+            #[derive(Deserialize)]
+            struct Saved {
+                revision: i64,
+            }
+            Ok(Some(read_json::<Saved>(response).await?.revision))
+        }
+        _ => Err(super::response_error(response).await),
+    }
 }
 fn cached<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
     serde_json::from_slice(&store::read(path)?)
@@ -357,8 +380,8 @@ fn save<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 }
 fn bundle_paths(root: &Path, project: &str) -> (PathBuf, PathBuf) {
     (
-        root.join(format!("shared-{project}.json")),
-        root.join(format!("encrypted-{project}.json")),
+        root.join(format!("shared-slots-{project}.json")),
+        root.join(format!("encrypted-slots-{project}.json")),
     )
 }
 pub async fn refresh(app: &tauri::AppHandle, context: &Context) -> Result<(), String> {
@@ -400,14 +423,14 @@ pub async fn refresh(app: &tauri::AppHandle, context: &Context) -> Result<(), St
         Some(value) => value,
         None => cached(&profile_path)?,
     };
-    if shared.values.len() > 1000
-        || secrets.values.len() > 1000
-        || shared.revision < 0
-        || secrets.revision < 0
-        || shared.project_revision < 1
-        || secrets.project_revision < 1
+    if shared.values.len() > 2000
+        || secrets.values.len() > 2000
         || profile.revision < 0
-        || shared.values.iter().any(|value| value.value.len() > 2560)
+        || shared
+            .values
+            .iter()
+            .any(|value| value.value.len() > 2560 || value.revision < 1)
+        || secrets.values.iter().any(|value| value.revision < 1)
     {
         return Err("Invalid synchronized value limits.".into());
     }
@@ -609,76 +632,95 @@ pub async fn set_value(
     let scoped = super::account_root(&root, &context.identity)?;
     let (shared_path, secret_path) = bundle_paths(&scoped, &context.project);
     let key = scope(&context.identity, &context.project);
-    if variable.secret.unwrap_or(true) {
-        let mut bundle = state.with(|inner| {
-            inner
-                .secrets
-                .get(&key)
-                .cloned()
-                .ok_or_else(|| "Load server values before saving.".into())
-        })?;
-        if value_revision != Some(bundle.revision) {
-            return Err("Synchronized values changed. Reload variables before saving; your input is still open.".into());
-        }
-        bundle.values.retain(|entry| {
-            entry.variable_id != variable.id || entry.environment_id != environment
-        });
-        if let Some(value) = value {
-            bundle.values.push(crypto::encrypt(
+    let secret = variable.secret.unwrap_or(true);
+    let revision = value_revision.unwrap_or(0);
+    let route = if secret { "vault-values" } else { "values" };
+    let path = format!(
+        "/api/projects/{}/{route}/{}/{environment}",
+        context.project, variable.id
+    );
+    // What the server accepted: the stored slot (cipher or shared plaintext) and its revision.
+    let saved: Option<(Option<CipherValue>, Option<String>, i64)> = match &value {
+        Some(value) if secret => {
+            let cipher = crypto::encrypt(
                 &context.identity,
                 &context.project,
                 &variable.id,
                 environment,
-                &value,
+                value,
                 &state.key(&context.identity)?,
-            )?);
+            )?;
+            let mut body =
+                serde_json::to_value(&cipher).map_err(|_| "Could not encode the secret.")?;
+            if let Some(map) = body.as_object_mut() {
+                map.remove("variableId");
+                map.remove("environmentId");
+                map.remove("revision");
+            }
+            send_slot(&session, reqwest::Method::PUT, &path, revision, Some(body))
+                .await?
+                .map(|saved| (Some(cipher), None, saved))
         }
-        let saved: Bundle<CipherValue> = put_with(&session, &format!("/api/projects/{}/vault-values", context.project), bundle.revision, &serde_json::json!({"projectRevision": bundle.project_revision, "values": bundle.values}), Some(UNSYNCED_DEFINITIONS)).await?;
-        super::ensure_session(&session)?;
-        state.with(|inner| {
-            inner.secrets.insert(key, saved.clone());
-            Ok(())
-        })?;
-        save(&secret_path, &saved)?;
-    } else {
-        let mut bundle = state.with(|inner| {
-            inner
-                .shared
-                .get(&key)
-                .cloned()
-                .ok_or_else(|| "Load server values before saving.".into())
-        })?;
-        if value_revision != Some(bundle.revision) {
-            return Err("Synchronized values changed. Reload variables before saving; your input is still open.".into());
+        Some(value) => send_slot(
+            &session,
+            reqwest::Method::PUT,
+            &path,
+            revision,
+            Some(serde_json::json!({ "value": value.as_str() })),
+        )
+        .await?
+        .map(|saved| (None, Some(value.to_string()), saved)),
+        None if revision == 0 => None,
+        None => {
+            send_slot(&session, reqwest::Method::DELETE, &path, revision, None).await?;
+            None
         }
-        bundle.values.retain(|entry| {
+    };
+    super::ensure_session(&session)?;
+    // Mirror the accepted slot into the in-memory bundles and their offline caches.
+    let (shared, secrets) = state.with(|inner| {
+        let shared = inner
+            .shared
+            .entry(key.clone())
+            .or_insert_with(|| Bundle { values: vec![] });
+        shared.values.retain(|entry| {
             entry.variable_id != variable.id || entry.environment_id != environment
         });
-        if let Some(value) = value {
-            bundle.values.push(SharedValue {
+        if let Some((None, Some(value), revision)) = &saved {
+            shared.values.push(SharedValue {
                 variable_id: variable.id.clone(),
                 environment_id: environment.into(),
-                value: value.to_string(),
+                value: value.clone(),
+                revision: *revision,
             });
         }
-        let saved: Bundle<SharedValue> = put_with(&session, &format!("/api/projects/{}/values", context.project), bundle.revision, &serde_json::json!({"projectRevision": bundle.project_revision, "values": bundle.values}), Some(UNSYNCED_DEFINITIONS)).await?;
-        super::ensure_session(&session)?;
-        state.with(|inner| {
-            inner.shared.insert(key, saved.clone());
-            Ok(())
-        })?;
-        save(&shared_path, &saved)?;
-    }
+        let shared = shared.clone();
+        let secrets = inner
+            .secrets
+            .entry(key.clone())
+            .or_insert_with(|| Bundle { values: vec![] });
+        secrets.values.retain(|entry| {
+            entry.variable_id != variable.id || entry.environment_id != environment
+        });
+        if let Some((Some(cipher), _, revision)) = &saved {
+            let mut cipher = cipher.clone();
+            cipher.revision = *revision;
+            secrets.values.push(cipher);
+        }
+        Ok((shared, secrets.clone()))
+    })?;
+    save(&shared_path, &shared)?;
+    save(&secret_path, &secrets)?;
     Ok(())
 }
 
 /// One imported value slot: variable ID, environment ID (`default` for the default slot), value.
 pub type ImportSlot = (String, String, Zeroizing<String>);
 
-/// Adds imported values to the server bundles after the definitions were synced. Ordinary
-/// values join the shared bundle; secret values are encrypted into the caller's vault bundle.
-/// A slot that already holds the same value is skipped, so a retry does not duplicate work.
-/// A different shared value or any existing secret slot is never overwritten.
+/// Adds imported values to the server after their definitions were published. Ordinary
+/// values become shared slots; secret values are encrypted into the caller's vault. A slot that
+/// already holds the same shared value, or any existing secret slot, is skipped, so a retry
+/// does not duplicate work; a different shared value is never overwritten.
 pub async fn import_values(
     app: &tauri::AppHandle,
     context: &Context,
@@ -694,10 +736,8 @@ pub async fn import_values(
         return Err("The server account changed.".into());
     }
     let state = app.state::<ValueState>().inner().clone();
-    let scoped = super::account_root(&root, &context.identity)?;
-    let (shared_path, secret_path) = bundle_paths(&scoped, &context.project);
     let key = scope(&context.identity, &context.project);
-    let (mut shared, mut secrets) = state.with(|inner| {
+    let (shared, secrets) = state.with(|inner| {
         Ok((
             inner
                 .shared
@@ -711,8 +751,8 @@ pub async fn import_values(
                 .ok_or("Load server values before importing.")?,
         ))
     })?;
-    let mut shared_changed = false;
-    let mut secrets_changed = false;
+    let mut shared_batch = Vec::new();
+    let mut vault_batch = Vec::new();
     for (variable, environment, value) in slots {
         let definition = context
             .definitions
@@ -731,15 +771,21 @@ pub async fn import_values(
             {
                 continue;
             }
-            secrets.values.push(crypto::encrypt(
+            let cipher = crypto::encrypt(
                 &context.identity,
                 &context.project,
                 &variable,
                 &environment,
                 &value,
                 &state.key(&context.identity)?,
-            )?);
-            secrets_changed = true;
+            )?;
+            let mut slot =
+                serde_json::to_value(&cipher).map_err(|_| "Could not encode a secret.")?;
+            if let Some(map) = slot.as_object_mut() {
+                map.remove("revision");
+                map.insert("expectedRevision".into(), 0.into());
+            }
+            vault_batch.push(slot);
         } else {
             match shared
                 .values
@@ -748,39 +794,41 @@ pub async fn import_values(
             {
                 Some(entry) if *entry.value == **value => {}
                 Some(_) => return Err("An imported value was changed on the server meanwhile. It was not overwritten; check Project variables.".into()),
-                None => {
-                    shared.values.push(SharedValue {
-                        variable_id: variable,
-                        environment_id: environment,
-                        value: value.to_string(),
-                    });
-                    shared_changed = true;
-                }
+                None => shared_batch.push(serde_json::json!({
+                    "variableId": variable,
+                    "environmentId": environment,
+                    "value": value.as_str(),
+                    "expectedRevision": 0
+                })),
             }
         }
     }
-    if shared.values.len() > 1000 || secrets.values.len() > 1000 {
-        return Err("The server value bundle would exceed 1,000 slots.".into());
+    if shared_batch.is_empty() && vault_batch.is_empty() {
+        return Ok(());
     }
-    if shared_changed {
-        let saved: Bundle<SharedValue> = put_with(&session, &format!("/api/projects/{}/values", context.project), shared.revision, &serde_json::json!({"projectRevision": shared.project_revision, "values": shared.values}), Some(UNSYNCED_DEFINITIONS)).await?;
-        super::ensure_session(&session)?;
-        state.with(|inner| {
-            inner.shared.insert(key.clone(), saved.clone());
-            Ok(())
+    let response = client()?
+        .post(super::api_url(
+            &session.identity.server_url,
+            &format!("/api/projects/{}/values/batch", context.project),
+        )?)
+        .bearer_auth(&session.access_token)
+        .json(&serde_json::json!({ "shared": shared_batch, "vault": vault_batch }))
+        .send()
+        .await
+        .map_err(|_| {
+            "The server response was interrupted. Reload values to check whether they were saved."
+                .to_string()
         })?;
-        save(&shared_path, &saved)?;
+    match response.status() {
+        reqwest::StatusCode::BAD_REQUEST => return Err(UNKNOWN_SLOT.into()),
+        reqwest::StatusCode::CONFLICT => {
+            return Err("Some imported values were set by someone else meanwhile. Reload variables and check them.".into())
+        }
+        status if !status.is_success() => return Err(super::response_error(response).await),
+        _ => {}
     }
-    if secrets_changed {
-        let saved: Bundle<CipherValue> = put_with(&session, &format!("/api/projects/{}/vault-values", context.project), secrets.revision, &serde_json::json!({"projectRevision": secrets.project_revision, "values": secrets.values}), Some(UNSYNCED_DEFINITIONS)).await?;
-        super::ensure_session(&session)?;
-        state.with(|inner| {
-            inner.secrets.insert(key, saved.clone());
-            Ok(())
-        })?;
-        save(&secret_path, &saved)?;
-    }
-    Ok(())
+    super::ensure_session(&session)?;
+    refresh(app, context).await
 }
 
 #[cfg(test)]
@@ -829,18 +877,18 @@ mod tests {
                 inner.shared.insert(
                     scope(&owner, &project),
                     Bundle {
-                        revision: 1,
-                        project_revision: 2,
                         values: vec![
                             SharedValue {
                                 variable_id: definitions.variables[0].id.clone(),
                                 environment_id: "default".into(),
                                 value: "Shared synthetic".into(),
+                                revision: 1,
                             },
                             SharedValue {
                                 variable_id: definitions.variables[1].id.clone(),
                                 environment_id: "default".into(),
                                 value: "Do not use this plaintext for a secret".into(),
+                                revision: 1,
                             },
                         ],
                     },
@@ -848,8 +896,6 @@ mod tests {
                 inner.secrets.insert(
                     scope(&owner, &project),
                     Bundle {
-                        revision: 1,
-                        project_revision: 2,
                         values: vec![encrypted],
                     },
                 );
@@ -1054,29 +1100,28 @@ mod protocol_tests {
         let project = created["id"].as_str().unwrap();
         let shared = uuid::Uuid::new_v4().to_string();
         let secret = uuid::Uuid::new_v4().to_string();
-        let snapshot = serde_json::json!({"project":{"schemaVersion":1,"id":project,"name":"Native protocol integration"},"collections":[],"environments":{"schemaVersion":1,"environments":[],"variables":[{"id":shared,"name":"baseUrl","secret":false},{"id":secret,"name":"apiToken"}]}}).to_string();
-        let _: serde_json::Value = put(
+        client
+            .post(format!("{root}/api/projects/{project}/changes"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"operations": [
+                {"op":"put","kind":"variable","id":shared,"expectedRevision":null,"data":{"name":"baseUrl","secret":false,"position":"g"}},
+                {"op":"put","kind":"variable","id":secret,"expectedRevision":null,"data":{"name":"apiToken","secret":true,"position":"n"}}
+            ]}))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        let revision = send_slot(
             &session,
-            &format!("/api/projects/{project}"),
-            1,
-            &serde_json::json!({"snapshot":snapshot}),
-        )
-        .await
-        .unwrap();
-        let shared_values = vec![SharedValue {
-            variable_id: shared,
-            environment_id: "default".into(),
-            value: "Shared synthetic value".into(),
-        }];
-        let saved: Bundle<SharedValue> = put(
-            &session,
-            &format!("/api/projects/{project}/values"),
+            reqwest::Method::PUT,
+            &format!("/api/projects/{project}/values/{shared}/default"),
             0,
-            &serde_json::json!({"projectRevision":2,"values":shared_values}),
+            Some(serde_json::json!({"value":"Shared synthetic value"})),
         )
         .await
         .unwrap();
-        assert_eq!(saved.revision, 1);
+        assert_eq!(revision, Some(1));
         let encrypted = crypto::encrypt(
             &identity,
             project,
@@ -1086,20 +1131,19 @@ mod protocol_tests {
             &key,
         )
         .unwrap();
-        let saved: Bundle<CipherValue> = put(
+        let mut body = serde_json::to_value(&encrypted).unwrap();
+        body.as_object_mut()
+            .unwrap()
+            .retain(|key, _| key == "nonce" || key == "ciphertext");
+        send_slot(
             &session,
-            &format!("/api/projects/{project}/vault-values"),
+            reqwest::Method::PUT,
+            &format!("/api/projects/{project}/vault-values/{secret}/default"),
             0,
-            &serde_json::json!({"projectRevision":2,"values":[encrypted]}),
+            Some(body),
         )
         .await
         .unwrap();
-        assert_eq!(
-            crypto::decrypt(&identity, project, &saved.values[0], &key)
-                .unwrap()
-                .as_str(),
-            "Native encrypted synthetic secret"
-        );
         let wrapper = crypto::rewrap(&identity, "New synthetic master password 42", &key).unwrap();
         let updated: AccountProfile = put(
             &session,
@@ -1167,18 +1211,12 @@ mod protocol_tests {
             let profile: AccountProfile = get(&peer, "/api/account/vault").await.unwrap().unwrap();
             assert!(profile.profile.is_none());
         }
-        let snapshot: serde_json::Value = get(&session, &format!("/api/projects/{project}"))
+        let tree: serde_json::Value = get(&session, &format!("/api/projects/{project}/tree"))
             .await
             .unwrap()
             .unwrap();
-        assert!(!snapshot["snapshot"]
-            .as_str()
-            .unwrap()
-            .contains("synthetic value"));
-        assert!(!snapshot["snapshot"]
-            .as_str()
-            .unwrap()
-            .contains("synthetic secret"));
+        assert!(!tree.to_string().contains("synthetic value"));
+        assert!(!tree.to_string().contains("synthetic secret"));
         assert!(!serde_json::to_string(&downloaded)
             .unwrap()
             .contains("Native encrypted synthetic secret"));

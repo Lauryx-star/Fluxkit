@@ -40,7 +40,7 @@ import { useHttp } from './http/useHttp';
 import { ResponseView } from './http/ResponseView';
 import { ProjectTree } from './projects/ProjectTree';
 import { BodyEditor } from './projects/BodyEditor';
-import { NameDialog, ConfirmDialog, QuitDialog } from './projects/Dialogs';
+import { NameDialog, ConfirmDialog, ConflictDialog, QuitDialog } from './projects/Dialogs';
 import { EnvironmentControls } from './environments/EnvironmentControls';
 import { ServerConnection } from './server/ServerConnection';
 import { VaultLock } from './server/VaultLock';
@@ -507,6 +507,7 @@ export default function App() {
         if (
           !workspace.nameDialog &&
           !workspace.confirmation &&
+          !workspace.conflict &&
           !workspace.quitOpen &&
           !variablesOpen &&
           !authDialog &&
@@ -516,7 +517,7 @@ export default function App() {
           !exportHandle &&
           !historyProject
         ) {
-          workspace.saveDraft();
+          void workspace.saveDraft();
         }
       }
     }
@@ -972,7 +973,7 @@ export default function App() {
                           disabled={
                             !workspace.desktop || project?.readOnly || busy || !isDirty(draft)
                           }
-                          onClick={workspace.saveDraft}
+                          onClick={() => void workspace.saveDraft()}
                         >
                           Save
                         </button>
@@ -1435,6 +1436,12 @@ export default function App() {
             }}
           />
         )}
+        {workspace.conflict && !workspace.confirmation && (
+          <ConflictDialog
+            message={workspace.conflict.message}
+            onChoose={workspace.resolveConflict}
+          />
+        )}
         {workspace.confirmation && (
           <ConfirmDialog
             message={workspace.confirmation.message}
@@ -1479,7 +1486,8 @@ export default function App() {
         <ServerConnection
           localProjects={workspace.projects}
           onOpenProject={workspace.openServerProject}
-          onRefreshProject={workspace.refreshServerProject}
+          onRefreshProject={workspace.refreshServerWorkspace}
+          onDeleteProject={workspace.deleteServerProject}
           onClose={() => {
             setServerConnectionOpen(false);
             void checkServerStatus();

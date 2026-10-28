@@ -206,6 +206,7 @@ async fn commit(
             return Err("Unlock your account vault to store imported secret values, or clear the value checkbox to import without values.".into());
         }
     }
+    let _serialized = crate::server::workspace::guard(app).await;
     let mut local = slot.take().ok_or(MISSING)?;
     let (result, returned) = run(projects, move |store| {
         let result = storage::commit(store, &mut local, store_values);
@@ -218,10 +219,17 @@ async fn commit(
         return Ok(result);
     }
     if !plan.synced {
-        if let Err(error) =
-            crate::server::server_sync_project(app.clone(), projects.clone(), handle.clone()).await
-        {
-            result.error = Some(format!("The import is saved in this workspace, but it could not be synced to the server: {error} Retry the import, or use Sync saved changes."));
+        if let Err(error) = crate::server::workspace::publish(app, projects, &handle).await {
+            // The server refused the batch and the mirror was rolled back from the server
+            // state, so the next attempt must save the import locally again.
+            plan.local_saved = false;
+            plan.definitions_saved = false;
+            let reload = handle.clone();
+            result.project = run(projects, move |store| {
+                store.with_environment(&reload, |root, _| store::load(root, &reload))
+            })
+            .await?;
+            result.error = Some(format!("The import was not saved on the server, so nothing was kept: {error} Retry the import."));
             return Ok(result);
         }
         plan.synced = true;

@@ -1,11 +1,12 @@
 # Fluxkit self-hosted server
 
-This ASP.NET Core 10 service stores project snapshots in PostgreSQL. The desktop client
-remains usable without it. The initial server slice supports local accounts, admin approval,
-personal projects, team project membership, revision-checked snapshots, and per-user opaque
-encrypted-secret envelopes. The desktop includes local-account sign-in, project/account administration, saved-project
-upload, account-scoped offline snapshots, explicit sync and workspace recovery with a retained
-read-only copy for manual merge. Shared values, explicit transfer preview and client-encrypted
+This ASP.NET Core 10 service stores projects in PostgreSQL as normalized rows (collections,
+folders, requests, environments, variables, values), each with its own revision, plus a change
+feed. The desktop client remains usable without it. The server supports local accounts, admin
+approval, personal projects, team project membership, atomic change batches and per-user opaque
+encrypted values. The desktop includes local-account sign-in, project/account administration,
+saved-project upload, account-scoped offline copies, write-through saving and automatic loading
+of other members' changes. Shared values, explicit transfer preview and client-encrypted
 personal secrets are implemented; see [the value/vault contract](../docs/SERVER_VALUES.md).
 OIDC browser sign-in is implemented as an exclusive alternative to local accounts; see
 [OIDC setup and existing-account limits](../docs/OIDC.md). Full deployment/platform validation remains unfinished. See [the detailed contract](../docs/SELF_HOSTED_BACKEND.md).
@@ -22,9 +23,9 @@ $env:Bootstrap__AdminPassword = "<strong unique password>"
 dotnet run --project server/Fluxkit.Server
 ```
 
-Database migrations run at startup. Back up the database before upgrading. The shared-value
-and account-vault migration is additive and preserves existing project snapshots; downgrading
-that migration removes the new value tables/columns and must not be used as a recovery flow. The bootstrap administrator is created only when the
+Database migrations run at startup. Back up the database before upgrading. The normalized
+schema starts with a new initial migration and does not convert databases from earlier
+development builds; start those with an empty database. The bootstrap administrator is created only when the
 configured username does not already exist; changing the environment password does not reset
 an existing account. Keep signing keys and database credentials outside source control.
 
@@ -72,10 +73,10 @@ Supply `FLUXKIT_TEST_DATABASE` through your shell's environment before running t
 An isolated local container can use PostgreSQL 17 with a synthetic password and a loopback port;
 remove that test container afterwards. The tests keep all HTTP inside TestServer. They cover
 pending/suspended users, personal-project isolation from members and server administrators,
-team access/removal, shared-value and vault isolation, value limits/classification, additive
-migration, atomic transfer, missing/stale revisions and deterministic
-simultaneous writers. A test-only interceptor holds both snapshot reads before either update,
-so the previous read-then-save race fails reliably. Each synthetic HTTP client gets a separate
+team access/removal, shared-value and vault isolation, value limits/classification, the
+schema and its cascades, atomic batches and uploads, tree rules, the change feed (including
+polling during parallel writers), missing/stale revisions, simultaneous writers of one row and
+deleting empty projects. Each synthetic HTTP client gets a separate
 peer address inside TestServer; production authentication rate limiting stays enabled.
 
 Test dependencies are confined to the test project: xUnit and its Visual Studio

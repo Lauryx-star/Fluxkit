@@ -172,10 +172,11 @@ Acceptance criteria:
 Status: in progress; implementation handoff and ordered remaining work are in
 [SELF_HOSTED_BACKEND.md](SELF_HOSTED_BACKEND.md#handoff-status-2026-10-27). The initial
 ASP.NET Core/PostgreSQL server project provides local registration and admin approval, personal
-projects, team project membership, project snapshot revision checks, and per-user encrypted-secret
-envelope storage. The desktop includes account-scoped caches and workspaces, explicit sync,
-atomic server revision replacement, and refresh with a retained recovery copy for manual
-merge/retry. Shared values, explicit local-to-server transfer preview and client-side secret
+projects, team project membership, normalized per-row storage with revisions, atomic change
+batches and a change feed, and per-user encrypted values. The desktop includes account-scoped
+caches and workspaces, writes each saved change through to the server, loads other members'
+changes every 15 seconds and resolves concurrent edits of the same request explicitly. Server
+administrators can delete empty team projects. Shared values, explicit local-to-server transfer preview and client-side secret
 encryption with account-key wrapping are implemented; see [SERVER_VALUES.md](SERVER_VALUES.md).
 OIDC browser login, issuer/subject mapping and administrator approval are implemented; see
 [OIDC.md](OIDC.md). Full deployment/platform validation and explicit existing-account linking
@@ -193,7 +194,7 @@ Acceptance criteria:
   memberships without gaining personal-project access.
 - Local-to-server upload previews the data and creates a server copy. Original local project files
   remain available after a verified successful upload.
-- The client keeps a read-only local snapshot for offline access and never queues offline
+- The client keeps a read-only local copy for offline access and never queues offline
   writes. History remains local in both modes.
 - Ordinary values are visible to project members. Secrets are encrypted client-side with
   Argon2id-derived wrapping keys and authenticated encryption; each user can decrypt only

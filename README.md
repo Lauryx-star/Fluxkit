@@ -68,7 +68,7 @@ self-hosted server (only needed for team sync).
                         │   server/Fluxkit.Server             │
                         │   ASP.NET Core 10 + PostgreSQL      │
                         │   ─ local accounts or OIDC login    │
-                        │   ─ project snapshots + revisions   │
+                        │   ─ versioned rows + change feed    │
                         │   ─ shared values + per-user         │
                         │     client-encrypted secret vault    │
                         └───────────────────────────────────┘
@@ -100,12 +100,13 @@ An independent, optional ASP.NET Core 10 service backed by PostgreSQL. It is nev
 run the desktop app locally — it exists purely for teams that want shared, versioned projects:
 
 - Local account registration with admin approval, or OIDC browser sign-in as an alternative.
-- Personal and team project snapshots with revision checks to detect concurrent edits.
+- Personal and team projects stored as individually versioned rows, so members editing
+  different requests never conflict; concurrent edits of the same request are detected.
 - Ordinary shared values as plain project data; secret values are encrypted client-side
   (Argon2id key-wrapping + authenticated encryption) and scoped to one user — the server never
   sees plaintext secrets.
-- The desktop client treats server projects as an explicit, synced workspace with offline
-  snapshots, not a hidden background sync queue.
+- The desktop client saves every change straight to the server, loads other members' changes
+  automatically and keeps a read-only copy for offline use, with no hidden offline write queue.
 
 See [server/README.md](server/README.md) and [docs/SELF_HOSTED_BACKEND.md](docs/SELF_HOSTED_BACKEND.md)
 for the full contract, and [docs/SERVER_VALUES.md](docs/SERVER_VALUES.md) /

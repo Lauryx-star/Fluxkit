@@ -1153,3 +1153,20 @@ This validates the real-provider browser/API path and native crypto protocol. Fu
 OS-store adapters, GUI conflict recovery/offline use, Windows/Linux launchers, other providers,
 operator TLS setup/load and backup/restore remain separate validation work. It is not a claim
 of release readiness or an independent cryptographic/security audit.
+
+## Normalized server storage and write-through workspaces (2026-10-28)
+
+Server: the new initial migration was generated with `dotnet ef` 10.0.13 and `dotnet test`
+passed all 27 server tests against a disposable PostgreSQL 17 container on the developer's
+Linux machine. They cover the schema and its cascades, atomic batches with per-row revisions,
+tree rules, the change feed (including polling during parallel writers), per-slot values,
+project upload, deleting empty projects and the existing account/OIDC/vault behaviour.
+
+Desktop: all 157 Rust tests (three integration tests excluded as before), rustfmt and locked
+Clippy with warnings denied passed. The check used Rust 1.97 instead of the pinned 1.92 and
+allowed the pre-existing `clippy::collapsible_match` finding in `src/http/auth.rs`. Frontend
+TypeScript, ESLint, Prettier, all 154 Vitest tests and the production UI build passed.
+
+The updated two-member scenario in the HTTPS/OIDC end-to-end suite was syntax-checked but not
+run (no Docker in the validation environment). A signed-in GUI session with two accounts
+editing the same project concurrently remains to be exercised manually.

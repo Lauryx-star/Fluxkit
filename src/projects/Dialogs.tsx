@@ -140,6 +140,37 @@ export function ConfirmDialog({
   );
 }
 
+/** Offered when a save was rejected because the server version changed in the meantime. */
+export function ConflictDialog({
+  message,
+  onChoose,
+}: {
+  message: string;
+  onChoose: (choice: 'server' | 'mine' | 'cancel') => void;
+}) {
+  return (
+    <Modal label="Changed on the server">
+      <h2>Changed on the server</h2>
+      <p>{message.replace(/ Your change was not applied;.*$/, ' Your change was not applied.')}</p>
+      <p>
+        Load the server version to discard your edits in this request, or keep your version to save
+        it over the server version.
+      </p>
+      <div className="dialog-actions">
+        <button className="secondary-button" onClick={() => onChoose('cancel')}>
+          Decide later
+        </button>
+        <button className="secondary-button" onClick={() => onChoose('server')}>
+          Load server version
+        </button>
+        <button className="primary-button" onClick={() => onChoose('mine')}>
+          Keep my version
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 export function QuitDialog({
   saving,
   error,

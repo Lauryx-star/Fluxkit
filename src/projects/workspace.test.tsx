@@ -16,7 +16,7 @@ import * as native from '../native';
 import type { Collection, ProjectView } from './types';
 import type { EnvironmentReply } from '../environments/types';
 import type { ExecutionResult } from '../http/types';
-import { useWorkspace } from './useWorkspace';
+import { SERVER_POLL_MS, useWorkspace } from './useWorkspace';
 
 const lifecycle = vi.hoisted(() => ({
   close: null as ((event: { preventDefault: () => void }) => Promise<void>) | null,
@@ -27,7 +27,8 @@ vi.mock('../native', () => ({
   isDesktop: vi.fn(() => true),
   getAppInfo: vi.fn(),
   chooseProject: vi.fn(),
-  refreshServerProject: vi.fn(),
+  refreshServerWorkspace: vi.fn(),
+  deleteServerProject: vi.fn(),
   restoreLastProject: vi.fn(),
   rememberProject: vi.fn(),
   saveCollection: vi.fn(),
@@ -165,21 +166,6 @@ async function openSettings(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('local project workflows', () => {
-  it('shows a failed automatic server publish without discarding the saved workspace', async () => {
-    await setupCollection();
-    const failed = events.handlers.get('server-sync-failed');
-    expect(failed).toBeDefined();
-    act(() =>
-      failed!({
-        payload: {
-          handle: stored.handle,
-          message: 'Saved in the workspace, but not yet on the server: synthetic conflict',
-        },
-      }),
-    );
-    expect(await screen.findByText(/not yet on the server: synthetic conflict/)).toBeVisible();
-    expect(screen.getByRole('button', { name: 'New request in Shop API' })).toBeVisible();
-  });
   it('sends the unsaved draft with a 60-second default and displays response views', async () => {
     const user = await setupCollection();
     await user.click(screen.getByRole('button', { name: 'New request in Shop API' }));
@@ -1625,35 +1611,158 @@ it('requires explicit confirmation when moving between different imported OpenAP
   );
 });
 
-it('loads a fresh server workspace while retaining saved edits as a read-only recovery project', async () => {
-  stored.serverOwned = true;
-  stored.serverSync = true;
-  vi.mocked(native.restoreLastProject).mockResolvedValue(structuredClone(stored));
-  const recovery = { ...structuredClone(stored), readOnly: true, serverSync: false };
-  const fresh = {
-    ...structuredClone(stored),
-    handle: 'fresh-handle',
-    directory: '/synthetic/fresh',
-    data: { ...stored.data, name: 'Remote saved name' },
-  };
-  vi.mocked(native.refreshServerProject).mockResolvedValue({ recovery, workspace: fresh });
-  const { result } = renderHook(() => useWorkspace());
-  await waitFor(() => expect(result.current.busy).toBe(false));
-  await act(async () => {
-    await result.current.refreshServerProject(stored.handle);
-  });
-  expect(result.current.projects).toEqual([recovery, fresh]);
-  expect(result.current.activeHandle).toBe(fresh.handle);
-  expect(native.closeProject).not.toHaveBeenCalled();
-});
+describe('server workspaces', () => {
+  function serverProject(): { view: ProjectView; request: Collection['requests'][number] } {
+    const request = {
+      id: crypto.randomUUID(),
+      name: 'Version',
+      folderId: null,
+      method: 'GET',
+      url: '{{baseUrl}}/api/v0/info/version',
+      params: [],
+      headers: [],
+      body: { kind: 'none' as const, text: '', fields: [], file: null },
+    };
+    stored.serverOwned = true;
+    stored.serverSync = true;
+    stored.collections = [
+      {
+        revision: 'collection-a',
+        data: {
+          schemaVersion: 1,
+          id: crypto.randomUUID(),
+          name: 'Synthetic API',
+          auth: { kind: 'none' },
+          folders: [],
+          requests: [request],
+        },
+      },
+    ];
+    vi.mocked(native.restoreLastProject).mockResolvedValue(structuredClone(stored));
+    return { view: structuredClone(stored), request };
+  }
+  function serverChanged(url: string) {
+    const changed = structuredClone(stored);
+    changed.collections[0]!.revision = 'collection-b';
+    changed.collections[0]!.data.requests[0]!.url = url;
+    return changed;
+  }
+  async function editedRequest() {
+    const { request } = serverProject();
+    const hook = renderHook(() => useWorkspace());
+    await waitFor(() => expect(hook.result.current.busy).toBe(false));
+    act(() => hook.result.current.openRequest(stored.collections[0]!.data.id, request));
+    act(() => hook.result.current.updateDraft({ url: 'https://synthetic.invalid/mine' }));
+    return { hook, request };
+  }
 
-it('does not replace server workspaces while another editor has unsaved changes', async () => {
-  const { result } = renderHook(() => useWorkspace(true));
-  await waitFor(() => expect(result.current.busy).toBe(false));
-  await expect(result.current.refreshServerProject('workspace-handle')).rejects.toThrow(
-    'Save or close unsaved editors',
-  );
-  expect(native.refreshServerProject).not.toHaveBeenCalled();
+  it('lets unedited editors follow server changes when the window regains focus', async () => {
+    const { request } = serverProject();
+    const { result } = renderHook(() => useWorkspace());
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    act(() => result.current.openRequest(stored.collections[0]!.data.id, request));
+    vi.mocked(native.refreshServerWorkspace).mockResolvedValue(
+      serverChanged('{{baseUrl}}/api/v1/info/version'),
+    );
+    act(() => window.dispatchEvent(new Event('focus')));
+    await waitFor(() => expect(result.current.draft?.url).toBe('{{baseUrl}}/api/v1/info/version'));
+    expect(native.refreshServerWorkspace).toHaveBeenCalledWith(stored.handle);
+    expect(result.current.project?.collections[0]?.revision).toBe('collection-b');
+    expect(result.current.error).toBeNull();
+  });
+
+  it('polls open server workspaces but not local projects', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      serverProject();
+      vi.mocked(native.refreshServerWorkspace).mockResolvedValue(structuredClone(stored));
+      const { result } = renderHook(() => useWorkspace());
+      await waitFor(() => expect(result.current.busy).toBe(false));
+      await act(async () => vi.advanceTimersByTimeAsync(SERVER_POLL_MS));
+      expect(native.refreshServerWorkspace).toHaveBeenCalledTimes(1);
+      await act(async () => result.current.closeProject());
+      await waitFor(() => expect(result.current.projects).toEqual([]));
+      await act(async () => vi.advanceTimersByTimeAsync(SERVER_POLL_MS * 2));
+      expect(native.refreshServerWorkspace).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps edits that the server changed meanwhile and asks before overwriting', async () => {
+    const { hook } = await editedRequest();
+    const { result } = hook;
+    vi.mocked(native.refreshServerWorkspace).mockResolvedValue(
+      serverChanged('{{baseUrl}}/api/v1/info/version'),
+    );
+    await act(async () => result.current.refreshServerWorkspace(stored.handle));
+    expect(result.current.draft).toMatchObject({
+      url: 'https://synthetic.invalid/mine',
+      serverChanged: true,
+    });
+    expect(result.current.error).toContain('“Version” was changed on the server');
+    act(() => void result.current.saveDraft());
+    await waitFor(() => expect(result.current.confirmation?.message).toContain('Overwrite'));
+    act(() => result.current.confirmation!.resolve(false));
+    expect(native.saveCollection).not.toHaveBeenCalled();
+    act(() => void result.current.saveDraft());
+    await waitFor(() => expect(result.current.confirmation).not.toBeNull());
+    act(() => result.current.confirmation!.resolve(true));
+    await waitFor(() => expect(native.saveCollection).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(native.saveCollection).mock.calls[0]![2]).toBe('collection-b');
+    await waitFor(() => expect(result.current.draft?.serverChanged).toBe(false));
+    expect(result.current.draft?.url).toBe('https://synthetic.invalid/mine');
+  });
+
+  it('offers the server version or the own version after a rejected save', async () => {
+    const { hook } = await editedRequest();
+    const { result } = hook;
+    vi.mocked(native.saveCollection).mockRejectedValueOnce(
+      'Not saved: a request was changed by anna meanwhile. Your change was not applied; reload the project to see the current version.',
+    );
+    const refreshed = serverChanged('{{baseUrl}}/api/v2/info/version');
+    vi.mocked(native.refreshServerWorkspace).mockResolvedValue(refreshed);
+    await act(async () => result.current.saveDraft());
+    await waitFor(() => expect(result.current.conflict?.message).toContain('changed by anna'));
+    expect(result.current.draft?.url).toBe('https://synthetic.invalid/mine');
+    act(() => result.current.resolveConflict('mine'));
+    await waitFor(() => expect(native.saveCollection).toHaveBeenCalledTimes(2));
+    const [, data, revision] = vi.mocked(native.saveCollection).mock.calls[1]!;
+    expect(revision).toBe('collection-b');
+    expect(data.requests[0]!.url).toBe('https://synthetic.invalid/mine');
+    await waitFor(() => expect(result.current.conflict).toBeNull());
+  });
+
+  it('replaces the edits with the server version when chosen', async () => {
+    const { hook } = await editedRequest();
+    const { result } = hook;
+    vi.mocked(native.saveCollection).mockRejectedValueOnce(
+      'Not saved: a request was changed by anna meanwhile. Your change was not applied; reload the project to see the current version.',
+    );
+    vi.mocked(native.refreshServerWorkspace).mockResolvedValue(
+      serverChanged('{{baseUrl}}/api/v2/info/version'),
+    );
+    await act(async () => result.current.saveDraft());
+    await waitFor(() => expect(result.current.conflict).not.toBeNull());
+    act(() => result.current.resolveConflict('server'));
+    await waitFor(() => expect(result.current.draft?.url).toBe('{{baseUrl}}/api/v2/info/version'));
+    expect(native.saveCollection).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes open copies before deleting a server project', async () => {
+    serverProject();
+    vi.mocked(native.deleteServerProject).mockResolvedValue();
+    const { result } = renderHook(() => useWorkspace());
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    let deleted = false;
+    await act(async () => {
+      deleted = await result.current.deleteServerProject(stored.data.id, 7);
+    });
+    expect(deleted).toBe(true);
+    expect(native.closeProject).toHaveBeenCalledWith(stored.handle);
+    expect(native.deleteServerProject).toHaveBeenCalledWith(stored.data.id, 7);
+    expect(result.current.projects).toEqual([]);
+  });
 });
 
 it('restores a retained recovery copy without replacing it with the current server workspace', async () => {

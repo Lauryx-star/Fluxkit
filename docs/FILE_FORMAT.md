@@ -239,13 +239,16 @@ verified server URL and account UUID under `server-accounts/<SHA-256>/`. Each ca
 has a `.fluxkit/server-cache.json` owner marker; editable workspace generations instead have
 `.fluxkit/server-workspace.json` with `serverUrl`, `accountId`, `serverProjectId` and `revision`.
 An atomic per-project UUID pointer selects the current generation. These markers and pointers
-are machine-local metadata, excluded from project snapshot uploads.
+are machine-local metadata and are never uploaded.
 
-Explicit conflict recovery retains the previous workspace files and adds a
-`.fluxkit/server-recovery` marker. It opens that generation read-only and creates a separate
-current workspace for manual merge/retry. `ProjectView.serverOwned` identifies server data;
-`serverRecovery` identifies retained edits, independently of online status. Recovery copies
-remain identifiable after restart. Native access verifies account ownership even through
+An editable workspace also stores the last known server state in `.fluxkit/server-tree.json`:
+one entry per project, collection, folder, request, environment and variable with its server
+revision and ordering `position`, plus the change-feed position `seq`. The ordinary project
+files are rendered from it whenever the server state is loaded; each save is compared with it to
+send only changed rows. Edit the workspace through Fluxkit rather than by hand.
+`ProjectView.serverOwned` identifies server data. Read-only recovery copies created by earlier
+builds (`.fluxkit/server-recovery`, `serverRecovery`) still open read-only and remain
+identifiable after restart. Native access verifies account ownership even through
 previous handles or the ordinary folder chooser. Legacy server markers without `accountId`
 are preserved but rejected rather than adopted by a different account. See
 [server account isolation and recovery](SELF_HOSTED_BACKEND.md#account-isolation-and-workspace-recovery).

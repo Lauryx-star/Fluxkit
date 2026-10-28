@@ -16,7 +16,6 @@ import {
   registerServerAccount,
   removeServerProjectMember,
   setServerConnection,
-  syncServerProject,
   setServerUserStatus,
   updateServerProjectMember,
   type ServerConnection as Connection,
@@ -37,11 +36,14 @@ export function ServerConnection({
   localProjects,
   onOpenProject,
   onRefreshProject,
+  onDeleteProject,
 }: {
   onClose: () => void;
   localProjects: ProjectView[];
   onOpenProject: (projectId: string) => Promise<void>;
   onRefreshProject: (handle: string) => Promise<void>;
+  /** Resolves false when the user kept the project open instead. */
+  onDeleteProject: (projectId: string, revision: number) => Promise<boolean>;
 }) {
   const [connection, setConnection] = useState<Connection | null>(null);
   const [projects, setProjects] = useState<ServerProject[]>([]);
@@ -61,7 +63,7 @@ export function ServerConnection({
   const [adminUsers, setAdminUsers] = useState<ServerAccountAdminView[]>([]);
   const [teamProjectName, setTeamProjectName] = useState('');
   const [transferHandle, setTransferHandle] = useState<string | null>(null);
-  const [refreshHandle, setRefreshHandle] = useState<string | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<ServerProject | null>(null);
   const [step, setStep] = useState<StepId>('vault');
   const hasServerProjects = localProjects.some(
     (project) => project.serverOwned || project.serverSync || project.readOnly,
@@ -263,9 +265,8 @@ export function ServerConnection({
             </p>
             <p>
               Projects can be edited when your account has write access and the server is online.
-              Every saved change in a server workspace is published to the server automatically.
-              Offline snapshots are read-only. After a failed publish, the next save retries it;
-              Sync saved changes under Server workspaces retries it immediately.
+              Every change in a server workspace is saved on the server immediately, and changes by
+              other members appear automatically. Offline snapshots are read-only.
             </p>
             <label className="dialog-label">
               Server URL
@@ -350,6 +351,7 @@ export function ServerConnection({
                         {projects.map((project) => (
                           <li key={project.id}>
                             {project.name} <span>({project.kind})</span>{' '}
+                            <span className="server-project-meta">{projectDetails(project)}</span>{' '}
                             <button
                               type="button"
                               className="secondary-button"
@@ -381,6 +383,22 @@ export function ServerConnection({
                                 Manage members
                               </button>
                             )}
+                            {account?.isServerAdmin &&
+                              project.kind === 'team' &&
+                              project.collectionCount === 0 && (
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  disabled={busy}
+                                  onClick={() => {
+                                    setError(null);
+                                    setNotice(null);
+                                    setDeleteCandidate(project);
+                                  }}
+                                >
+                                  Delete project
+                                </button>
+                              )}
                           </li>
                         ))}
                       </ul>
@@ -388,6 +406,55 @@ export function ServerConnection({
                       <p>No projects are available to this account.</p>
                     )}
                   </section>
+                  {deleteCandidate && (
+                    <section aria-label="Confirm project deletion">
+                      <h3>Delete “{deleteCandidate.name}”?</h3>
+                      <p>
+                        The empty project and its member list are removed from the server for
+                        everyone. Open copies on this device are closed. This cannot be undone.
+                      </p>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        disabled={busy}
+                        onClick={() => {
+                          const target = deleteCandidate;
+                          setBusy(true);
+                          setError(null);
+                          void onDeleteProject(target.id, target.revision)
+                            .then(async (deleted) => {
+                              setDeleteCandidate(null);
+                              if (deleted) {
+                                if (memberProject === target.id) {
+                                  setMemberProject(null);
+                                  setMembers([]);
+                                }
+                                setNotice(`Deleted “${target.name}” from the server.`);
+                              }
+                              setProjects(await listServerProjects());
+                            })
+                            .catch((reason: unknown) =>
+                              setError(
+                                typeof reason === 'string'
+                                  ? reason
+                                  : 'Could not delete the project.',
+                              ),
+                            )
+                            .finally(() => setBusy(false));
+                        }}
+                      >
+                        Delete project
+                      </button>{' '}
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={busy}
+                        onClick={() => setDeleteCandidate(null)}
+                      >
+                        Keep project
+                      </button>
+                    </section>
+                  )}
                   {memberProject && (
                     <section aria-label="Manage team project members">
                       <h3>Team project members</h3>
@@ -467,101 +534,52 @@ export function ServerConnection({
                 </>
               )}
               {step === 'workspaces' && (
-                <>
-                  <section aria-label="Sync server workspaces">
-                    <h3>Server workspaces on this device</h3>
-                    {localProjects.filter((project) => project.serverSync).length ? (
-                      <ul>
-                        {localProjects
-                          .filter((project) => project.serverSync)
-                          .map((project) => (
-                            <li key={project.handle}>
-                              {project.data.name}{' '}
-                              <button
-                                type="button"
-                                className="secondary-button"
-                                disabled={busy}
-                                onClick={() => {
-                                  setBusy(true);
-                                  setError(null);
-                                  setNotice(null);
-                                  void syncServerProject(project.handle)
-                                    .then(async (saved) => {
-                                      setProjects(await listServerProjects());
-                                      setNotice(
-                                        `Saved “${saved.name}” to the server. The local workspace remains available offline.`,
-                                      );
-                                    })
-                                    .catch((reason: unknown) =>
-                                      setError(
-                                        typeof reason === 'string'
-                                          ? reason
-                                          : 'Could not sync this server workspace.',
-                                      ),
-                                    )
-                                    .finally(() => setBusy(false));
-                                }}
-                              >
-                                Sync saved changes
-                              </button>{' '}
-                              <button
-                                type="button"
-                                className="secondary-button"
-                                disabled={busy}
-                                onClick={() => setRefreshHandle(project.handle)}
-                              >
-                                Load server version
-                              </button>
-                            </li>
-                          ))}
-                      </ul>
-                    ) : (
-                      <p>Open an editable server project to create a workspace here.</p>
-                    )}
-                  </section>
-                  {refreshHandle && (
-                    <section aria-label="Confirm workspace recovery">
-                      <h3>Load current server version?</h3>
-                      <p>
-                        Your saved local edits will remain as a read-only recovery copy in the
-                        project list. Save or close unsaved editors first. Copy any changes you want
-                        to keep into the new workspace, then sync again. This does not overwrite the
-                        server.
-                      </p>
-                      <button
-                        type="button"
-                        className="primary-button"
-                        disabled={busy}
-                        onClick={() => {
-                          setBusy(true);
-                          setError(null);
-                          void onRefreshProject(refreshHandle)
-                            .then(onClose)
-                            .catch((reason: unknown) =>
-                              setError(
-                                reason instanceof Error
-                                  ? reason.message
-                                  : typeof reason === 'string'
-                                    ? reason
-                                    : 'Could not load the server version. Your saved edits remain available.',
-                              ),
-                            )
-                            .finally(() => setBusy(false));
-                        }}
-                      >
-                        Keep recovery copy and load
-                      </button>{' '}
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        disabled={busy}
-                        onClick={() => setRefreshHandle(null)}
-                      >
-                        Cancel recovery
-                      </button>
-                    </section>
+                <section aria-label="Server workspaces">
+                  <h3>Server workspaces on this device</h3>
+                  <p>
+                    Changes are saved on the server as you make them. Other members’ changes are
+                    loaded every few seconds; refresh to load them now.
+                  </p>
+                  {localProjects.filter((project) => project.serverSync).length ? (
+                    <ul>
+                      {localProjects
+                        .filter((project) => project.serverSync)
+                        .map((project) => (
+                          <li key={project.handle}>
+                            {project.data.name}{' '}
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              disabled={busy}
+                              onClick={() => {
+                                setBusy(true);
+                                setError(null);
+                                setNotice(null);
+                                void onRefreshProject(project.handle)
+                                  .then(() =>
+                                    setNotice(
+                                      `Loaded the latest server version of “${project.data.name}”.`,
+                                    ),
+                                  )
+                                  .catch((reason: unknown) =>
+                                    setError(
+                                      typeof reason === 'string'
+                                        ? reason
+                                        : 'Could not load the server version.',
+                                    ),
+                                  )
+                                  .finally(() => setBusy(false));
+                              }}
+                            >
+                              Refresh from server
+                            </button>
+                          </li>
+                        ))}
+                    </ul>
+                  ) : (
+                    <p>Open an editable server project to create a workspace here.</p>
                   )}
-                </>
+                </section>
               )}
               {step === 'admin' && account?.isServerAdmin && (
                 <section aria-label="Server account administration">
@@ -768,4 +786,20 @@ export function ServerConnection({
       </form>
     </Modal>
   );
+}
+
+function projectDetails(project: ServerProject) {
+  const parts: string[] = [];
+  if (project.createdAt) {
+    const created = new Date(project.createdAt);
+    if (!Number.isNaN(created.getTime())) {
+      parts.push(`created ${created.toLocaleDateString()}`);
+    }
+  }
+  if (typeof project.collectionCount === 'number') {
+    parts.push(
+      `${project.collectionCount} ${project.collectionCount === 1 ? 'collection' : 'collections'}`,
+    );
+  }
+  return parts.join(' · ');
 }

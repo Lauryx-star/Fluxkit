@@ -144,11 +144,13 @@ users receive a personal project; personal data is visible only to its owner. Te
 share all collections among members. Project administrators manage team membership. There are
 no private collections in a team project.
 
-The server is intended to store versioned project snapshots, ordinary project values, memberships,
-and per-user encrypted secret envelopes. Request history always remains local. Online project changes
-are saved in a separate local workspace and published to the server automatically after every
-save, with revision checks; offline snapshots are read-only. Local project files remain after upload. Local OS credential-store values
-are not uploaded until their ordinary-value and secret ownership rules are implemented.
+The server stores projects as individually versioned rows (collections, folders, requests,
+environments, variables), ordinary project values, memberships and per-user encrypted secret
+values. Request history always remains local. Changes in a server workspace are saved on the
+server as they are made; members editing different requests never conflict, and a save over a
+request someone else changed asks first. Other members' changes appear automatically. Offline
+copies are read-only. Local project files remain after upload. Local OS credential-store values
+are uploaded only when explicitly selected in the transfer preview.
 
 Local accounts require administrator approval before accessing project data. OIDC is an
 alternative server authentication mode, not a simultaneous option. The provider secret stays

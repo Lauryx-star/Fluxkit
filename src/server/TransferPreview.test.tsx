@@ -41,7 +41,7 @@ it('selects no values automatically, requires preparation, and uploads only the 
     name: preview.name,
     kind: 'personal',
     revision: 1,
-    snapshot: '{}',
+    collectionCount: 1,
   });
   render(
     <TransferPreview

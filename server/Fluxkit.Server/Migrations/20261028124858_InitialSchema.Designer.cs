@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Fluxkit.Server.Migrations
 {
     [DbContext(typeof(FluxkitDb))]
-    [Migration("20261027075315_SharedValuesAndAccountVault")]
-    partial class SharedValuesAndAccountVault
+    [Migration("20261028124858_InitialSchema")]
+    partial class InitialSchema
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -43,61 +43,88 @@ namespace Fluxkit.Server.Migrations
                     b.ToTable("AccountVaults");
                 });
 
-            modelBuilder.Entity("Fluxkit.Server.EncryptedSecretRecord", b =>
+            modelBuilder.Entity("Fluxkit.Server.CollectionRecord", b =>
                 {
-                    b.Property<Guid>("ProjectId")
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid");
+                    b.Property<string>("Auth")
+                        .HasColumnType("jsonb");
 
-                    b.Property<Guid>("VariableId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("EnvironmentId")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<string>("Algorithm")
+                    b.Property<string>("Name")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
 
-                    b.Property<string>("Ciphertext")
-                        .IsRequired()
-                        .HasMaxLength(16384)
-                        .HasColumnType("character varying(16384)");
+                    b.Property<string>("OpenApi")
+                        .HasColumnType("jsonb");
 
-                    b.Property<string>("KdfParameters")
-                        .IsRequired()
-                        .HasMaxLength(1024)
-                        .HasColumnType("character varying(1024)");
-
-                    b.Property<string>("Nonce")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<string>("Salt")
+                    b.Property<string>("Position")
                         .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
 
-                    b.Property<string>("WrappedKey")
+                    b.Property<string>("Postman")
+                        .HasColumnType("jsonb");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProjectId");
+
+                    b.ToTable("Collections", (string)null);
+                });
+
+            modelBuilder.Entity("Fluxkit.Server.EnvironmentRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Name")
                         .IsRequired()
-                        .HasMaxLength(16384)
-                        .HasColumnType("character varying(16384)");
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
 
-                    b.Property<string>("WrappedKeyNonce")
+                    b.Property<string>("Position")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
 
-                    b.HasKey("ProjectId", "UserId", "VariableId", "EnvironmentId");
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid");
 
-                    b.HasIndex("UserId");
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
 
-                    b.ToTable("EncryptedSecrets");
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProjectId");
+
+                    b.HasIndex("ProjectId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("Environments", (string)null);
                 });
 
             modelBuilder.Entity("Fluxkit.Server.FluxkitUser", b =>
@@ -177,6 +204,95 @@ namespace Fluxkit.Server.Migrations
                     b.ToTable("AspNetUsers", (string)null);
                 });
 
+            modelBuilder.Entity("Fluxkit.Server.FolderRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Auth")
+                        .HasColumnType("jsonb");
+
+                    b.Property<Guid>("CollectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<Guid?>("ParentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Position")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CollectionId");
+
+                    b.HasIndex("ParentId");
+
+                    b.HasIndex("ProjectId");
+
+                    b.ToTable("Folders", (string)null);
+                });
+
+            modelBuilder.Entity("Fluxkit.Server.ProjectChangeRecord", b =>
+                {
+                    b.Property<long>("Seq")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Seq"));
+
+                    b.Property<DateTimeOffset>("ChangedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("ChangedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("EntityId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("EntityKind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Seq");
+
+                    b.HasIndex("ProjectId", "Seq");
+
+                    b.ToTable("ProjectChanges", (string)null);
+                });
+
             modelBuilder.Entity("Fluxkit.Server.ProjectMembership", b =>
                 {
                     b.Property<Guid>("ProjectId")
@@ -206,6 +322,12 @@ namespace Fluxkit.Server.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("Auth")
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("Kind")
                         .IsRequired()
                         .HasMaxLength(16)
@@ -220,23 +342,14 @@ namespace Fluxkit.Server.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<long>("Revision")
+                        .IsConcurrencyToken()
                         .HasColumnType("bigint");
-
-                    b.Property<string>("SharedValues")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("jsonb")
-                        .HasDefaultValue("[]");
-
-                    b.Property<long>("SharedValuesRevision")
-                        .HasColumnType("bigint");
-
-                    b.Property<string>("Snapshot")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid");
 
                     b.HasKey("Id");
 
@@ -245,27 +358,180 @@ namespace Fluxkit.Server.Migrations
                     b.ToTable("Projects");
                 });
 
-            modelBuilder.Entity("Fluxkit.Server.ProjectSecrets", b =>
+            modelBuilder.Entity("Fluxkit.Server.RequestRecord", b =>
                 {
-                    b.Property<Guid>("ProjectId")
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
-                    b.Property<Guid>("UserId")
+                    b.Property<Guid>("CollectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Details")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<Guid?>("FolderId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Method")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Position")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<Guid>("ProjectId")
                         .HasColumnType("uuid");
 
                     b.Property<long>("Revision")
                         .IsConcurrencyToken()
                         .HasColumnType("bigint");
 
-                    b.Property<string>("Values")
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Url")
                         .IsRequired()
-                        .HasColumnType("jsonb");
+                        .HasColumnType("text");
 
-                    b.HasKey("ProjectId", "UserId");
+                    b.HasKey("Id");
 
-                    b.HasIndex("UserId");
+                    b.HasIndex("CollectionId");
 
-                    b.ToTable("ProjectSecrets");
+                    b.HasIndex("FolderId");
+
+                    b.HasIndex("ProjectId");
+
+                    b.ToTable("Requests", (string)null);
+                });
+
+            modelBuilder.Entity("Fluxkit.Server.SharedValueRecord", b =>
+                {
+                    b.Property<Guid>("VariableId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("EnvironmentId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Value")
+                        .IsRequired()
+                        .HasMaxLength(2560)
+                        .HasColumnType("character varying(2560)");
+
+                    b.HasKey("VariableId", "EnvironmentId");
+
+                    b.HasIndex("ProjectId");
+
+                    b.ToTable("SharedValues", (string)null);
+                });
+
+            modelBuilder.Entity("Fluxkit.Server.VariableRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Position")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("Secret")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProjectId");
+
+                    b.HasIndex("ProjectId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("Variables", (string)null);
+                });
+
+            modelBuilder.Entity("Fluxkit.Server.VaultValueRecord", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("VariableId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("EnvironmentId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Ciphertext")
+                        .IsRequired()
+                        .HasMaxLength(4096)
+                        .HasColumnType("character varying(4096)");
+
+                    b.Property<string>("Nonce")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("UserId", "VariableId", "EnvironmentId");
+
+                    b.HasIndex("VariableId");
+
+                    b.HasIndex("ProjectId", "UserId");
+
+                    b.ToTable("VaultValues", (string)null);
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole<System.Guid>", b =>
@@ -407,17 +673,49 @@ namespace Fluxkit.Server.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("Fluxkit.Server.EncryptedSecretRecord", b =>
+            modelBuilder.Entity("Fluxkit.Server.CollectionRecord", b =>
                 {
                     b.HasOne("Fluxkit.Server.ProjectRecord", null)
                         .WithMany()
                         .HasForeignKey("ProjectId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
 
-                    b.HasOne("Fluxkit.Server.FluxkitUser", null)
+            modelBuilder.Entity("Fluxkit.Server.EnvironmentRecord", b =>
+                {
+                    b.HasOne("Fluxkit.Server.ProjectRecord", null)
                         .WithMany()
-                        .HasForeignKey("UserId")
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Fluxkit.Server.FolderRecord", b =>
+                {
+                    b.HasOne("Fluxkit.Server.CollectionRecord", null)
+                        .WithMany()
+                        .HasForeignKey("CollectionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Fluxkit.Server.FolderRecord", null)
+                        .WithMany()
+                        .HasForeignKey("ParentId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("Fluxkit.Server.ProjectRecord", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Fluxkit.Server.ProjectChangeRecord", b =>
+                {
+                    b.HasOne("Fluxkit.Server.ProjectRecord", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
@@ -437,7 +735,51 @@ namespace Fluxkit.Server.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("Fluxkit.Server.ProjectSecrets", b =>
+            modelBuilder.Entity("Fluxkit.Server.RequestRecord", b =>
+                {
+                    b.HasOne("Fluxkit.Server.CollectionRecord", null)
+                        .WithMany()
+                        .HasForeignKey("CollectionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Fluxkit.Server.FolderRecord", null)
+                        .WithMany()
+                        .HasForeignKey("FolderId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("Fluxkit.Server.ProjectRecord", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Fluxkit.Server.SharedValueRecord", b =>
+                {
+                    b.HasOne("Fluxkit.Server.ProjectRecord", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Fluxkit.Server.VariableRecord", null)
+                        .WithMany()
+                        .HasForeignKey("VariableId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Fluxkit.Server.VariableRecord", b =>
+                {
+                    b.HasOne("Fluxkit.Server.ProjectRecord", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Fluxkit.Server.VaultValueRecord", b =>
                 {
                     b.HasOne("Fluxkit.Server.ProjectRecord", null)
                         .WithMany()
@@ -448,6 +790,12 @@ namespace Fluxkit.Server.Migrations
                     b.HasOne("Fluxkit.Server.FluxkitUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Fluxkit.Server.VariableRecord", null)
+                        .WithMany()
+                        .HasForeignKey("VariableId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

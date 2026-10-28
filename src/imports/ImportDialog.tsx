@@ -66,9 +66,8 @@ export function ImportDialog({
         </p>
         {serverOwned && (
           <p role="note">
-            This is a server workspace. After saving, the import is synced to the server like{' '}
-            <strong>Sync saved changes</strong>: any other saved, not yet synced edits in this
-            workspace are uploaded too.
+            This is a server workspace. The imported collection and variables are saved on the
+            server in one step; if the server refuses them, nothing is kept.
           </p>
         )}
         <div className="import-summary">

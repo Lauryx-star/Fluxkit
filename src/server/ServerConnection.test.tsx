@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it, vi } from 'vitest';
 import * as native from '../native';
@@ -8,6 +8,9 @@ import { ServerConnection } from './ServerConnection';
 vi.mock('../native');
 const onOpenProject = vi.fn(async () => {});
 const onRefreshProject = vi.fn<(handle: string) => Promise<void>>(async () => {});
+const onDeleteProject = vi.fn<(projectId: string, revision: number) => Promise<boolean>>(
+  async () => true,
+);
 const onClose = vi.fn();
 const workspace: ProjectView = {
   handle: 'workspace-handle',
@@ -20,6 +23,9 @@ const workspace: ProjectView = {
 };
 beforeEach(() => {
   vi.resetAllMocks();
+  onOpenProject.mockResolvedValue(undefined);
+  onRefreshProject.mockResolvedValue(undefined);
+  onDeleteProject.mockResolvedValue(true);
   vi.mocked(native.serverVaultAction).mockResolvedValue({ configured: false, unlocked: false });
   vi.mocked(native.getServerConnection).mockResolvedValue({
     authenticated: true,
@@ -49,6 +55,7 @@ function show(projects: ProjectView[] = []) {
       localProjects={projects}
       onOpenProject={onOpenProject}
       onRefreshProject={onRefreshProject}
+      onDeleteProject={onDeleteProject}
       onClose={onClose}
     />,
   );
@@ -87,40 +94,106 @@ it('allows signing out while unrelated local projects stay open', async () => {
   expect(native.closeProject).not.toHaveBeenCalled();
 });
 
-it('keeps sync conflicts visible and requires an explicit recovery choice', async () => {
+it('refreshes a server workspace on request without a manual sync step', async () => {
   const user = userEvent.setup();
-  vi.mocked(native.syncServerProject).mockRejectedValue(
-    'The server project changed. Local edits remain saved.',
-  );
   show([workspace]);
   await user.click(await screen.findByRole('tab', { name: 'Workspaces' }));
-  await user.click(await screen.findByRole('button', { name: 'Sync saved changes' }));
-  expect(await screen.findByRole('alert')).toHaveTextContent('Local edits remain saved');
-  expect(onRefreshProject).not.toHaveBeenCalled();
-  await user.click(screen.getByRole('button', { name: 'Load server version' }));
-  expect(screen.getByRole('region', { name: 'Confirm workspace recovery' })).toHaveTextContent(
-    'read-only recovery copy',
-  );
-  await user.click(screen.getByRole('button', { name: 'Cancel recovery' }));
-  expect(onRefreshProject).not.toHaveBeenCalled();
-  await user.click(screen.getByRole('button', { name: 'Load server version' }));
-  await user.click(screen.getByRole('button', { name: 'Keep recovery copy and load' }));
+  expect(screen.queryByRole('button', { name: 'Sync saved changes' })).not.toBeInTheDocument();
+  await user.click(await screen.findByRole('button', { name: 'Refresh from server' }));
   await waitFor(() => expect(onRefreshProject).toHaveBeenCalledWith(workspace.handle));
-  expect(onClose).toHaveBeenCalled();
+  expect(await screen.findByRole('status')).toHaveTextContent(
+    'Loaded the latest server version of “Synthetic workspace”',
+  );
+  expect(onClose).not.toHaveBeenCalled();
 });
 
-it('retains the recovery dialog and error when unsaved editors or network failure block refresh', async () => {
+it('keeps the workspace list usable when a refresh fails', async () => {
   const user = userEvent.setup();
-  onRefreshProject.mockRejectedValueOnce(
-    new Error('Save or close unsaved editors before loading the server version.'),
-  );
+  onRefreshProject.mockRejectedValueOnce('Could not reach the Fluxkit server.');
   show([workspace]);
   await user.click(await screen.findByRole('tab', { name: 'Workspaces' }));
-  await user.click(await screen.findByRole('button', { name: 'Load server version' }));
-  await user.click(screen.getByRole('button', { name: 'Keep recovery copy and load' }));
-  expect(await screen.findByRole('alert')).toHaveTextContent('Save or close unsaved editors');
-  expect(onClose).not.toHaveBeenCalled();
-  expect(screen.getByRole('button', { name: 'Keep recovery copy and load' })).toBeEnabled();
+  await user.click(await screen.findByRole('button', { name: 'Refresh from server' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Could not reach the Fluxkit server');
+  expect(screen.getByRole('button', { name: 'Refresh from server' })).toBeEnabled();
+});
+
+it('shows when each project was created and how many collections it has', async () => {
+  const user = userEvent.setup();
+  vi.mocked(native.listServerProjects).mockResolvedValue([
+    {
+      id: 'project-id',
+      name: 'Shared project',
+      kind: 'team',
+      revision: 1,
+      canEdit: true,
+      createdAt: '2026-10-01T08:00:00Z',
+      collectionCount: 3,
+    },
+  ]);
+  show();
+  await user.click(await screen.findByRole('tab', { name: 'Projects' }));
+  const item = (await screen.findByText(/Shared project/)).closest('li')!;
+  expect(item).toHaveTextContent(new Date('2026-10-01T08:00:00Z').toLocaleDateString());
+  expect(item).toHaveTextContent('3 collections');
+  expect(screen.queryByRole('button', { name: 'Delete project' })).not.toBeInTheDocument();
+});
+
+it('lets server administrators delete only empty team projects after confirming', async () => {
+  const user = userEvent.setup();
+  vi.mocked(native.getServerAccount).mockResolvedValue({
+    id: 'account-id',
+    username: 'Synthetic admin',
+    isServerAdmin: true,
+  });
+  vi.mocked(native.listServerAdminUsers).mockResolvedValue([]);
+  vi.mocked(native.listServerProjects)
+    .mockResolvedValueOnce([
+      { id: 'empty-id', name: 'Empty team', kind: 'team', revision: 4, collectionCount: 0 },
+      { id: 'full-id', name: 'Busy team', kind: 'team', revision: 2, collectionCount: 2 },
+      { id: 'mine-id', name: 'Personal', kind: 'personal', revision: 1, collectionCount: 0 },
+    ])
+    .mockResolvedValueOnce([
+      { id: 'full-id', name: 'Busy team', kind: 'team', revision: 2, collectionCount: 2 },
+    ]);
+  show();
+  await user.click(await screen.findByRole('tab', { name: 'Projects' }));
+  const buttons = await screen.findAllByRole('button', { name: 'Delete project' });
+  expect(buttons).toHaveLength(1);
+  await user.click(buttons[0]!);
+  const confirm = screen.getByRole('region', { name: 'Confirm project deletion' });
+  expect(confirm).toHaveTextContent('Delete “Empty team”?');
+  await user.click(screen.getByRole('button', { name: 'Keep project' }));
+  expect(onDeleteProject).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('button', { name: 'Delete project' }));
+  const region = screen.getByRole('region', { name: 'Confirm project deletion' });
+  await user.click(within(region).getByRole('button', { name: 'Delete project' }));
+  await waitFor(() => expect(onDeleteProject).toHaveBeenCalledWith('empty-id', 4));
+  expect(await screen.findByRole('status')).toHaveTextContent('Deleted “Empty team”');
+  const list = screen.getByRole('region', { name: 'Server projects' });
+  await waitFor(() => expect(list).not.toHaveTextContent('Empty team'));
+  expect(list).toHaveTextContent('Busy team');
+});
+
+it('shows why the server refused to delete a project', async () => {
+  const user = userEvent.setup();
+  vi.mocked(native.getServerAccount).mockResolvedValue({
+    id: 'account-id',
+    username: 'Synthetic admin',
+    isServerAdmin: true,
+  });
+  vi.mocked(native.listServerAdminUsers).mockResolvedValue([]);
+  vi.mocked(native.listServerProjects).mockResolvedValue([
+    { id: 'empty-id', name: 'Empty team', kind: 'team', revision: 4, collectionCount: 0 },
+  ]);
+  onDeleteProject.mockRejectedValueOnce(
+    'Only empty projects can be deleted. Remove its collections, environments and variables first.',
+  );
+  show();
+  await user.click(await screen.findByRole('tab', { name: 'Projects' }));
+  await user.click(await screen.findByRole('button', { name: 'Delete project' }));
+  const region = screen.getByRole('region', { name: 'Confirm project deletion' });
+  await user.click(within(region).getByRole('button', { name: 'Delete project' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Only empty projects');
 });
 
 it('discovers OIDC before showing password fields and signs in through the browser', async () => {
