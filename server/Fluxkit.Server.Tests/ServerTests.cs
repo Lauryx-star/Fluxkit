@@ -70,6 +70,8 @@ public sealed class ServerFixture : WebApplicationFactory<Program>, IAsyncLifeti
         Environment.SetEnvironmentVariable("Bootstrap__AdminUsername", "testadmin");
         Environment.SetEnvironmentVariable("Bootstrap__AdminPassword", "SyntheticAdmin42!password");
         Environment.SetEnvironmentVariable("Auth__Mode", "local");
+        // Tests read metrics from the registry; no fixed metrics port is opened.
+        Environment.SetEnvironmentVariable("Metrics__SnapshotSeconds", "0");
         using var client = CreateClient(); // Run production migrations and bootstrap.
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health/ready")).StatusCode);
     }

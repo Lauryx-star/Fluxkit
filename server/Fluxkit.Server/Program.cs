@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Prometheus;
 
 var builder = WebApplication.CreateBuilder(args);
 var mode = builder.Configuration["Auth:Mode"] ?? "local";
@@ -41,6 +42,7 @@ if (mode == "local" && (IsExampleSecret(builder.Configuration["Bootstrap:AdminUs
 var signingKey = new SymmetricSecurityKey(signingBytes);
 
 builder.Services.AddDbContext<FluxkitDb>(options => options.UseNpgsql(connection));
+builder.Services.AddSingleton<UsageMetrics>();
 builder.Services.AddIdentityCore<FluxkitUser>(options =>
     {
         options.User.RequireUniqueEmail = false;
@@ -105,10 +107,27 @@ builder.Services.AddRateLimiter(options => options.AddPolicy("oidc-poll", contex
     RateLimitPartition.GetFixedWindowLimiter(context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 120, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 })));
 var app = builder.Build();
+var usage = app.Services.GetRequiredService<UsageMetrics>();
 app.UseExceptionHandler();
+app.UseRouting();
+// Request counts and durations per route template (never per concrete path or identifier).
+app.UseHttpMetrics(options => options.SetMetricFactory(Metrics.WithCustomRegistry(usage.Registry)));
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
+app.Use(async (context, next) =>
+{
+    if (context.User.FindFirstValue(JwtRegisteredClaimNames.Sub) is { } subject && Guid.TryParse(subject, out var account))
+    {
+        usage.Seen(account);
+    }
+    await next();
+});
+if (app.Configuration.GetValue("Metrics:Enabled", true))
+{
+    // Prometheus scrape endpoint without login; restrict access at the reverse proxy.
+    app.MapMetrics("/metrics", usage.Registry).AllowAnonymous();
+}
 ValueEndpoints.Map(app);
 ProjectEndpoints.Map(app);
 app.MapGet("/health/ready", async (FluxkitDb db, CancellationToken cancellationToken) =>
@@ -136,6 +155,7 @@ if (mode == "local")
         var created = await users.CreateAsync(user, input.Password);
         if (!created.Succeeded)
             return Results.Conflict(new { error = "Account could not be created. The username may already be in use." });
+        usage.Registration("local");
         return Results.Accepted(value: new { status = "pendingApproval" });
     }).AllowAnonymous().RequireRateLimiting("auth");
 
@@ -147,10 +167,17 @@ if (mode == "local")
             return Results.Unauthorized();
         var user = await users.FindByNameAsync(input.Username.Trim());
         if (user is null || user.Status != "active")
+        {
+            usage.Login("local", user?.Status == "pending" ? "pending" : "rejected");
             return Results.Unauthorized();
+        }
         var result = await signIn.CheckPasswordSignInAsync(user, input.Password, lockoutOnFailure: true);
         if (!result.Succeeded)
+        {
+            usage.Login("local", "rejected");
             return Results.Unauthorized();
+        }
+        usage.Login("local", "success");
         return Results.Ok(AuthTokens.Create(user, configuration));
     }).AllowAnonymous().RequireRateLimiting("auth");
 
@@ -203,6 +230,7 @@ app.MapPost("/api/admin/users/{id:guid}/approve", async (
     if (user is null) return Results.NotFound();
     if (user.Status != "pending") return Results.Conflict(new { error = "Only pending accounts can be approved." });
     user.Status = "active";
+    usage.AccountChange("approved");
     if (!await db.Projects.AnyAsync(project => project.OwnerId == id && project.Kind == "personal", ct))
         db.Projects.Add(AuthTokens.CreatePersonalProject(id, user.UserName ?? "User"));
     await db.SaveChangesAsync(ct);
@@ -222,6 +250,7 @@ app.MapPut("/api/admin/users/{id:guid}/status", async (
             && candidate.Status == "active", ct))
         return Results.Conflict(new { error = "At least one active server administrator must remain." });
     if (user.Status == "pending") return Results.Conflict(new { error = "Pending accounts must use the approval action." });
+    if (user.Status != input.Status) { usage.AccountChange(input.Status == "active" ? "reactivated" : "disabled"); }
     user.Status = input.Status;
     await db.SaveChangesAsync(ct);
     return Results.NoContent();
@@ -246,6 +275,7 @@ app.MapDelete("/api/admin/users/{id:guid}", async (
     // Vault, encrypted values, memberships and identity rows cascade with the account.
     await db.Users.Where(candidate => candidate.Id == id).ExecuteDeleteAsync(ct);
     await transaction.CommitAsync(ct);
+    usage.AccountChange("deleted");
     return Results.NoContent();
 }).RequireAuthorization(policy => policy.RequireRole("serverAdmin"));
 

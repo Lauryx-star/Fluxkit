@@ -149,8 +149,6 @@ choices, validation results, and remaining work. Do not claim unexecuted checks 
 - Keep TLS verification enabled by default. Any relaxation requires an explicit feature
   decision and visible user control.
 - Never send a request with unresolved variables or inaccessible required values.
-- Do not add server endpoints, OpenAPI publishing, HATEOAS, or server health probes
-  merely because Fluxkit is an API client.
 
 ## 7. Files, variables, and environments
 
@@ -243,7 +241,6 @@ choices, validation results, and remaining work. Do not claim unexecuted checks 
   Record measurement conditions; do not invent performance claims or arbitrary guarantees.
 - Use local structured logs with useful event names and non-sensitive context.
 - Bound diagnostic log growth. Logging failures must not break normal application behavior.
-- Do not introduce Serilog, Seq, remote exporters, or a server monitoring stack.
 
 ## 10. Code organization and quality
 

@@ -69,11 +69,15 @@ public static class ProjectEndpoints
             return Results.Ok(result);
         }).RequireAuthorization();
 
-        app.MapGet("/api/projects/{id:guid}/changes", async (Guid id, long since, ClaimsPrincipal caller, FluxkitDb db, CancellationToken ct) =>
+        app.MapGet("/api/projects/{id:guid}/changes", async (Guid id, long since, ClaimsPrincipal caller, FluxkitDb db, UsageMetrics usage, CancellationToken ct) =>
         {
             var project = await Readable(db, id, User(caller), ct);
             if (project is null) { return Results.NotFound(); }
-            if (since < 0) { return Results.StatusCode(StatusCodes.Status410Gone); }
+            if (since < 0)
+            {
+                usage.FeedRead("reload");
+                return Results.StatusCode(StatusCodes.Status410Gone);
+            }
             await using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, ct);
             var seq = await Seq(db, id, ct);
             // Latest change per entity; the current row (or its absence) is what the client needs.
@@ -106,20 +110,21 @@ public static class ProjectEndpoints
                     : new { Kind = change.EntityKind, Id = change.EntityId, Operation = "delete", Revision = 0L, Data = (object?)null });
             }
             await transaction.CommitAsync(ct);
+            usage.FeedRead(changes.Count > 0 ? "changes" : "unchanged");
             return Results.Ok(new { Seq = seq, Changes = changes });
         }).RequireAuthorization();
 
-        app.MapPost("/api/projects/{id:guid}/changes", async (Guid id, ChangeBatch input, ClaimsPrincipal caller, FluxkitDb db, CancellationToken ct) =>
+        app.MapPost("/api/projects/{id:guid}/changes", async (Guid id, ChangeBatch input, ClaimsPrincipal caller, FluxkitDb db, UsageMetrics usage, CancellationToken ct) =>
         {
             var user = User(caller);
             var project = await Readable(db, id, user, ct);
             if (project is null) { return Results.NotFound(); }
             if (!await Writable(db, project, user, ct)) { return Results.Forbid(); }
             if (input?.Operations is null) { return Results.BadRequest(new { error = "A batch needs operations." }); }
-            return await Commit(db, project, user, input.Operations, ct);
+            return await Commit(db, project, user, input.Operations, usage, ct);
         }).RequireAuthorization();
 
-        app.MapPost("/api/projects", async (CreateProjectInput input, ClaimsPrincipal caller, FluxkitDb db, CancellationToken ct) =>
+        app.MapPost("/api/projects", async (CreateProjectInput input, ClaimsPrincipal caller, FluxkitDb db, UsageMetrics usage, CancellationToken ct) =>
         {
             var user = User(caller);
             if (input is null || input.Name is null) { return Results.BadRequest(); }
@@ -164,10 +169,11 @@ public static class ProjectEndpoints
                 if (values is not null) { return values; }
             }
             await transaction.CommitAsync(ct);
+            usage.ProjectCreated(kind, input.Tree is null ? "blank" : "upload");
             return Results.Created($"/api/projects/{id}", new { project.Id, project.Name, project.Kind, project.Revision, project.CreatedAt });
         }).RequireAuthorization();
 
-        app.MapDelete("/api/projects/{id:guid}", async (Guid id, ClaimsPrincipal caller, HttpRequest request, FluxkitDb db, CancellationToken ct) =>
+        app.MapDelete("/api/projects/{id:guid}", async (Guid id, ClaimsPrincipal caller, HttpRequest request, FluxkitDb db, UsageMetrics usage, CancellationToken ct) =>
         {
             if (!caller.IsInRole("serverAdmin")) { return Results.Forbid(); }
             var project = await db.Projects.SingleOrDefaultAsync(item => item.Id == id, ct);
@@ -185,6 +191,7 @@ public static class ProjectEndpoints
             var deleted = await db.Projects.Where(item => item.Id == id && item.Revision == expected).ExecuteDeleteAsync(ct);
             if (deleted == 0) { return Results.Conflict(new { error = "The project changed. Reload before deleting." }); }
             await transaction.CommitAsync(ct);
+            usage.ProjectDeleted();
             return Results.NoContent();
         }).RequireAuthorization();
     }
@@ -217,7 +224,24 @@ public static class ProjectEndpoints
         }
     }
 
-    private static async Task<IResult> Commit(FluxkitDb db, ProjectRecord project, Guid user, List<ChangeOperation> operations, CancellationToken ct)
+    private static async Task<IResult> Commit(FluxkitDb db, ProjectRecord project, Guid user, List<ChangeOperation> operations, UsageMetrics usage, CancellationToken ct)
+    {
+        var result = await CommitCore(db, project, user, operations, ct);
+        var status = (result as IStatusCodeHttpResult)?.StatusCode ?? 200;
+        usage.Batch(status switch { 200 => "applied", 409 => "conflict", _ => "rejected" });
+        if (status == 200)
+        {
+            foreach (var operation in operations)
+            {
+                usage.Operation(Kinds.Contains(operation.Kind) ? operation.Kind : "other", operation.Op == "delete" ? "delete" : "put");
+            }
+        }
+        return result;
+    }
+
+    private static readonly HashSet<string> Kinds = ["project", "collection", "folder", "request", "environment", "variable"];
+
+    private static async Task<IResult> CommitCore(FluxkitDb db, ProjectRecord project, Guid user, List<ChangeOperation> operations, CancellationToken ct)
     {
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
         // Batches of one project commit one after another, so feed sequence numbers become

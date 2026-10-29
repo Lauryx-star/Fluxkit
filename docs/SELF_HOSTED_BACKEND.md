@@ -176,6 +176,11 @@ See [server/README.md](../server/README.md) and [server/docker-compose.yml](../s
 The Compose service binds to loopback; operators must configure TLS at a reverse proxy before
 remote access. Database backups and restoration remain the operator's responsibility.
 
+Prometheus metrics (runtime, HTTP per route template and aggregated usage statistics) are served
+at `/metrics` without login; the reverse proxy must restrict that route to the Prometheus
+hosts. See the Metrics section of [server/README.md](../server/README.md). The metrics carry no
+user or project names, identifiers or values.
+
 ## Handoff status (2026-10-27)
 
 The current branch contains an implementation foundation, not a complete backend release. To

@@ -29,6 +29,13 @@ public static class ValueEndpoints
             (project.Kind == "personal" && project.OwnerId == user || project.Kind == "team" &&
             db.Memberships.Any(member => member.ProjectId == id && member.UserId == user)), ct);
 
+    private static IResult Track(UsageMetrics usage, string scope, string operation, IResult result)
+    {
+        var status = (result as IStatusCodeHttpResult)?.StatusCode ?? 200;
+        usage.ValueWrite(scope, operation, status is >= 200 and < 300 ? "success" : status == 409 ? "conflict" : "rejected");
+        return result;
+    }
+
     public static void Map(WebApplication app)
     {
         app.MapGet("/api/projects/{id:guid}/values", async (Guid id, ClaimsPrincipal caller, FluxkitDb db, CancellationToken ct) =>
@@ -49,55 +56,58 @@ public static class ValueEndpoints
             return Results.Ok(new { values });
         }).RequireAuthorization();
         app.MapPut("/api/projects/{id:guid}/values/{variableId:guid}/{environmentId}", async (Guid id, Guid variableId, string environmentId,
-            SharedValueInput input, HttpRequest request, ClaimsPrincipal caller, FluxkitDb db, CancellationToken ct) =>
+            SharedValueInput input, HttpRequest request, ClaimsPrincipal caller, FluxkitDb db, UsageMetrics usage, CancellationToken ct) =>
         {
             var user = User(caller);
             if (await Editable(db, id, user, ct) is not true) { return Results.NotFound(); }
             if (!Expected(request, out var expected)) { return Results.StatusCode(428); }
             if (input?.Value is null) { return Results.BadRequest(); }
-            return await ApplySlotsAsync(db, id, user, [new(variableId, environmentId, input.Value, expected)], [], ct)
-                ?? Results.Ok(await SlotRevision(db, variableId, environmentId, null, ct));
+            return Track(usage, "shared", "put", await ApplySlotsAsync(db, id, user, [new(variableId, environmentId, input.Value, expected)], [], ct)
+                ?? Results.Ok(await SlotRevision(db, variableId, environmentId, null, ct)));
         }).RequireAuthorization();
         app.MapPut("/api/projects/{id:guid}/vault-values/{variableId:guid}/{environmentId}", async (Guid id, Guid variableId, string environmentId,
-            VaultValueInput input, HttpRequest request, ClaimsPrincipal caller, FluxkitDb db, CancellationToken ct) =>
+            VaultValueInput input, HttpRequest request, ClaimsPrincipal caller, FluxkitDb db, UsageMetrics usage, CancellationToken ct) =>
         {
             var user = User(caller);
             if (await Project(db, id, user, ct) is null) { return Results.NotFound(); }
             if (!Expected(request, out var expected)) { return Results.StatusCode(428); }
             if (input?.Nonce is null || input.Ciphertext is null) { return Results.BadRequest(); }
-            return await ApplySlotsAsync(db, id, user, [], [new(variableId, environmentId, input.Nonce, input.Ciphertext, expected)], ct)
-                ?? Results.Ok(await SlotRevision(db, variableId, environmentId, user, ct));
+            return Track(usage, "vault", "put", await ApplySlotsAsync(db, id, user, [], [new(variableId, environmentId, input.Nonce, input.Ciphertext, expected)], ct)
+                ?? Results.Ok(await SlotRevision(db, variableId, environmentId, user, ct)));
         }).RequireAuthorization();
         app.MapDelete("/api/projects/{id:guid}/values/{variableId:guid}/{environmentId}", async (Guid id, Guid variableId, string environmentId,
-            HttpRequest request, ClaimsPrincipal caller, FluxkitDb db, CancellationToken ct) =>
+            HttpRequest request, ClaimsPrincipal caller, FluxkitDb db, UsageMetrics usage, CancellationToken ct) =>
         {
             if (await Editable(db, id, User(caller), ct) is not true) { return Results.NotFound(); }
             if (!Expected(request, out var expected)) { return Results.StatusCode(428); }
             var deleted = await db.SharedValues.Where(value => value.ProjectId == id && value.VariableId == variableId
                 && value.EnvironmentId == environmentId && value.Revision == expected).ExecuteDeleteAsync(ct);
-            return deleted == 1 ? Results.NoContent() : Results.Conflict(new { error = "This value changed or was removed. Reload values." });
+            return Track(usage, "shared", "delete", deleted == 1 ? Results.NoContent() : Results.Conflict(new { error = "This value changed or was removed. Reload values." }));
         }).RequireAuthorization();
         app.MapDelete("/api/projects/{id:guid}/vault-values/{variableId:guid}/{environmentId}", async (Guid id, Guid variableId, string environmentId,
-            HttpRequest request, ClaimsPrincipal caller, FluxkitDb db, CancellationToken ct) =>
+            HttpRequest request, ClaimsPrincipal caller, FluxkitDb db, UsageMetrics usage, CancellationToken ct) =>
         {
             var user = User(caller);
             if (await Project(db, id, user, ct) is null) { return Results.NotFound(); }
             if (!Expected(request, out var expected)) { return Results.StatusCode(428); }
             var deleted = await db.VaultValues.Where(value => value.ProjectId == id && value.UserId == user && value.VariableId == variableId
                 && value.EnvironmentId == environmentId && value.Revision == expected).ExecuteDeleteAsync(ct);
-            return deleted == 1 ? Results.NoContent() : Results.Conflict(new { error = "This value changed or was removed. Reload values." });
+            return Track(usage, "vault", "delete", deleted == 1 ? Results.NoContent() : Results.Conflict(new { error = "This value changed or was removed. Reload values." }));
         }).RequireAuthorization();
-        app.MapPost("/api/projects/{id:guid}/values/batch", async (Guid id, ValueBatch input, ClaimsPrincipal caller, FluxkitDb db, CancellationToken ct) =>
+        app.MapPost("/api/projects/{id:guid}/values/batch", async (Guid id, ValueBatch input, ClaimsPrincipal caller, FluxkitDb db, UsageMetrics usage, CancellationToken ct) =>
         {
             var user = User(caller);
             if (await Project(db, id, user, ct) is null) { return Results.NotFound(); }
             var shared = input?.Shared ?? [];
             if (shared.Count > 0 && await Editable(db, id, user, ct) is not true) { return Results.Forbid(); }
             await using var transaction = await db.Database.BeginTransactionAsync(ct);
-            var failed = await ApplySlotsAsync(db, id, user, shared, input?.Vault ?? [], ct);
-            if (failed is not null) { return failed; }
-            await transaction.CommitAsync(ct);
-            return Results.NoContent();
+            var vault = input?.Vault ?? [];
+            var failed = await ApplySlotsAsync(db, id, user, shared, vault, ct);
+            if (failed is null) { await transaction.CommitAsync(ct); }
+            var result = failed ?? Results.NoContent();
+            for (var slot = 0; slot < shared.Count; slot++) { Track(usage, "shared", "put", result); }
+            for (var slot = 0; slot < vault.Count; slot++) { Track(usage, "vault", "put", result); }
+            return result;
         }).RequireAuthorization();
 
         app.MapGet("/api/account/vault", async (ClaimsPrincipal caller, FluxkitDb db, CancellationToken ct) =>

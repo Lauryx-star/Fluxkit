@@ -56,6 +56,59 @@ Authorization Code with PKCE and explicit administrator approval. Follow [OIDC.m
 for provider registration, bootstrap and Compose settings. Switching modes does not automatically
 link or migrate existing accounts. Existing tokens must sign in again after this upgrade.
 
+## Metrics
+
+The server serves Prometheus metrics at `/metrics` on the API port. The endpoint needs no login,
+so the reverse proxy must restrict it, for example to the network of the Prometheus host:
+
+```nginx
+location = /metrics {
+    allow 10.0.0.0/24;   # Prometheus host(s)
+    deny all;
+    proxy_pass http://127.0.0.1:8080;
+}
+```
+
+| Setting                   | Default | Meaning                                                   |
+| ------------------------- | ------- | --------------------------------------------------------- |
+| `Metrics:Enabled`         | `true`  | `false` removes the `/metrics` endpoint.                  |
+| `Metrics:SnapshotSeconds` | `15`    | Minimum age before the database counts are queried again. |
+
+Example scrape configuration:
+
+```yaml
+scrape_configs:
+  - job_name: fluxkit
+    scrape_interval: 30s
+    scheme: https
+    static_configs:
+      - targets: ['fluxkit.example.org']
+```
+
+Exported metrics:
+
+- Process and .NET runtime: `process_*`, `dotnet_*`, `system_runtime_dotnet_*` (GC, thread
+  pool, exceptions), plus the .NET meters of ASP.NET Core (`microsoft_aspnetcore_*`: request
+  duration, authentication, rate limiting), Entity Framework Core and Npgsql
+  (`npgsql_db_client_*`: connection pool, command duration and failures).
+- HTTP: `http_requests_received_total`, `http_request_duration_seconds` and
+  `http_requests_in_progress`, labelled with method, status code and the route template
+  (for example `/api/projects/{projectId}/changes`), never the concrete path.
+- Usage counters: `fluxkit_logins_total{mode,result}`, `fluxkit_registrations_total{mode}`,
+  `fluxkit_change_batches_total{result}`, `fluxkit_change_operations_total{kind,operation}`,
+  `fluxkit_value_writes_total{scope,operation,result}`, `fluxkit_feed_reads_total{result}`,
+  `fluxkit_projects_created_total{kind,source}`, `fluxkit_projects_deleted_total`,
+  `fluxkit_account_changes_total{change}`.
+- Usage gauges from the database: `fluxkit_accounts{status}`, `fluxkit_server_admins`,
+  `fluxkit_projects{kind}`, `fluxkit_team_memberships`, `fluxkit_project_rows{kind}`,
+  `fluxkit_variables{classification}`, `fluxkit_stored_values{scope}`,
+  `fluxkit_account_vaults`, `fluxkit_usage_snapshot_duration_seconds`.
+- `fluxkit_active_users{window="5m|1h|24h"}`: distinct accounts with an authenticated request in
+  the window, counted in memory since the server started.
+
+Labels are aggregates only: no user names, project names, identifiers, URLs or values. Counters
+start at zero after each restart, as usual for Prometheus; use `rate()`/`increase()`.
+
 ## Backend regression tests
 
 The test project uses xUnit and ASP.NET Core's in-process test host, with real PostgreSQL.

@@ -84,7 +84,8 @@ public static class OidcLogin
                             {
                                 var user = await Enroll(db, issuer, subject,
                                     context.Principal?.FindFirst("preferred_username")?.Value,
-                                    config["Bootstrap:OidcSubject"]!);
+                                    config["Bootstrap:OidcSubject"]!,
+                                    context.HttpContext.RequestServices.GetService<UsageMetrics>());
                                 tickets.Complete(ticket, user.Id);
                             }
                             else { tickets.Fail(ticket); }
@@ -118,7 +119,7 @@ public static class OidcLogin
         return response.WriteAsync("Return to Fluxkit to see the sign-in result. You can close this tab.");
     }
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
-    internal static async Task<FluxkitUser> Enroll(FluxkitDb db, string issuer, string subject, string? display, string bootstrap)
+    internal static async Task<FluxkitUser> Enroll(FluxkitDb db, string issuer, string subject, string? display, string bootstrap, UsageMetrics? usage = null)
     {
         var provider = "oidc:" + Hash(issuer);
         var key = Hash(subject);
@@ -148,7 +149,12 @@ public static class OidcLogin
             UserId = id
         });
         if (admin) { db.Projects.Add(AuthTokens.CreatePersonalProject(id, name)); }
-        try { await db.SaveChangesAsync(); return user; }
+        try
+        {
+            await db.SaveChangesAsync();
+            usage?.Registration("oidc");
+            return user;
+        }
         catch (DbUpdateException)
         {
             // Two valid callbacks for one new identity must converge on the same account.
@@ -171,14 +177,19 @@ public static class OidcLogin
             }, [Scheme]) : Results.BadRequest())
             .AllowAnonymous().RequireRateLimiting("auth");
         app.MapPost("/api/auth/oidc/poll", async (OidcPoll input, OidcTickets tickets, FluxkitDb db,
-            IConfiguration config, HttpResponse response) =>
+            IConfiguration config, HttpResponse response, UsageMetrics usage) =>
         {
             response.Headers.CacheControl = "no-store";
             var result = tickets.Poll(input.Id, input.Secret);
             if (result.Status == "complete")
             {
                 var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(user => user.Id == result.UserId);
-                if (user?.Status == "active") { return Results.Ok(new { status = "complete", session = AuthTokens.Create(user, config) }); }
+                if (user?.Status == "active")
+                {
+                    usage.Login("oidc", "success");
+                    return Results.Ok(new { status = "complete", session = AuthTokens.Create(user, config) });
+                }
+                usage.Login("oidc", user?.Status == "pending" ? "pending" : "rejected");
                 return Results.Ok(new { status = user?.Status == "pending" ? "pendingApproval" : "denied" });
             }
             return Results.Ok(new { status = result.Status });
