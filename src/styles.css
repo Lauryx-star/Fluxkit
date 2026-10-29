@@ -2367,3 +2367,24 @@ svg {
 .tree-row:has(> .tree-label[draggable='true']) {
   cursor: grab;
 }
+
+.media-preview {
+  font: inherit;
+}
+.media-preview img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  background: repeating-conic-gradient(var(--line) 0% 25%, transparent 0% 50%) 0 0 / 16px 16px;
+}
+.media-pages {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+.media-pages canvas {
+  max-width: 100%;
+  height: auto;
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--line);
+}

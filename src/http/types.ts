@@ -33,4 +33,10 @@ export interface ExecutionResult {
   message: string | null;
   tokenStatus?: import('../auth/types').TokenStatus;
   historyWarning?: string;
+  /** Image or PDF body for the Preview tab; `data` is null above the 20 MiB preview limit. */
+  media?: ResponseMedia;
+}
+export interface ResponseMedia {
+  mime: string;
+  data: string | null;
 }

@@ -17,6 +17,7 @@ import {
 import { AuthEditor } from './auth/AuthEditor';
 import { AuthTest } from './auth/AuthTest';
 import { HeaderInspector } from './http/HeaderInspector';
+import { splitUrl, urlFieldText } from './http/query';
 import { emptyDraft } from './projects/types';
 import { AuthDialog } from './auth/AuthDialog';
 import { TokenControls } from './auth/TokenControls';
@@ -75,6 +76,8 @@ export default function App() {
   }, []);
   const [variablesOpen, setVariablesOpen] = useState(false);
   const [serverConnectionOpen, setServerConnectionOpen] = useState(false);
+  /** Raw URL field text while it still describes the draft (keeps a trailing `?` or `&`). */
+  const [urlText, setUrlText] = useState<{ draft: number; text: string } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [serverUsersOpen, setServerUsersOpen] = useState(false);
   // Reload the status-bar vault state when the dialogs that can change it close.
@@ -994,8 +997,11 @@ export default function App() {
                         label="Request URL"
                         variant="url"
                         placeholder="https://api.example.com/v1/resource"
-                        value={draft.url}
-                        onChange={(url) => updateDraft({ url })}
+                        value={urlFieldText(draft, urlText)}
+                        onChange={(text) => {
+                          setUrlText({ draft: draft.id, text });
+                          updateDraft(splitUrl(text, draft.params));
+                        }}
                       />
                       <button
                         className="send-button"

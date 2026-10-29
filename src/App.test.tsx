@@ -58,6 +58,29 @@ describe('desktop foundation', () => {
     expect(screen.queryByRole('textbox', { name: 'Request URL' })).not.toBeInTheDocument();
   });
 
+  it('mirrors URL query parameters in the parameter table in both directions', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'New request tab' }));
+    const url = screen.getByRole('textbox', { name: 'Request URL' });
+    await user.type(url, 'https://example.test/report?format=pdf&year=');
+    expect(url).toHaveValue('https://example.test/report?format=pdf&year=');
+    await user.click(screen.getByRole('tab', { name: 'Params' }));
+    expect(screen.getByRole('textbox', { name: 'Parameter key 1' })).toHaveValue('format');
+    expect(screen.getByRole('textbox', { name: 'Parameter value 1' })).toHaveValue('pdf');
+    expect(screen.getByRole('textbox', { name: 'Parameter key 2' })).toHaveValue('year');
+    await user.type(screen.getByRole('textbox', { name: 'Parameter value 2' }), '2026');
+    expect(url).toHaveValue('https://example.test/report?format=pdf&year=2026');
+    await user.click(screen.getByRole('checkbox', { name: 'Enable Parameter 1' }));
+    expect(url).toHaveValue('https://example.test/report?year=2026');
+    await user.clear(url);
+    await user.paste('https://example.test/other?page=3');
+    expect(screen.getByRole('textbox', { name: 'Parameter key 1' })).toHaveValue('format');
+    expect(screen.getByRole('checkbox', { name: 'Enable Parameter 1' })).not.toBeChecked();
+    expect(screen.getByRole('textbox', { name: 'Parameter key 2' })).toHaveValue('page');
+    expect(screen.getByRole('textbox', { name: 'Parameter value 2' })).toHaveValue('3');
+  });
+
   it('edits header rows and preserves body content across configuration tabs', async () => {
     const user = userEvent.setup();
     render(<App />);

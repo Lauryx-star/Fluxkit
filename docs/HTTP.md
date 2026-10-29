@@ -46,10 +46,15 @@ new work is registered. Request slots are released on success, failure, or cance
 
 Only HTTP/HTTPS URLs are accepted. Credentials embedded in URL user-info are rejected;
 use an Authorization header. URL fragments are not transmitted. Enabled, non-empty-key
-query rows append to the URL's existing query, with standard URL encoding. Enabled headers
+query rows append to the URL's existing query, with standard URL encoding. The URL field shows
+the URL together with the enabled query rows, like Postman: a query typed or pasted into the
+field becomes parameter rows (decoded, replacing the enabled rows in order; disabled rows stay),
+and editing the rows updates the field. Requests store the URL without those rows. Enabled headers
 preserve repeated values. Fluxkit controls framing/connection/proxy headers: Content-Length,
 Transfer-Encoding, Connection, Upgrade, TE, Trailer, Proxy-Authorization, and Proxy-Connection
-must not be manually set. CONNECT tunnelling is unsupported.
+must not be manually set. POST, PUT and PATCH without body content send `Content-Length: 0`,
+because servers such as IIS reject unframed requests with 411 Length Required. CONNECT
+tunnelling is unsupported.
 
 Text and JSON bodies send their literal resolved UTF-8 content, without JSON rewriting or
 an obligatory JSON-validity check (invalid payloads can be useful API tests). Default media
@@ -98,6 +103,13 @@ attachment responses, compressed content, and invalid/non-UTF-8 text have no tex
 Empty bodies are explicitly identified. Non-ASCII response header bytes are displayed using
 a byte-preserving Latin-1 character mapping. A truncated UTF-8 boundary is trimmed to a
 complete code point rather than misclassifying otherwise valid text as binary.
+
+Images (PNG, JPEG, GIF, WebP, BMP, AVIF, ICO, SVG) and PDFs get a Preview tab, also when sent
+as attachments. The body is kept in memory up to 20 MiB and is never persisted; larger bodies
+show a hint to save the response instead. Images render only through `<img>` from a `data:` URL,
+so SVG scripts do not run. PDFs render with the bundled pdf.js (loaded on first use, in a
+worker) into canvases, at most 50 pages; PDF scripts and XFA forms are not executed. Compressed
+(Content-Encoding) bodies have no preview because Fluxkit does not decompress responses.
 
 At most eight response-detail sets are retained in UI memory, each with bounded preview
 and headers. Older details are released with a visible notice while status/size metadata

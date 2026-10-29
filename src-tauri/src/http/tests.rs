@@ -1222,3 +1222,110 @@ fn unknown_variables_are_all_named_before_anything_is_resolved() {
         "Unknown variables {{deletedBase}}, {{deletedToken}}: they are not defined in this project. Replace them before sending."
     );
 }
+
+#[tokio::test]
+async fn body_methods_without_content_state_an_empty_length_and_other_methods_stay_unframed() {
+    for (method, kind, expected) in [
+        ("POST", BodyKind::None, true),
+        ("PUT", BodyKind::None, true),
+        ("PATCH", BodyKind::None, true),
+        ("POST", BodyKind::Text, true),
+        ("GET", BodyKind::None, false),
+        ("DELETE", BodyKind::None, false),
+    ] {
+        let (url, captured, task) = server(response("200 OK", "", b""), Duration::ZERO).await;
+        let root = tempdir().unwrap();
+        let settings = tempdir().unwrap();
+        let mut request = input(&url);
+        request.request.method = method.into();
+        request.request.body.kind = kind;
+        let result = send(
+            &request,
+            &client(),
+            Some(root.path()),
+            &Uuid::new_v4().to_string(),
+            settings.path(),
+            &Fake(HashMap::new()),
+            None,
+        )
+        .await;
+        let sent = String::from_utf8(captured.await.unwrap())
+            .unwrap()
+            .to_ascii_lowercase();
+        task.abort();
+        assert_eq!(
+            sent.contains("\r\ncontent-length: 0\r\n"),
+            expected,
+            "{method}"
+        );
+        assert!(!sent.contains("transfer-encoding"), "{method}");
+        assert_eq!(
+            result
+                .request_headers
+                .iter()
+                .any(|header| header.name == "content-length" && header.source == "automatic"),
+            expected,
+            "{method}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn images_and_pdfs_are_returned_for_preview_within_the_media_limit_only() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let pdf = b"%PDF-1.7 synthetic".to_vec();
+    let oversized = vec![0u8; super::transfer::MEDIA_LIMIT + 1];
+    for (headers, body, expected) in [
+        (
+            "Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=r.pdf\r\n",
+            pdf.clone(),
+            Some(("application/pdf", Some(STANDARD.encode(&pdf)))),
+        ),
+        (
+            "Content-Type: image/PNG; charset=binary\r\n",
+            b"\x89PNG synthetic".to_vec(),
+            Some(("image/png", Some(STANDARD.encode(b"\x89PNG synthetic")))),
+        ),
+        (
+            "Content-Type: image/png\r\n",
+            oversized,
+            Some(("image/png", None)),
+        ),
+        (
+            "Content-Type: image/png\r\nContent-Encoding: gzip\r\n",
+            b"compressed".to_vec(),
+            None,
+        ),
+        (
+            "Content-Type: application/octet-stream\r\n",
+            b"binary".to_vec(),
+            None,
+        ),
+        ("Content-Type: text/html\r\n", b"<p>x</p>".to_vec(), None),
+    ] {
+        let (url, _captured, task) =
+            server(response("200 OK", headers, &body), Duration::ZERO).await;
+        let root = tempdir().unwrap();
+        let settings = tempdir().unwrap();
+        let result = send(
+            &input(&url),
+            &client(),
+            Some(root.path()),
+            &Uuid::new_v4().to_string(),
+            settings.path(),
+            &Fake(HashMap::new()),
+            None,
+        )
+        .await;
+        task.abort();
+        assert_eq!(result.byte_count, body.len() as u64, "{headers}");
+        assert_eq!(
+            result
+                .media
+                .as_ref()
+                .map(|media| (media.mime.as_str(), media.data.clone())),
+            expected,
+            "{headers}"
+        );
+    }
+}

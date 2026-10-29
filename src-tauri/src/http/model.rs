@@ -77,6 +77,18 @@ pub struct ExecutionResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_warning: Option<String>,
     pub request_headers: Vec<RequestHeader>,
+    /// Image or PDF body for the Preview tab, present only for allowlisted media types.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media: Option<Media>,
+}
+
+/// A response body the UI may render: images through `<img>`, PDFs through pdf.js.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Media {
+    pub mime: String,
+    /// Base64 body; `None` when the body exceeds the media preview limit.
+    pub data: Option<String>,
 }
 impl ExecutionResult {
     pub fn failure(outcome: Outcome, message: &str) -> Self {
@@ -95,6 +107,7 @@ impl ExecutionResult {
             token_status: None,
             history_warning: None,
             request_headers: vec![],
+            media: None,
         }
     }
 }

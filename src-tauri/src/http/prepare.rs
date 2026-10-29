@@ -339,10 +339,23 @@ pub fn prepare(
     if cancel.is_cancelled() {
         return Err("Request cancelled before dispatch.".into());
     }
-    let request = builder
+    let mut request = builder
         .headers(headers)
         .build()
         .map_err(|_| "Could not build the HTTP request. Check headers and body configuration.")?;
+    // Without a body the HTTP client sends no framing at all. Servers such as IIS answer
+    // 411 Length Required for body-carrying methods, so state the empty body explicitly.
+    if matches!(
+        *request.method(),
+        Method::POST | Method::PUT | Method::PATCH
+    ) && request
+        .body()
+        .is_none_or(|body| body.as_bytes().is_some_and(<[u8]>::is_empty))
+    {
+        request
+            .headers_mut()
+            .insert(CONTENT_LENGTH, HeaderValue::from(0u64));
+    }
     if request.headers().len() > 1000
         || request
             .headers()

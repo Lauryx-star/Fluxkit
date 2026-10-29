@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ExecutionResult } from './types';
 import { tokenStatusLabel } from '../auth/rules';
+import { MediaPreview } from './MediaPreview';
 
 export function ResponseView({
   result,
@@ -11,8 +12,8 @@ export function ResponseView({
   running: boolean;
   environmentLabel?: string;
 }) {
-  type Tab = 'raw' | 'json' | 'headers';
-  const defaultTab: Tab = result?.jsonText ? 'json' : 'raw';
+  type Tab = 'preview' | 'raw' | 'json' | 'headers';
+  const defaultTab: Tab = result?.media ? 'preview' : result?.jsonText ? 'json' : 'raw';
   const [selection, setSelection] = useState<{ result: ExecutionResult | null; tab: Tab }>(() => ({
     result,
     tab: defaultTab,
@@ -21,7 +22,10 @@ export function ResponseView({
     setSelection({ result, tab: defaultTab });
   }
   const tab = selection.result === result ? selection.tab : defaultTab;
-  const active = tab === 'json' && !result?.jsonText ? 'raw' : tab;
+  const tabs: Tab[] = [...(result?.media ? (['preview'] as const) : []), 'raw', 'json', 'headers'];
+  /** Tabs that can be selected; JSON stays visible but disabled without formatted JSON. */
+  const enabled = tabs.filter((name) => name !== 'json' || Boolean(result?.jsonText));
+  const active = enabled.includes(tab) ? tab : 'raw';
   function setTab(tab: Tab) {
     setSelection({ result, tab });
   }
@@ -127,15 +131,13 @@ export function ResponseView({
           {result.status !== null && (
             <>
               <div className="response-tabs" role="tablist" aria-label="Response views">
-                {(['raw', 'json', 'headers'] as const).map((name) => (
+                {tabs.map((name) => (
                   <button
                     key={name}
                     role="tab"
                     tabIndex={active === name ? 0 : -1}
                     onKeyDown={(event) => {
-                      const names: ('raw' | 'json' | 'headers')[] = result.jsonText
-                        ? ['raw', 'json', 'headers']
-                        : ['raw', 'headers'];
+                      const names = enabled;
                       const index = names.indexOf(name);
                       const target =
                         event.key === 'ArrowRight'
@@ -156,10 +158,16 @@ export function ResponseView({
                     aria-selected={active === name}
                     aria-controls={`response-${name}`}
                     id={`response-tab-${name}`}
-                    disabled={name === 'json' && !result.jsonText}
+                    disabled={!enabled.includes(name)}
                     onClick={() => setTab(name)}
                   >
-                    {name === 'raw' ? 'Raw' : name === 'json' ? 'JSON' : 'Headers'}
+                    {name === 'preview'
+                      ? 'Preview'
+                      : name === 'raw'
+                        ? 'Raw'
+                        : name === 'json'
+                          ? 'JSON'
+                          : 'Headers'}
                   </button>
                 ))}
               </div>
@@ -169,7 +177,9 @@ export function ResponseView({
                 id={`response-${active}`}
                 aria-labelledby={`response-tab-${active}`}
               >
-                {active === 'headers' ? (
+                {active === 'preview' && result.media ? (
+                  <MediaPreview media={result.media} />
+                ) : active === 'headers' ? (
                   <table>
                     <thead>
                       <tr>
@@ -190,6 +200,8 @@ export function ResponseView({
                   <pre>{result.jsonText}</pre>
                 ) : result.text !== null ? (
                   <pre>{result.text}</pre>
+                ) : result.contentKind === 'binary' && result.media ? (
+                  <p>Binary {result.media.mime} content. The Preview tab shows it.</p>
                 ) : result.contentKind === 'binary' ? (
                   <p>
                     Binary, compressed, or non-UTF-8 content. Use “Send & save response…” for a new

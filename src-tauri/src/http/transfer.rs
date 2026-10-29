@@ -1,5 +1,5 @@
 use super::{
-    model::{ContentKind, ExecutionResult, Header, Outcome},
+    model::{ContentKind, ExecutionResult, Header, Media, Outcome},
     prepare::Prepared,
 };
 use reqwest::{
@@ -16,6 +16,26 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
 pub const PREVIEW_LIMIT: usize = 1024 * 1024;
+/// Images and PDFs are kept in memory for the Preview tab up to this size.
+pub const MEDIA_LIMIT: usize = 20 * 1024 * 1024;
+
+/// Media types the UI renders without executing content: raster images and SVG only via `<img>`
+/// (no scripts), PDFs only through pdf.js with eval disabled.
+fn previewable(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png"
+            | "image/jpeg"
+            | "image/gif"
+            | "image/webp"
+            | "image/bmp"
+            | "image/avif"
+            | "image/x-icon"
+            | "image/vnd.microsoft.icon"
+            | "image/svg+xml"
+            | "application/pdf"
+    )
+}
 
 #[derive(PartialEq)]
 struct Stamp {
@@ -191,6 +211,7 @@ pub async fn execute(
     let mut bytes = Vec::new();
     let mut textual = false;
     let mut json = false;
+    let mut media: Option<(String, Vec<u8>, bool)> = None;
     let exchange = async {
         let mut response = client
             .execute(prepared.request)
@@ -238,6 +259,10 @@ pub async fn execute(
                 || mime.ends_with("xml")
                 || mime == "application/javascript"
                 || mime == "application/x-www-form-urlencoded");
+        // Compressed bodies stay binary: the client has no decompressor for them.
+        if !encoded && previewable(&mime) {
+            media = Some((mime.clone(), Vec::new(), true));
+        }
         let mut writer = download
             .as_ref()
             .map(Download::writer)
@@ -249,6 +274,14 @@ pub async fn execute(
                 let remaining = PREVIEW_LIMIT.saturating_sub(bytes.len());
                 bytes.extend_from_slice(&chunk[..remaining.min(chunk.len())]);
                 result.truncated = result.byte_count > PREVIEW_LIMIT as u64;
+            }
+            if let Some((_, buffer, fits)) = &mut media {
+                if *fits && buffer.len() + chunk.len() <= MEDIA_LIMIT {
+                    buffer.extend_from_slice(&chunk);
+                } else if *fits {
+                    *fits = false;
+                    *buffer = Vec::new();
+                }
             }
             if let Some(writer) = &mut writer {
                 writer.write_all(&chunk).await.map_err(|_| {
@@ -303,6 +336,13 @@ pub async fn execute(
     // Parsing and pretty-printing run away from the async network executor and UI thread.
     tauri::async_runtime::spawn_blocking(move || {
         preview(&mut result, bytes, textual, json);
+        if let Some((mime, buffer, fits)) = media.filter(|_| result.byte_count > 0) {
+            use base64::{engine::general_purpose::STANDARD, Engine};
+            result.media = Some(Media {
+                mime,
+                data: fits.then(|| STANDARD.encode(buffer)),
+            });
+        }
         result
     })
     .await

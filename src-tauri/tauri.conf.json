@@ -40,7 +40,8 @@
     ],
     "resources": {
       "../assets/notices/openapi-import/": "notices/openapi-import/",
-      "../assets/notices/crypto/": "notices/crypto/"
+      "../assets/notices/crypto/": "notices/crypto/",
+      "../assets/notices/pdf-preview/": "notices/pdf-preview/"
     }
   }
 }
