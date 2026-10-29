@@ -159,6 +159,11 @@ pub fn prepare(
     if method == Method::CONNECT {
         return Err("CONNECT tunnelling is not supported.".into());
     }
+    // Name every placeholder without a variable at once, before anything is resolved or read.
+    let unknown = environments::unknown_variables(sent_texts(request), &definitions);
+    if !unknown.is_empty() {
+        return Err(environments::unknown_variables_message(&unknown));
+    }
     let resolved_url = resolve(&request.url)?;
     let mut url = Url::parse(&resolved_url).map_err(|_| "Enter a complete HTTP or HTTPS URL.")?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
@@ -226,7 +231,7 @@ pub fn prepare(
             .variables
             .iter()
             .find(|v| v.id == id)
-            .ok_or("An authentication variable is missing. Update authentication settings.")?;
+            .ok_or("Authentication uses a deleted variable. Choose another variable in the authentication settings.")?;
         resolve(&format!("{{{{{}}}}}", variable.name))
     })?;
     let token = super::tokens::Plan::new(
@@ -236,6 +241,8 @@ pub fn prepare(
         environment,
         &definitions,
     )?
+    .map(|plan| plan.scoped(root))
+    .transpose()?
     .filter(|plan| !plan.overridden(&url, &headers));
     if url.as_str().len() > 65_536
         || headers
@@ -418,5 +425,38 @@ pub fn token_plan(
         view.selected_environment.as_deref(),
         &view.data,
     )?
-    .ok_or("Choose OAuth2 Client Credentials or Custom Login first.".into())
+    .ok_or_else(|| "Choose OAuth2 Client Credentials or Custom Login first.".to_string())?
+    .scoped(Some(root))
+}
+
+/// The request texts that execution resolves, in the order they are sent.
+fn sent_texts(request: &Request) -> Vec<&str> {
+    let mut texts = vec![request.url.as_str()];
+    for entry in request
+        .params
+        .iter()
+        .chain(&request.headers)
+        .filter(|e| e.enabled && !e.key.is_empty())
+    {
+        texts.push(&entry.key);
+        texts.push(&entry.value);
+    }
+    match request.body.kind {
+        BodyKind::Json | BodyKind::Text => texts.push(&request.body.text),
+        BodyKind::UrlEncoded | BodyKind::Multipart => {
+            for field in request
+                .body
+                .fields
+                .iter()
+                .filter(|f| f.enabled && !f.key.is_empty())
+            {
+                texts.push(&field.key);
+                if field.file.is_none() {
+                    texts.push(&field.value);
+                }
+            }
+        }
+        _ => {}
+    }
+    texts
 }

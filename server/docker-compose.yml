@@ -1,0 +1,48 @@
+services:
+  database:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: fluxkit
+      POSTGRES_USER: fluxkit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the environment}
+    ports:
+      - 5432:5432
+    volumes:
+      - fluxkit-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U fluxkit -d fluxkit']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  server:
+    build:
+      context: ..
+      dockerfile: server/Fluxkit.Server/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Database: Host=database;Database=fluxkit;Username=fluxkit;Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the environment}
+      Auth__Mode: ${FLUXKIT_AUTH_MODE:-local}
+      Auth__SigningKey: ${FLUXKIT_SIGNING_KEY:?Set FLUXKIT_SIGNING_KEY to a unique random secret of at least 32 bytes}
+      Bootstrap__AdminUsername: ${FLUXKIT_ADMIN_USERNAME:-}
+      Bootstrap__AdminPassword: ${FLUXKIT_ADMIN_PASSWORD:-}
+      Auth__Oidc__Authority: ${FLUXKIT_OIDC_AUTHORITY:-}
+      Auth__Oidc__PublicOrigin: ${FLUXKIT_PUBLIC_ORIGIN:-}
+      Auth__Oidc__ClientId: ${FLUXKIT_OIDC_CLIENT_ID:-}
+      Auth__Oidc__ClientSecret: ${FLUXKIT_OIDC_CLIENT_SECRET:-}
+      Bootstrap__OidcSubject: ${FLUXKIT_OIDC_ADMIN_SUBJECT:-}
+    ports:
+      - '127.0.0.1:${FLUXKIT_PORT:-8080}:8080'
+
+volumes:
+  fluxkit-postgres:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /home/laura/FluxKit-server-data

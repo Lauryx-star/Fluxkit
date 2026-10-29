@@ -55,6 +55,10 @@ export interface ProjectView {
   handle: string;
   directory: string;
   revision: string;
+  readOnly?: boolean;
+  serverSync?: boolean;
+  serverOwned?: boolean;
+  serverRecovery?: boolean;
   data: { schemaVersion: number; id: string; name: string; auth?: Auth | null };
   collections: CollectionView[];
 }
@@ -76,6 +80,12 @@ export interface Draft {
   collectionId: string | null;
   folderId: string | null;
   savedSnapshot: string | null;
+  /** Server workspaces: the request changed on the server while this editor had edits. */
+  serverChanged?: boolean;
+  /** Server workspaces: the request was deleted on the server while this editor had edits. */
+  serverDeleted?: boolean;
+  /** Server workspaces: the latest server version seen for an edited editor. */
+  serverSnapshot?: string;
 }
 export function requestData(draft: Draft): SavedRequest {
   return {
@@ -93,6 +103,19 @@ export function requestData(draft: Draft): SavedRequest {
 }
 export function isDirty(draft: Draft): boolean {
   return draft.savedSnapshot !== JSON.stringify(requestData(draft));
+}
+/** Disambiguates projects that share a name, such as a local project uploaded to a server. */
+export function projectKindLabel(project: ProjectView): string {
+  if (project.serverRecovery) {
+    return ' (Recovery copy)';
+  }
+  if (project.readOnly) {
+    return ' (Server, read-only)';
+  }
+  if (project.serverOwned || project.serverSync) {
+    return ' (Server)';
+  }
+  return ' (Local)';
 }
 export function fromRequest(
   id: number,

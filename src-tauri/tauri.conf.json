@@ -39,7 +39,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../assets/notices/openapi-import/": "notices/openapi-import/"
+      "../assets/notices/openapi-import/": "notices/openapi-import/",
+      "../assets/notices/crypto/": "notices/crypto/"
     }
   }
 }

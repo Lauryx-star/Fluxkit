@@ -1,5 +1,22 @@
 import { expect, it } from 'vitest';
-import { fromRequest, isDirty, type SavedRequest } from './types';
+import {
+  fromRequest,
+  isDirty,
+  projectKindLabel,
+  type ProjectView,
+  type SavedRequest,
+} from './types';
+
+function project(overrides: Partial<ProjectView>): ProjectView {
+  return {
+    handle: 'handle',
+    directory: '/synthetic',
+    revision: '1',
+    data: { schemaVersion: 1, id: 'project-id', name: 'Synthetic' },
+    collections: [],
+    ...overrides,
+  };
+}
 
 it('opens native-ordered authenticated requests cleanly and detects subsequent edits', () => {
   const request: SavedRequest = {
@@ -32,4 +49,14 @@ it('normalizes null or omitted inherited authentication without dirtying a loade
   };
   expect(isDirty(fromRequest(1, request, 'project', 'collection'))).toBe(false);
   expect(isDirty(fromRequest(1, { ...request, auth: null }, 'project', 'collection'))).toBe(false);
+});
+
+it('labels same-named local and server projects so they are never mistaken for each other', () => {
+  expect(projectKindLabel(project({}))).toBe(' (Local)');
+  expect(projectKindLabel(project({ serverSync: true }))).toBe(' (Server)');
+  expect(projectKindLabel(project({ serverOwned: true }))).toBe(' (Server)');
+  expect(projectKindLabel(project({ readOnly: true }))).toBe(' (Server, read-only)');
+  expect(projectKindLabel(project({ serverRecovery: true, readOnly: true }))).toBe(
+    ' (Recovery copy)',
+  );
 });

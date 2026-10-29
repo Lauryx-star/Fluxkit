@@ -104,10 +104,12 @@ fn fixture(url: &str, method: ClientAuthentication) -> (Plan, Arc<Store>) {
             environments::Definition {
                 id: user.clone(),
                 name: "client".into(),
+                secret: None,
             },
             environments::Definition {
                 id: secret.clone(),
                 name: "secret".into(),
+                secret: None,
             },
         ],
         environments: vec![],
@@ -905,6 +907,7 @@ async fn saved_request_switches_test_prod_test_without_cross_environment_tokens(
             let variable = |name: &str| environments::Definition {
                 id: Uuid::new_v4().to_string(),
                 name: name.into(),
+                secret: None,
             };
             let client_id = variable("clientId");
             let secret = variable("secret");
@@ -1197,15 +1200,18 @@ async fn overlapping_environment_acquisitions_do_not_share_credentials_or_tokens
     definitions.variables.push(environments::Definition {
         id: endpoint.clone(),
         name: "tokenUrl".into(),
+        secret: None,
     });
     definitions.environments = vec![
         environments::Definition {
             id: test_id.clone(),
             name: "Test".into(),
+            secret: None,
         },
         environments::Definition {
             id: prod_id.clone(),
             name: "Prod".into(),
+            secret: None,
         },
     ];
     let mut auth = original.config.clone();

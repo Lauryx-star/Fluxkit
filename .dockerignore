@@ -1,0 +1,12 @@
+.git
+node_modules
+dist
+src-tauri/target
+server/**/bin
+server/**/obj
+server/.dotnet-home
+server/.tools
+
+.env
+**/.env
+server/e2e/node_modules

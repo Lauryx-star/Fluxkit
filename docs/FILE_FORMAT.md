@@ -184,6 +184,27 @@ previous valid settings. A normal window close waits for queued selection writes
 damaged settings, close Fluxkit and preserve the damaged file before restoring a valid
 previous copy; never copy these machine-specific settings into portable project files.
 
+### Open projects and tabs
+
+`session.json` (schema version 1) in the same directory remembers the projects that are open
+(directory and project ID, in tab-bar order), the active project, every open request tab with its
+editor contents, the active tab and the share of the request pane above the response
+(`requestPaneRatio`, 0–1). It is written about half a second after changes and once more when
+quitting. Startup reopens the projects with the usual validation and fresh handles; read-only
+server copies are reopened online. Tabs that were unedited follow the current saved request;
+edited tabs keep their edits and ask before overwriting a request that changed meanwhile. A
+project that cannot be reopened is reported and its tabs stay open without a project. Without
+a `session.json` (first start after upgrading) only `workspace.json`'s last project reopens.
+Without a saved divider the response takes the bottom quarter.
+
+Tab contents are request templates as typed, including unsaved edits, and can contain literal
+credentials typed into a request. They never contain resolved variable values or responses.
+The file is created owner-only (on Unix) and limited to 16 MiB, 50 projects and 200 tabs; invalid
+or unsupported files are ignored without being changed. When quitting with unsaved changes,
+**Save & quit** stores the saved versions, **Keep for next start** keeps the unsaved edits (and
+does not quit if they cannot be written), and **Discard changes** reopens only saved versions
+and drops tabs that were never saved.
+
 IPC: `restore_last_project()` returns `ProjectView | null` or a non-sensitive error.
 `remember_project(handle: string | null)` accepts only an authorized open handle or an
 explicit clear; the frontend cannot submit a path. Neither command reads credential values
@@ -231,3 +252,24 @@ schema association is not added to the target. Original metadata remains in the 
 collection for recoverability, including orphaned operation associations as allowed by the
 import contract. Postman collection/environment mappings stay with their original collection;
 project variable references in the moved request remain valid.
+
+## Machine-local server workspaces
+
+Server mode does not change the portable project schema. Its app-data cache is scoped by
+verified server URL and account UUID under `server-accounts/<SHA-256>/`. Each cached revision
+has a `.fluxkit/server-cache.json` owner marker; editable workspace generations instead have
+`.fluxkit/server-workspace.json` with `serverUrl`, `accountId`, `serverProjectId` and `revision`.
+An atomic per-project UUID pointer selects the current generation. These markers and pointers
+are machine-local metadata and are never uploaded.
+
+An editable workspace also stores the last known server state in `.fluxkit/server-tree.json`:
+one entry per project, collection, folder, request, environment and variable with its server
+revision and ordering `position`, plus the change-feed position `seq`. The ordinary project
+files are rendered from it whenever the server state is loaded; each save is compared with it to
+send only changed rows. Edit the workspace through Fluxkit rather than by hand.
+`ProjectView.serverOwned` identifies server data. Read-only recovery copies created by earlier
+builds (`.fluxkit/server-recovery`, `serverRecovery`) still open read-only and remain
+identifiable after restart. Native access verifies account ownership even through
+previous handles or the ordinary folder chooser. Legacy server markers without `accountId`
+are preserved but rejected rather than adopted by a different account. See
+[server account isolation and recovery](SELF_HOSTED_BACKEND.md#account-isolation-and-workspace-recovery).

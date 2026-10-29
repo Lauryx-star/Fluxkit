@@ -27,15 +27,26 @@ import brandMark from '../assets/fluxkit.svg';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './components/Icon';
 import { KeyValueEditor } from './components/KeyValueEditor';
-import { environmentAction, getAppInfo, isDesktop } from './native';
+import {
+  environmentAction,
+  getAppInfo,
+  getServerAccount,
+  getServerConnection,
+  isDesktop,
+} from './native';
 import { useWorkspace } from './projects/useWorkspace';
-import { isDirty, requestData } from './projects/types';
+import { isDirty, projectKindLabel, requestData } from './projects/types';
 import { useHttp } from './http/useHttp';
 import { ResponseView } from './http/ResponseView';
 import { ProjectTree } from './projects/ProjectTree';
 import { BodyEditor } from './projects/BodyEditor';
-import { NameDialog, ConfirmDialog, QuitDialog } from './projects/Dialogs';
+import { NameDialog, ConfirmDialog, ConflictDialog, QuitDialog } from './projects/Dialogs';
 import { EnvironmentControls } from './environments/EnvironmentControls';
+import { ServerConnection } from './server/ServerConnection';
+import { VaultLock } from './server/VaultLock';
+import { SettingsDialog } from './projects/SettingsDialog';
+import { DEFAULT_REQUEST_PANE_RATIO } from './projects/session';
+import { ServerUsers } from './server/ServerUsers';
 import { VariableContext } from './environments/VariableContext';
 import { VariableInput } from './environments/VariableInput';
 import type { EnvironmentView } from './environments/types';
@@ -43,6 +54,11 @@ import type { EnvironmentView } from './environments/types';
 type EditorTab = 'Params' | 'Headers' | 'Body' | 'Auth';
 const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'TRACE'];
 const editorTabs: EditorTab[] = ['Params', 'Headers', 'Body', 'Auth'];
+const SPLIT_RATIO_MIN = 0.2;
+const SPLIT_RATIO_MAX = 0.8;
+function clampSplitRatio(value: number) {
+  return Math.min(SPLIT_RATIO_MAX, Math.max(SPLIT_RATIO_MIN, value));
+}
 export default function App() {
   const variableSave = useRef<(() => Promise<boolean>) | null>(null);
   const authSave = useRef<(() => Promise<boolean>) | null>(null);
@@ -58,6 +74,19 @@ export default function App() {
     setEnvironmentState((items) => ({ ...items, [handle]: view }));
   }, []);
   const [variablesOpen, setVariablesOpen] = useState(false);
+  const [serverConnectionOpen, setServerConnectionOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [serverUsersOpen, setServerUsersOpen] = useState(false);
+  // Reload the status-bar vault state when the dialogs that can change it close.
+  const vaultDialogsOpen = settingsOpen || serverConnectionOpen;
+  const [vaultRefresh, setVaultRefresh] = useState(0);
+  const [vaultDialogsWereOpen, setVaultDialogsWereOpen] = useState(vaultDialogsOpen);
+  if (vaultDialogsWereOpen !== vaultDialogsOpen) {
+    setVaultDialogsWereOpen(vaultDialogsOpen);
+    if (!vaultDialogsOpen) {
+      setVaultRefresh((value) => value + 1);
+    }
+  }
   const [checkingVariables, setCheckingVariables] = useState(false);
   const [variableCheck, setVariableCheck] = useState<{
     requestId: string;
@@ -67,6 +96,31 @@ export default function App() {
   } | null>(null);
   const [authChanges, setAuthChanges] = useState(false);
   const [historyHandle, setHistoryHandle] = useState<string | null>(null);
+  const splitRef = useRef<HTMLDivElement>(null);
+  // The divider position is part of the saved session; without one the response takes the
+  // bottom quarter.
+  const [requestPaneRatio, setRequestPaneRatio] = useState(DEFAULT_REQUEST_PANE_RATIO);
+  const [resizingSplit, setResizingSplit] = useState(false);
+  useEffect(() => {
+    if (!resizingSplit) {
+      return;
+    }
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+    };
+  }, [resizingSplit]);
+  function resizeSplitFromPointer(clientY: number) {
+    const rect = splitRef.current?.getBoundingClientRect();
+    if (!rect || rect.height === 0) {
+      return;
+    }
+    setRequestPaneRatio(clampSplitRatio((clientY - rect.top) / rect.height));
+  }
   const [authDialog, setAuthDialog] = useState<{
     handle: string;
     target: AuthTarget;
@@ -102,7 +156,14 @@ export default function App() {
     variableChanges || authChanges,
     saveOtherEditors,
     choosingImport || importBusy || exportBusy,
+    requestPaneRatio,
   );
+  // Apply the restored divider position once, when the session has been read.
+  const [appliedRatio, setAppliedRatio] = useState<number | null>(null);
+  if (workspace.restoredRatio !== null && workspace.restoredRatio !== appliedRatio) {
+    setAppliedRatio(workspace.restoredRatio);
+    setRequestPaneRatio(clampSplitRatio(workspace.restoredRatio));
+  }
   const [moveTarget, setMoveTarget] = useState<{
     draftId: number;
     collectionId?: string;
@@ -394,6 +455,45 @@ export default function App() {
     };
   }, []);
 
+  const [serverStatus, setServerStatus] = useState<'local' | 'connected' | 'unreachable'>('local');
+  const [serverStatusUrl, setServerStatusUrl] = useState<string | null>(null);
+  const [serverAdmin, setServerAdmin] = useState(false);
+  const checkServerStatus = useCallback(async () => {
+    if (!workspace.desktop) {
+      return;
+    }
+    try {
+      const current = await getServerConnection();
+      if (!current.authenticated) {
+        setServerStatus('local');
+        setServerStatusUrl(null);
+        setServerAdmin(false);
+        return;
+      }
+      setServerStatusUrl(current.serverUrl);
+      try {
+        const account = await getServerAccount();
+        setServerStatus('connected');
+        setServerAdmin(account.isServerAdmin);
+      } catch {
+        setServerStatus('unreachable');
+      }
+    } catch {
+      setServerStatus('local');
+      setServerStatusUrl(null);
+      setServerAdmin(false);
+    }
+  }, [workspace.desktop]);
+
+  useEffect(() => {
+    const immediate = setTimeout(() => void checkServerStatus(), 0);
+    const timer = setInterval(() => void checkServerStatus(), 30000);
+    return () => {
+      clearTimeout(immediate);
+      clearInterval(timer);
+    };
+  }, [checkServerStatus]);
+
   function addDraft(collectionId?: string, folderId: string | null = null) {
     workspace.addDraft(collectionId, folderId);
     setEditorTab('Params');
@@ -405,7 +505,9 @@ export default function App() {
         if (
           !workspace.nameDialog &&
           !workspace.confirmation &&
+          !workspace.conflict &&
           !workspace.quitOpen &&
+          !serverUsersOpen &&
           !variablesOpen &&
           !authDialog &&
           !moveTarget &&
@@ -414,7 +516,7 @@ export default function App() {
           !exportHandle &&
           !historyProject
         ) {
-          workspace.saveDraft();
+          void workspace.saveDraft();
         }
       }
     }
@@ -422,6 +524,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onSave);
   }, [
     workspace,
+    serverUsersOpen,
     variablesOpen,
     authDialog,
     moveTarget,
@@ -443,174 +546,130 @@ export default function App() {
             <span className="local-badge">LOCAL</span>
           </div>
           <div className="workspace-label">YOUR WORKSPACE</div>
-          <div className="project-controls">
-            <button
-              className="secondary-button"
-              disabled={!workspace.desktop || busy}
-              onClick={workspace.createProject}
-            >
-              New project
-            </button>
-            <button
-              className="secondary-button"
-              disabled={!workspace.desktop || busy}
-              onClick={workspace.openProject}
-            >
-              Open project
-            </button>
-          </div>
-          {!workspace.desktop && (
-            <p className="sidebar-hint">Open the desktop app to work with local projects.</p>
-          )}
-          {project ? (
-            <>
-              <div className="project-picker">
-                <Select
-                  aria-label="Active project"
-                  value={workspace.activeHandle ?? ''}
-                  disabled={busy}
-                  onValueChange={(selectedValue) => workspace.setActiveHandle(selectedValue)}
-                >
-                  {workspace.projects.map((item) => (
-                    <option key={item.handle} value={item.handle}>
-                      {item.data.name}
-                    </option>
-                  ))}
-                </Select>
-              </div>
-              <div className="project-actions">
-                <button disabled={busy} onClick={workspace.renameProject}>
-                  Rename
-                </button>
-                <button disabled={busy} onClick={() => void workspace.reloadProject()}>
-                  Reload
-                </button>
-                <button disabled={busy} onClick={() => void workspace.closeProject()}>
-                  Close project
-                </button>
-              </div>
-              <button
-                className="secondary-button project-auth-button"
-                disabled={busy || !activeEnvironmentView}
-                onClick={() => editAuthentication()}
-              >
-                Project authentication
-              </button>
-              <button
-                className="secondary-button project-history-button"
-                disabled={busy}
-                onClick={() => setHistoryHandle(project.handle)}
-              >
-                Request history
-              </button>
-              <button
-                className="secondary-button project-auth-button"
-                disabled={busy || variablesOpen || !!authDialog}
-                onClick={() => void chooseImport()}
-              >
-                {choosingImport ? 'Reading file…' : 'Import OpenAPI…'}
-              </button>
-              <button
-                className="secondary-button project-auth-button"
-                disabled={busy || variablesOpen || !!authDialog}
-                onClick={() => setPostmanPicker(true)}
-              >
-                Import Postman…
-              </button>
-              <button
-                className="secondary-button project-auth-button"
-                disabled={busy || variablesOpen || !!authDialog}
-                onClick={() => {
-                  setExportHandle(project.handle);
-                  setExportPreview(null);
-                  setExportError(null);
-                  setExportNotice(null);
-                }}
-              >
-                Export OpenAPI…
-              </button>
-              <div className="sidebar-section collections-heading">
-                <span>COLLECTIONS</span>
-                <button
-                  className="icon-button"
-                  aria-label="Create collection"
-                  disabled={busy}
-                  onClick={workspace.createCollection}
-                >
-                  <Icon name="plus" />
-                </button>
-              </div>
-              {project.collections.length === 0 && (
-                <p className="sidebar-hint">Create a collection to save your requests.</p>
-              )}
-              <ProjectTree
-                collections={project.collections}
-                busy={busy}
-                onAuth={(id, folder) => editAuthentication(id, folder?.id ?? null)}
-                projectHandle={project.handle}
-                onDropDraft={chooseMove}
-                onDropRequest={(handle, sourceId, requestId, collectionId, folderId) => {
-                  if (handle !== project.handle || busy) {
-                    return;
-                  }
-                  const request = project.collections
-                    .find((item) => item.data.id === sourceId)
-                    ?.data.requests.find((item) => item.id === requestId);
-                  if (!request) {
-                    return;
-                  }
-                  const id = workspace.openRequest(sourceId, request);
-                  if (id !== undefined) {
-                    workspace.setError(null);
-                    setMoveTarget({ draftId: id, collectionId, folderId });
-                  }
-                }}
-                onSelect={workspace.select}
-                onNew={addDraft}
-                onFolder={workspace.createFolder}
-                onRename={workspace.renameEntity}
-                onRemove={(...args) => void workspace.removeEntity(...args)}
-                onOpen={workspace.openRequest}
-              />
-            </>
-          ) : (
-            <div className="project-placeholder">
-              <Icon name="folder" />
-              <div>
-                <strong>No project open</strong>
-                <small>A little space for your APIs.</small>
-              </div>
-            </div>
-          )}
-          <div className="sidebar-section">
-            <span>OPEN REQUESTS</span>
-            <button className="icon-button" aria-label="New request" onClick={() => addDraft()}>
-              <Icon name="plus" />
-            </button>
-          </div>
-          <div className="draft-list">
-            {drafts.length === 0 ? (
-              <p className="sidebar-hint">Your requests will appear here.</p>
+          <div className="sidebar-scroll">
+            {project ? (
+              <>
+                <div className="project-picker">
+                  <Select
+                    aria-label="Active project"
+                    value={workspace.activeHandle ?? ''}
+                    disabled={busy}
+                    onValueChange={(selectedValue) => workspace.setActiveHandle(selectedValue)}
+                  >
+                    {workspace.projects.map((item) => (
+                      <option key={item.handle} value={item.handle}>
+                        {item.data.name}
+                        {projectKindLabel(item)}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <div className="project-actions">
+                  <button disabled={busy} onClick={() => void workspace.reloadProject()}>
+                    Reload
+                  </button>
+                  <button disabled={busy} onClick={() => void workspace.closeProject()}>
+                    Close project
+                  </button>
+                </div>
+                <div className="sidebar-section collections-heading">
+                  <span>COLLECTIONS</span>
+                  <button
+                    className="icon-button"
+                    aria-label="Create collection"
+                    disabled={busy || project.readOnly}
+                    onClick={workspace.createCollection}
+                  >
+                    <Icon name="plus" />
+                  </button>
+                </div>
+                {project.collections.length === 0 && (
+                  <p className="sidebar-hint">Create a collection to save your requests.</p>
+                )}
+                <ProjectTree
+                  collections={project.collections}
+                  busy={busy}
+                  readOnly={project.readOnly}
+                  onAuth={(id, folder) => editAuthentication(id, folder?.id ?? null)}
+                  projectHandle={project.handle}
+                  onDropDraft={chooseMove}
+                  onDropRequest={(handle, sourceId, requestId, collectionId, folderId) => {
+                    if (handle !== project.handle || busy) {
+                      return;
+                    }
+                    const request = project.collections
+                      .find((item) => item.data.id === sourceId)
+                      ?.data.requests.find((item) => item.id === requestId);
+                    if (!request) {
+                      return;
+                    }
+                    const id = workspace.openRequest(sourceId, request);
+                    if (id !== undefined) {
+                      workspace.setError(null);
+                      setMoveTarget({ draftId: id, collectionId, folderId });
+                    }
+                  }}
+                  onSelect={workspace.select}
+                  onNew={addDraft}
+                  onFolder={workspace.createFolder}
+                  onRename={workspace.renameEntity}
+                  onRemove={(...args) => void workspace.removeEntity(...args)}
+                  onOpen={workspace.openRequest}
+                />
+              </>
             ) : (
-              drafts.map((item) => (
-                <button
-                  key={item.id}
-                  className={`draft-link ${item.id === activeId ? 'selected' : ''}`}
-                  onClick={() => setActiveId(item.id)}
-                >
-                  <span className={`method-label method-${item.method.toLowerCase()}`}>
-                    {item.method}
-                  </span>
-                  <span>{item.name}</span>
-                </button>
-              ))
+              <div className="project-placeholder">
+                <Icon name="folder" />
+                <div>
+                  <strong>No project open</strong>
+                  <small>A little space for your APIs.</small>
+                </div>
+              </div>
             )}
+            <div className="sidebar-section">
+              <span>OPEN REQUESTS</span>
+              <button className="icon-button" aria-label="New request" onClick={() => addDraft()}>
+                <Icon name="plus" />
+              </button>
+            </div>
+            <div className="draft-list">
+              {drafts.length === 0 ? (
+                <p className="sidebar-hint">Your requests will appear here.</p>
+              ) : (
+                drafts.map((item) => (
+                  <button
+                    key={item.id}
+                    className={`draft-link ${item.id === activeId ? 'selected' : ''}`}
+                    onClick={() => setActiveId(item.id)}
+                  >
+                    <span className={`method-label method-${item.method.toLowerCase()}`}>
+                      {item.method}
+                    </span>
+                    <span>{item.name}</span>
+                  </button>
+                ))
+              )}
+            </div>
           </div>
           <div className="sidebar-note">
             <span className="tiny-orbit" />
             <div>
-              <strong>Local by design.</strong>
-              <p>Your workspace. Your machine.</p>
+              <strong>
+                {project?.serverRecovery
+                  ? 'Recovery copy.'
+                  : project?.readOnly
+                    ? 'Server snapshot.'
+                    : project?.serverSync
+                      ? 'Server workspace.'
+                      : 'Local by design.'}
+              </strong>
+              <p>
+                {project?.readOnly
+                  ? 'Read-only copy cached on this machine.'
+                  : project?.serverSync
+                    ? 'Changes stay here until you sync from Server connection.'
+                    : 'Your workspace. Your machine.'}
+              </p>
             </div>
           </div>
           <div className="sidebar-footer">
@@ -637,6 +696,7 @@ export default function App() {
             </div>
             {project ? (
               <EnvironmentControls
+                serverOwned={project?.serverOwned}
                 key={`${project.handle}-${importRefresh[project.handle] ?? 0}`}
                 handle={project.handle}
                 ask={workspace.ask}
@@ -663,6 +723,13 @@ export default function App() {
                 >
                   <Icon name="close" />
                 </button>
+              </div>
+            )}
+            {project?.readOnly && (
+              <div className="operation-status" role="status">
+                {project.serverRecovery
+                  ? 'Read-only recovery copy. Your saved edits are preserved here. Copy desired changes into the current server workspace before syncing.'
+                  : 'Read-only server snapshot. Changes are disabled in this workspace.'}
               </div>
             )}
             {busy && (
@@ -715,401 +782,501 @@ export default function App() {
               >
                 <Icon name="plus" />
               </button>
-              <span className="session-label">{project ? 'LOCAL PROJECT' : 'SESSION ONLY'}</span>
+              <span className="session-label">
+                {project?.readOnly
+                  ? 'SERVER SNAPSHOT · READ ONLY'
+                  : project
+                    ? project.serverSync
+                      ? 'SERVER WORKSPACE · SAVED ON SERVER'
+                      : 'LOCAL PROJECT'
+                    : 'SESSION ONLY'}
+              </span>
             </div>
 
-            {!draft ? (
-              <section className="welcome">
-                <span className="eyebrow">
-                  <span className="status-dot" /> A FRESH START
-                </span>
-                <div className="welcome-symbol">
-                  <Icon name="code" size={38} />
-                </div>
-                <h1>
-                  Less friction.
-                  <br />
-                  <span>More flow.</span>
-                </h1>
-                <p>
-                  A focused home for your APIs.
-                  <br />
-                  Start with a request and make yourself at home.
-                </p>
-                <button className="primary-button" onClick={() => addDraft()}>
-                  <Icon name="plus" size={16} /> New request <Icon name="arrow" size={16} />
-                </button>
-                <div className="welcome-footnote">
-                  Open a project to organize and save your requests locally.
-                </div>
-                <div className="welcome-grid">
-                  <div>
-                    <span className="feature-number">01</span>
-                    <strong>Built for focus</strong>
-                    <p>A clear view of the request and response.</p>
-                  </div>
-                  <div>
-                    <span className="feature-number">02</span>
-                    <strong>Yours to keep</strong>
-                    <p>Local files. No account required.</p>
-                  </div>
-                  <div>
-                    <span className="feature-number">03</span>
-                    <strong>Ready to grow</strong>
-                    <p>A small foundation for a capable toolkit.</p>
-                  </div>
-                </div>
-              </section>
-            ) : (
-              <section className="request-editor" aria-label="Request editor">
-                {needsImportReview && (
-                  <section className="import-review" aria-label="Import review required">
-                    <h3>Imported request needs review</h3>
-                    <p>
-                      Sending and token acquisition are locked. Review the imported configuration,
-                      choose local attachments and configure authentication/variables as needed.
-                    </p>
-                    <ul>
-                      {(draftImportIssues.length ? draftImportIssues : savedImportIssues).map(
-                        (issue, index) => (
-                          <li key={index}>{issue}</li>
-                        ),
-                      )}
-                    </ul>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={!draftImportIssues.length}
-                        disabled={busy}
-                        onChange={(e) =>
-                          updateDraft({ importIssues: e.target.checked ? [] : savedImportIssues })
-                        }
-                      />{' '}
-                      I reviewed and configured this request
-                    </label>
-                    {!draftImportIssues.length && (
-                      <p>Save this request to record the review and enable sending.</p>
-                    )}
-                  </section>
-                )}
-                <div className="editor-heading">
-                  <div>
+            <div className="request-response-split" ref={splitRef}>
+              <div className="split-top" style={{ flexBasis: `${requestPaneRatio * 100}%` }}>
+                {!draft ? (
+                  <section className="welcome">
                     <span className="eyebrow">
-                      {isDirty(draft) ? 'UNSAVED CHANGES' : 'SAVED REQUEST'}
+                      <span className="status-dot" /> A FRESH START
                     </span>
-                    <input
-                      className="request-name"
-                      aria-label="Request name"
-                      value={draft.name}
-                      onChange={(event) => updateDraft({ name: event.target.value })}
-                    />
-                    <p className="request-location">
-                      {requestLocation(authProject ?? project, draft.collectionId, draft.folderId)}
+                    <div className="welcome-symbol">
+                      <Icon name="code" size={38} />
+                    </div>
+                    <h1>
+                      Less friction.
+                      <br />
+                      <span>More flow.</span>
+                    </h1>
+                    <p>
+                      A focused home for your APIs.
+                      <br />
+                      Start with a request and make yourself at home.
                     </p>
-                  </div>
-                  <div className="save-controls">
-                    <button
-                      className="secondary-button"
-                      disabled={!project || busy}
-                      title={requestLocation(
-                        authProject ?? project,
-                        draft.collectionId,
-                        draft.folderId,
-                      )}
-                      onClick={() => chooseMove(draft.id)}
-                    >
-                      Move…
+                    <button className="primary-button" onClick={() => addDraft()}>
+                      <Icon name="plus" size={16} /> New request <Icon name="arrow" size={16} />
                     </button>
-                    <span className="subtle-tag">{isDirty(draft) ? 'Unsaved' : 'Saved'}</span>
-                    <button
-                      className="secondary-button"
-                      disabled={!project || checkingVariables || busy}
-                      aria-label="Check variables"
-                      title="Check whether this request's placeholders have values. Does not send a request."
-                      onClick={() => {
-                        if (!project) {
-                          return;
-                        }
-                        const text = [
-                          draft.url,
-                          ...[...draft.params, ...draft.headers]
-                            .filter((entry) => entry.enabled && entry.key !== '')
-                            .flatMap((entry) => [entry.key, entry.value]),
-                          ...(['text', 'json'].includes(draft.bodyFormat) ? [draft.body] : []),
-                          ...(['urlEncoded', 'multipart'].includes(draft.bodyFormat)
-                            ? draft.fields
-                                .filter((field) => field.enabled && field.key !== '')
-                                .flatMap((field) => [
-                                  field.key,
-                                  ...(draft.bodyFormat === 'multipart' && field.file
-                                    ? []
-                                    : [field.value]),
-                                ])
-                            : []),
-                        ].join('\n');
-                        const context = { requestId: draft.requestId, handle: project.handle };
-                        setCheckingVariables(true);
-                        setVariableCheck({
-                          ...context,
-                          state: 'checking',
-                          message: 'Checking placeholders in the selected project environment…',
-                        });
-                        void environmentAction(project.handle, { kind: 'check', text })
-                          .then(
-                            (reply) => {
-                              const environment =
-                                reply.view.data.environments.find(
-                                  (item) => item.id === reply.view.selectedEnvironment,
-                                )?.name ?? 'Defaults';
-                              setVariableCheck({
-                                ...context,
-                                state: 'success',
-                                message: text.includes('{{')
-                                  ? `All request-field placeholders have values in ${environment} or shared defaults. Authentication references are validated when sending.`
-                                  : 'This request contains no variable placeholders to resolve. Authentication references are validated when sending.',
-                              });
-                            },
-                            (reason: unknown) =>
-                              setVariableCheck({
-                                ...context,
-                                state: 'error',
-                                message:
-                                  typeof reason === 'string'
-                                    ? reason
-                                    : 'Could not check variables.',
-                              }),
-                          )
-                          .finally(() => setCheckingVariables(false));
-                      }}
-                    >
-                      {checkingVariables ? 'Checking…' : 'Check variables'}
-                    </button>
-                    <button
-                      className="secondary-button"
-                      disabled={!workspace.desktop || busy || !isDirty(draft)}
-                      onClick={workspace.saveDraft}
-                    >
-                      Save
-                    </button>
-                  </div>
-                </div>
-                <div className="url-bar">
-                  <Select
-                    aria-label="HTTP method"
-                    value={draft.method}
-                    className={`method-${draft.method.toLowerCase()}`}
-                    onValueChange={(selectedValue) => updateDraft({ method: selectedValue })}
-                  >
-                    {methods.map((method) => (
-                      <option key={method}>{method}</option>
-                    ))}
-                  </Select>
-                  <VariableInput
-                    label="Request URL"
-                    variant="url"
-                    placeholder="https://api.example.com/v1/resource"
-                    value={draft.url}
-                    onChange={(url) => updateDraft({ url })}
-                  />
-                  <button
-                    className="send-button"
-                    disabled={execution?.running ? false : !canSend}
-                    onClick={() => (execution?.running ? void http.cancel(draft.id) : send())}
-                    title={
-                      execution?.running
-                        ? 'Cancel this request'
-                        : 'Send the current draft without saving it'
-                    }
-                  >
-                    {execution?.running ? 'Cancel' : 'Send'} <Icon name="arrow" size={15} />
-                  </button>
-                </div>
-                <div className="send-options">
-                  <label>
-                    Timeout (seconds)
-                    <input
-                      aria-label="Request timeout in seconds"
-                      type="number"
-                      min={1}
-                      max={300}
-                      value={timeoutSeconds}
-                      onChange={(event) => setTimeoutSeconds(Number(event.target.value))}
-                    />
-                  </label>
-                  <button
-                    className="secondary-button"
-                    disabled={!canSend || execution?.running}
-                    onClick={() => send(true)}
-                  >
-                    Send & save response…
-                  </button>
-                  <span>Direct connection · redirects shown · no cookie session</span>
-                </div>
-                <p className="auth-effective" aria-label="Effective authentication">
-                  Authentication: <strong>{authLabel(effective.auth)}</strong> · {effective.source}
-                  {draft.auth ? '' : ' · inherited'}
-                  {manualAuthHint(effective.auth, draft) && (
-                    <span className="auth-override">
-                      {' '}
-                      · {manualAuthHint(effective.auth, draft)}
-                    </span>
-                  )}
-                </p>
-                {checkResult && (
-                  <div
-                    className={`variable-check variable-check-${checkResult.state}`}
-                    role={checkResult.state === 'error' ? 'alert' : 'status'}
-                    aria-label="Variable check result"
-                    aria-busy={checkResult.state === 'checking'}
-                  >
-                    <strong>
-                      {checkResult.state === 'checking'
-                        ? 'Checking variables…'
-                        : checkResult.state === 'error'
-                          ? 'Variable check failed'
-                          : 'Variable check complete'}
-                    </strong>
-                    <span>{checkResult.message}</span>
-                    <small>
-                      No HTTP request is sent. Run the check again after editing or changing
-                      environments.
-                    </small>
-                  </div>
-                )}
-                <div className="editor-tabs" role="tablist" aria-label="Request configuration">
-                  {editorTabs.map((tab) => (
-                    <button
-                      key={tab}
-                      role="tab"
-                      id={`tab-${tab}`}
-                      aria-controls={`panel-${tab}`}
-                      tabIndex={editorTab === tab ? 0 : -1}
-                      onKeyDown={(event) => {
-                        const index = editorTabs.indexOf(tab);
-                        let target: EditorTab | undefined;
-                        if (event.key === 'ArrowRight') {
-                          target = editorTabs[(index + 1) % editorTabs.length];
-                        } else if (event.key === 'ArrowLeft') {
-                          target = editorTabs[(index + editorTabs.length - 1) % editorTabs.length];
-                        } else if (event.key === 'Home') {
-                          target = editorTabs[0];
-                        } else if (event.key === 'End') {
-                          target = editorTabs.at(-1);
-                        }
-                        if (target) {
-                          event.preventDefault();
-                          setEditorTab(target);
-                          document.getElementById(`tab-${target}`)?.focus();
-                        }
-                      }}
-                      aria-selected={editorTab === tab}
-                      className={editorTab === tab ? 'active' : ''}
-                      onClick={() => setEditorTab(tab)}
-                    >
-                      {tab}
-                      {tab === 'Headers' &&
-                      draft.headers.some((entry) => entry.key && entry.enabled) ? (
-                        <span className="count-badge">
-                          {draft.headers.filter((entry) => entry.key && entry.enabled).length}
+                    <div className="welcome-footnote">
+                      Open a project to organize and save your requests locally.
+                    </div>
+                    <div className="welcome-grid">
+                      <div>
+                        <span className="feature-number">01</span>
+                        <strong>Built for focus</strong>
+                        <p>A clear view of the request and response.</p>
+                      </div>
+                      <div>
+                        <span className="feature-number">02</span>
+                        <strong>Yours to keep</strong>
+                        <p>Local files. No account required.</p>
+                      </div>
+                      <div>
+                        <span className="feature-number">03</span>
+                        <strong>Ready to grow</strong>
+                        <p>A small foundation for a capable toolkit.</p>
+                      </div>
+                    </div>
+                  </section>
+                ) : (
+                  <section className="request-editor" aria-label="Request editor">
+                    {needsImportReview && (
+                      <section className="import-review" aria-label="Import review required">
+                        <h3>Imported request needs review</h3>
+                        <p>
+                          Sending and token acquisition are locked. Review the imported
+                          configuration, choose local attachments and configure
+                          authentication/variables as needed.
+                        </p>
+                        <ul>
+                          {(draftImportIssues.length ? draftImportIssues : savedImportIssues).map(
+                            (issue, index) => (
+                              <li key={index}>{issue}</li>
+                            ),
+                          )}
+                        </ul>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={!draftImportIssues.length}
+                            disabled={busy}
+                            onChange={(e) =>
+                              updateDraft({
+                                importIssues: e.target.checked ? [] : savedImportIssues,
+                              })
+                            }
+                          />{' '}
+                          I reviewed and configured this request
+                        </label>
+                        {!draftImportIssues.length && (
+                          <p>Save this request to record the review and enable sending.</p>
+                        )}
+                      </section>
+                    )}
+                    <div className="editor-heading">
+                      <div>
+                        <span className="eyebrow">
+                          {isDirty(draft) ? 'UNSAVED CHANGES' : 'SAVED REQUEST'}
                         </span>
-                      ) : null}
-                    </button>
-                  ))}
-                </div>
-                <div
-                  className="editor-panel"
-                  role="tabpanel"
-                  id={`panel-${editorTab}`}
-                  aria-labelledby={`tab-${editorTab}`}
-                >
-                  {editorTab === 'Params' && (
-                    <KeyValueEditor
-                      label="Parameter"
-                      entries={draft.params}
-                      onChange={(params) => updateDraft({ params })}
-                    />
-                  )}
-                  {editorTab === 'Headers' && (
-                    <>
-                      <HeaderInspector
-                        input={{
-                          request: requestData(draft),
-                          scope: executionScope,
-                          timeoutMs: timeoutSeconds * 1000,
-                          saveResponse: false,
-                        }}
-                        disabled={!canSend}
-                        sent={execution?.result?.requestHeaders}
-                      />
-                      <KeyValueEditor
-                        label="Header"
-                        entries={draft.headers}
-                        onChange={(headers) => updateDraft({ headers })}
-                      />
-                    </>
-                  )}
-                  {editorTab === 'Body' && (
-                    <BodyEditor draft={draft} onChange={updateDraft} onFile={workspace.attach} />
-                  )}
-                  {editorTab === 'Auth' && (
-                    <>
-                      <AuthTest
-                        key={`test:${JSON.stringify([draft.id, effective, executionScope])}`}
-                        input={{
-                          request: requestData(draft),
-                          scope: executionScope,
-                          timeoutMs: timeoutSeconds * 1000,
-                          saveResponse: false,
-                        }}
-                        tokenOnly={['oauth2', 'customLogin'].includes(effective.auth?.kind ?? '')}
-                        disabled={
-                          !canSend ||
-                          !validAuth(draft.auth ?? null, executionEnvironment?.data.variables ?? [])
-                        }
-                      />
-                      {(effective.auth?.kind === 'oauth2' ||
-                        effective.auth?.kind === 'customLogin') && (
-                        <TokenControls
-                          key={`token:${JSON.stringify([draft.id, effective, executionScope])}`}
-                          input={{
-                            request: requestData(draft),
-                            scope: executionScope,
-                            timeoutMs: timeoutSeconds * 1000,
-                            saveResponse: false,
+                        <input
+                          className="request-name"
+                          aria-label="Request name"
+                          value={draft.name}
+                          onChange={(event) => updateDraft({ name: event.target.value })}
+                        />
+                        <p className="request-location">
+                          {requestLocation(
+                            authProject ?? project,
+                            draft.collectionId,
+                            draft.folderId,
+                          )}
+                        </p>
+                      </div>
+                      <div className="save-controls">
+                        <button
+                          className="secondary-button"
+                          disabled={!project || project.readOnly || busy}
+                          title={requestLocation(
+                            authProject ?? project,
+                            draft.collectionId,
+                            draft.folderId,
+                          )}
+                          onClick={() => chooseMove(draft.id)}
+                        >
+                          Move…
+                        </button>
+                        <span className="subtle-tag">{isDirty(draft) ? 'Unsaved' : 'Saved'}</span>
+                        <button
+                          className="secondary-button"
+                          disabled={!project || checkingVariables || busy}
+                          aria-label="Check variables"
+                          title="Check whether this request's placeholders have values. Does not send a request."
+                          onClick={() => {
+                            if (!project) {
+                              return;
+                            }
+                            const text = [
+                              draft.url,
+                              ...[...draft.params, ...draft.headers]
+                                .filter((entry) => entry.enabled && entry.key !== '')
+                                .flatMap((entry) => [entry.key, entry.value]),
+                              ...(['text', 'json'].includes(draft.bodyFormat) ? [draft.body] : []),
+                              ...(['urlEncoded', 'multipart'].includes(draft.bodyFormat)
+                                ? draft.fields
+                                    .filter((field) => field.enabled && field.key !== '')
+                                    .flatMap((field) => [
+                                      field.key,
+                                      ...(draft.bodyFormat === 'multipart' && field.file
+                                        ? []
+                                        : [field.value]),
+                                    ])
+                                : []),
+                            ].join('\n');
+                            const context = { requestId: draft.requestId, handle: project.handle };
+                            setCheckingVariables(true);
+                            setVariableCheck({
+                              ...context,
+                              state: 'checking',
+                              message: 'Checking placeholders in the selected project environment…',
+                            });
+                            void environmentAction(project.handle, { kind: 'check', text })
+                              .then(
+                                (reply) => {
+                                  const environment =
+                                    reply.view.data.environments.find(
+                                      (item) => item.id === reply.view.selectedEnvironment,
+                                    )?.name ?? 'Defaults';
+                                  setVariableCheck({
+                                    ...context,
+                                    state: 'success',
+                                    message: text.includes('{{')
+                                      ? `All request-field placeholders have values in ${environment} or shared defaults. Authentication references are validated when sending.`
+                                      : 'This request contains no variable placeholders to resolve. Authentication references are validated when sending.',
+                                  });
+                                },
+                                (reason: unknown) =>
+                                  setVariableCheck({
+                                    ...context,
+                                    state: 'error',
+                                    message:
+                                      typeof reason === 'string'
+                                        ? reason
+                                        : 'Could not check variables.',
+                                  }),
+                              )
+                              .finally(() => setCheckingVariables(false));
                           }}
-                          disabled={!canSend || !executionScope}
+                        >
+                          {checkingVariables ? 'Checking…' : 'Check variables'}
+                        </button>
+                        <button
+                          className="secondary-button"
+                          disabled={
+                            !workspace.desktop || project?.readOnly || busy || !isDirty(draft)
+                          }
+                          onClick={() => void workspace.saveDraft()}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    </div>
+                    <div className="url-bar">
+                      <Select
+                        aria-label="HTTP method"
+                        value={draft.method}
+                        className={`method-${draft.method.toLowerCase()}`}
+                        onValueChange={(selectedValue) => updateDraft({ method: selectedValue })}
+                      >
+                        {methods.map((method) => (
+                          <option key={method}>{method}</option>
+                        ))}
+                      </Select>
+                      <VariableInput
+                        label="Request URL"
+                        variant="url"
+                        placeholder="https://api.example.com/v1/resource"
+                        value={draft.url}
+                        onChange={(url) => updateDraft({ url })}
+                      />
+                      <button
+                        className="send-button"
+                        disabled={execution?.running ? false : !canSend}
+                        onClick={() => (execution?.running ? void http.cancel(draft.id) : send())}
+                        title={
+                          execution?.running
+                            ? 'Cancel this request'
+                            : 'Send the current draft without saving it'
+                        }
+                      >
+                        {execution?.running ? 'Cancel' : 'Send'} <Icon name="arrow" size={15} />
+                      </button>
+                    </div>
+                    <div className="send-options">
+                      <label>
+                        Timeout (seconds)
+                        <input
+                          aria-label="Request timeout in seconds"
+                          type="number"
+                          min={1}
+                          max={300}
+                          value={timeoutSeconds}
+                          onChange={(event) => setTimeoutSeconds(Number(event.target.value))}
+                        />
+                      </label>
+                      <button
+                        className="secondary-button"
+                        disabled={!canSend || execution?.running}
+                        onClick={() => send(true)}
+                      >
+                        Send & save response…
+                      </button>
+                      <span>Direct connection · redirects shown · no cookie session</span>
+                    </div>
+                    <p className="auth-effective" aria-label="Effective authentication">
+                      Authentication: <strong>{authLabel(effective.auth)}</strong> ·{' '}
+                      {effective.source}
+                      {draft.auth ? '' : ' · inherited'}
+                      {manualAuthHint(effective.auth, draft) && (
+                        <span className="auth-override">
+                          {' '}
+                          · {manualAuthHint(effective.auth, draft)}
+                        </span>
+                      )}
+                    </p>
+                    {checkResult && (
+                      <div
+                        className={`variable-check variable-check-${checkResult.state}`}
+                        role={checkResult.state === 'error' ? 'alert' : 'status'}
+                        aria-label="Variable check result"
+                        aria-busy={checkResult.state === 'checking'}
+                      >
+                        <strong>
+                          {checkResult.state === 'checking'
+                            ? 'Checking variables…'
+                            : checkResult.state === 'error'
+                              ? 'Variable check failed'
+                              : 'Variable check complete'}
+                        </strong>
+                        <span>{checkResult.message}</span>
+                        <small>
+                          No HTTP request is sent. Run the check again after editing or changing
+                          environments.
+                        </small>
+                      </div>
+                    )}
+                    <div className="editor-tabs" role="tablist" aria-label="Request configuration">
+                      {editorTabs.map((tab) => (
+                        <button
+                          key={tab}
+                          role="tab"
+                          id={`tab-${tab}`}
+                          aria-controls={`panel-${tab}`}
+                          tabIndex={editorTab === tab ? 0 : -1}
+                          onKeyDown={(event) => {
+                            const index = editorTabs.indexOf(tab);
+                            let target: EditorTab | undefined;
+                            if (event.key === 'ArrowRight') {
+                              target = editorTabs[(index + 1) % editorTabs.length];
+                            } else if (event.key === 'ArrowLeft') {
+                              target =
+                                editorTabs[(index + editorTabs.length - 1) % editorTabs.length];
+                            } else if (event.key === 'Home') {
+                              target = editorTabs[0];
+                            } else if (event.key === 'End') {
+                              target = editorTabs.at(-1);
+                            }
+                            if (target) {
+                              event.preventDefault();
+                              setEditorTab(target);
+                              document.getElementById(`tab-${target}`)?.focus();
+                            }
+                          }}
+                          aria-selected={editorTab === tab}
+                          className={editorTab === tab ? 'active' : ''}
+                          onClick={() => setEditorTab(tab)}
+                        >
+                          {tab}
+                          {tab === 'Headers' &&
+                          draft.headers.some((entry) => entry.key && entry.enabled) ? (
+                            <span className="count-badge">
+                              {draft.headers.filter((entry) => entry.key && entry.enabled).length}
+                            </span>
+                          ) : null}
+                        </button>
+                      ))}
+                    </div>
+                    <div
+                      className="editor-panel"
+                      role="tabpanel"
+                      id={`panel-${editorTab}`}
+                      aria-labelledby={`tab-${editorTab}`}
+                    >
+                      {editorTab === 'Params' && (
+                        <KeyValueEditor
+                          label="Parameter"
+                          entries={draft.params}
+                          onChange={(params) => updateDraft({ params })}
                         />
                       )}
-                      <AuthEditor
-                        value={draft.auth ?? null}
-                        onChange={(auth) => updateDraft({ auth })}
-                        variables={authProject ? (executionEnvironment?.data.variables ?? []) : []}
-                      />
-                    </>
-                  )}
-                </div>
-                <p className="draft-notice">
-                  {draft.savedSnapshot
-                    ? 'Saved locally. Use Save or Cmd/Ctrl+S to keep your changes.'
-                    : 'Unsaved request. Open a project and collection, then use Save or Cmd/Ctrl+S.'}{' '}
-                  Sending uses this draft without saving changes.
-                </p>
-              </section>
-            )}
-            <ResponseView
-              key={draft?.id ?? 'empty'}
-              environmentLabel={execution?.environmentLabel}
-              result={execution?.result ?? null}
-              running={execution?.running ?? false}
-            />
+                      {editorTab === 'Headers' && (
+                        <>
+                          <HeaderInspector
+                            input={{
+                              request: requestData(draft),
+                              scope: executionScope,
+                              timeoutMs: timeoutSeconds * 1000,
+                              saveResponse: false,
+                            }}
+                            disabled={!canSend}
+                            sent={execution?.result?.requestHeaders}
+                          />
+                          <KeyValueEditor
+                            label="Header"
+                            entries={draft.headers}
+                            onChange={(headers) => updateDraft({ headers })}
+                          />
+                        </>
+                      )}
+                      {editorTab === 'Body' && (
+                        <BodyEditor
+                          draft={draft}
+                          onChange={updateDraft}
+                          onFile={workspace.attach}
+                        />
+                      )}
+                      {editorTab === 'Auth' && (
+                        <>
+                          <AuthTest
+                            key={`test:${JSON.stringify([draft.id, effective, executionScope])}`}
+                            input={{
+                              request: requestData(draft),
+                              scope: executionScope,
+                              timeoutMs: timeoutSeconds * 1000,
+                              saveResponse: false,
+                            }}
+                            tokenOnly={['oauth2', 'customLogin'].includes(
+                              effective.auth?.kind ?? '',
+                            )}
+                            disabled={
+                              !canSend ||
+                              !validAuth(
+                                draft.auth ?? null,
+                                executionEnvironment?.data.variables ?? [],
+                              )
+                            }
+                          />
+                          {(effective.auth?.kind === 'oauth2' ||
+                            effective.auth?.kind === 'customLogin') && (
+                            <TokenControls
+                              key={`token:${JSON.stringify([draft.id, effective, executionScope])}`}
+                              input={{
+                                request: requestData(draft),
+                                scope: executionScope,
+                                timeoutMs: timeoutSeconds * 1000,
+                                saveResponse: false,
+                              }}
+                              disabled={!canSend || !executionScope}
+                            />
+                          )}
+                          <AuthEditor
+                            value={draft.auth ?? null}
+                            onChange={(auth) => updateDraft({ auth })}
+                            variables={
+                              authProject ? (executionEnvironment?.data.variables ?? []) : []
+                            }
+                          />
+                        </>
+                      )}
+                    </div>
+                    <p className="draft-notice">
+                      {draft.savedSnapshot
+                        ? 'Saved locally. Use Save or Cmd/Ctrl+S to keep your changes.'
+                        : 'Unsaved request. Open a project and collection, then use Save or Cmd/Ctrl+S.'}{' '}
+                      Sending uses this draft without saving changes.
+                    </p>
+                  </section>
+                )}
+              </div>
+              <div
+                className={`pane-resizer${resizingSplit ? ' is-dragging' : ''}`}
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="Resize request and response panes"
+                aria-valuenow={Math.round(requestPaneRatio * 100)}
+                aria-valuemin={Math.round(SPLIT_RATIO_MIN * 100)}
+                aria-valuemax={Math.round(SPLIT_RATIO_MAX * 100)}
+                tabIndex={0}
+                onPointerDown={(event) => {
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  setResizingSplit(true);
+                  resizeSplitFromPointer(event.clientY);
+                }}
+                onPointerMove={(event) => {
+                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    resizeSplitFromPointer(event.clientY);
+                  }
+                }}
+                onPointerUp={(event) => {
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                  setResizingSplit(false);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    setRequestPaneRatio((value) => clampSplitRatio(value - 0.02));
+                  } else if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    setRequestPaneRatio((value) => clampSplitRatio(value + 0.02));
+                  } else if (event.key === 'Home') {
+                    event.preventDefault();
+                    setRequestPaneRatio(SPLIT_RATIO_MIN);
+                  } else if (event.key === 'End') {
+                    event.preventDefault();
+                    setRequestPaneRatio(SPLIT_RATIO_MAX);
+                  }
+                }}
+              />
+              <div className="split-bottom">
+                <ResponseView
+                  key={draft?.id ?? 'empty'}
+                  environmentLabel={execution?.environmentLabel}
+                  result={execution?.result ?? null}
+                  running={execution?.running ?? false}
+                />
+              </div>
+            </div>
           </main>
           <footer className="statusbar">
             <span>
               <span className="status-dot" />
               {connection}
             </span>
-            <span>
-              Local workspace <span className="status-divider">/</span> No cloud required
+            <span className="statusbar-right">
+              {serverStatus === 'connected' ? (
+                <span className="statusbar-connection" title={serverStatusUrl ?? undefined}>
+                  <span className="status-dot" /> Connected to server
+                </span>
+              ) : serverStatus === 'unreachable' ? (
+                <span className="statusbar-connection" title={serverStatusUrl ?? undefined}>
+                  <span className="status-dot status-dot-warning" /> Server unreachable
+                </span>
+              ) : (
+                <>
+                  Local workspace <span className="status-divider">/</span> No cloud required
+                </>
+              )}
+              {serverStatus !== 'local' && (
+                <VaultLock
+                  refreshKey={vaultRefresh}
+                  onSetup={() => setServerConnectionOpen(true)}
+                />
+              )}
+              <button
+                className="icon-button settings-trigger"
+                aria-label="Settings"
+                onClick={() => setSettingsOpen(true)}
+              >
+                <Icon name="settings" size={13} />
+              </button>
             </span>
           </footer>
         </div>
@@ -1149,6 +1316,10 @@ export default function App() {
         )}
         {importDialog && (
           <ImportDialog
+            serverOwned={
+              workspace.projects.find((project) => project.handle === importDialog.handle)
+                ?.serverOwned
+            }
             preview={importDialog.preview}
             projectName={importDialog.projectName}
             busy={importBusy}
@@ -1265,6 +1436,12 @@ export default function App() {
             }}
           />
         )}
+        {workspace.conflict && !workspace.confirmation && (
+          <ConflictDialog
+            message={workspace.conflict.message}
+            onChoose={workspace.resolveConflict}
+          />
+        )}
         {workspace.confirmation && (
           <ConfirmDialog
             message={workspace.confirmation.message}
@@ -1303,6 +1480,90 @@ export default function App() {
           saving={workspace.quitSaving}
           error={workspace.quitError}
           onChoose={(choice) => void workspace.finishQuit(choice)}
+        />
+      )}
+      {serverConnectionOpen && (
+        <ServerConnection
+          localProjects={workspace.projects}
+          onOpenProject={workspace.openServerProject}
+          onRefreshProject={workspace.refreshServerWorkspace}
+          onDeleteProject={workspace.deleteServerProject}
+          onManageUsers={() => {
+            setServerConnectionOpen(false);
+            void checkServerStatus();
+            setServerUsersOpen(true);
+          }}
+          onClose={() => {
+            setServerConnectionOpen(false);
+            void checkServerStatus();
+          }}
+        />
+      )}
+      {serverUsersOpen && <ServerUsers onClose={() => setServerUsersOpen(false)} />}
+      {settingsOpen && (
+        <SettingsDialog
+          onClose={() => setSettingsOpen(false)}
+          desktop={workspace.desktop}
+          onServerConnection={() => {
+            setSettingsOpen(false);
+            setServerConnectionOpen(true);
+          }}
+          serverConnectionDisabled={busy}
+          onServerUsers={
+            serverAdmin && serverStatus === 'connected'
+              ? () => {
+                  setSettingsOpen(false);
+                  setServerUsersOpen(true);
+                }
+              : undefined
+          }
+          onNewLocalProject={() => {
+            setSettingsOpen(false);
+            workspace.createProject();
+          }}
+          onOpenLocalProject={() => {
+            setSettingsOpen(false);
+            workspace.openProject();
+          }}
+          localProjectDisabled={busy}
+          project={project ? { name: project.data.name } : null}
+          onRename={() => {
+            setSettingsOpen(false);
+            workspace.renameProject();
+          }}
+          renameDisabled={busy || !!project?.readOnly}
+          onHistory={() => {
+            if (project) {
+              setSettingsOpen(false);
+              setHistoryHandle(project.handle);
+            }
+          }}
+          historyDisabled={busy}
+          onAuth={() => {
+            setSettingsOpen(false);
+            editAuthentication();
+          }}
+          authDisabled={busy || !!project?.readOnly || !activeEnvironmentView}
+          onImportOpenApi={() => {
+            setSettingsOpen(false);
+            void chooseImport();
+          }}
+          importOpenApiLabel={choosingImport ? 'Reading file…' : 'Import OpenAPI…'}
+          onImportPostman={() => {
+            setSettingsOpen(false);
+            setPostmanPicker(true);
+          }}
+          importDisabled={busy || !!project?.readOnly || variablesOpen || !!authDialog}
+          onExport={() => {
+            if (project) {
+              setSettingsOpen(false);
+              setExportHandle(project.handle);
+              setExportPreview(null);
+              setExportError(null);
+              setExportNotice(null);
+            }
+          }}
+          exportDisabled={busy || variablesOpen || !!authDialog}
         />
       )}
     </VariableContext.Provider>

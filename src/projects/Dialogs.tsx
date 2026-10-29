@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
-export function Modal({ children, label }: { children: ReactNode; label: string }) {
+export function Modal({
+  children,
+  label,
+  variant,
+  onDismiss,
+}: {
+  children: ReactNode;
+  label: string;
+  variant?: 'blur';
+  onDismiss?: () => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const previous = document.activeElement;
@@ -12,14 +22,25 @@ export function Modal({ children, label }: { children: ReactNode; label: string 
     };
   }, []);
   return (
-    <div className="modal-backdrop">
+    <div
+      className={`modal-backdrop${variant === 'blur' ? ' modal-backdrop-blur' : ''}`}
+      onMouseDown={(event) => {
+        if (onDismiss && event.target === event.currentTarget) {
+          onDismiss();
+        }
+      }}
+    >
       <div
         ref={ref}
-        className="modal"
+        className={`modal${variant === 'blur' ? ' modal-blur' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-label={label}
         onKeyDown={(event) => {
+          if (event.key === 'Escape' && onDismiss) {
+            onDismiss();
+            return;
+          }
           if (event.key !== 'Tab') {
             return;
           }
@@ -119,6 +140,37 @@ export function ConfirmDialog({
   );
 }
 
+/** Offered when a save was rejected because the server version changed in the meantime. */
+export function ConflictDialog({
+  message,
+  onChoose,
+}: {
+  message: string;
+  onChoose: (choice: 'server' | 'mine' | 'cancel') => void;
+}) {
+  return (
+    <Modal label="Changed on the server">
+      <h2>Changed on the server</h2>
+      <p>{message.replace(/ Your change was not applied;.*$/, ' Your change was not applied.')}</p>
+      <p>
+        Load the server version to discard your edits in this request, or keep your version to save
+        it over the server version.
+      </p>
+      <div className="dialog-actions">
+        <button className="secondary-button" onClick={() => onChoose('cancel')}>
+          Decide later
+        </button>
+        <button className="secondary-button" onClick={() => onChoose('server')}>
+          Load server version
+        </button>
+        <button className="primary-button" onClick={() => onChoose('mine')}>
+          Keep my version
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 export function QuitDialog({
   saving,
   error,
@@ -126,7 +178,7 @@ export function QuitDialog({
 }: {
   saving: boolean;
   error: string | null;
-  onChoose: (choice: 'cancel' | 'discard' | 'save') => void;
+  onChoose: (choice: 'cancel' | 'discard' | 'save' | 'keep') => void;
 }) {
   const cancel = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -144,7 +196,10 @@ export function QuitDialog({
         }}
       >
         <h2>Save changes before quitting?</h2>
-        <p>You have unsaved changes. Save them, discard them, or return to Fluxkit.</p>
+        <p>
+          You have unsaved changes. Save them, keep unsaved requests open for the next start,
+          discard them, or return to Fluxkit.
+        </p>
         {error && <p role="alert">{error}</p>}
         {saving && <p role="status">Saving changes… Fluxkit will quit when all saves succeed.</p>}
         <div className="dialog-actions quit-actions">
@@ -162,6 +217,9 @@ export function QuitDialog({
             onClick={() => onChoose('discard')}
           >
             Discard changes
+          </button>
+          <button className="secondary-button" disabled={saving} onClick={() => onChoose('keep')}>
+            Keep for next start
           </button>
           <button className="primary-button" disabled={saving} onClick={() => onChoose('save')}>
             Save & quit

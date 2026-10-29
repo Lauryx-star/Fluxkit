@@ -1,0 +1,165 @@
+name: Build & Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: build-and-test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Frontend (Node)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Unit and interaction tests
+        run: npm test
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist
+          retention-days: 1
+
+  desktop:
+    name: Desktop (Rust, ${{ matrix.os }})
+    needs: frontend
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux Tauri build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            pkg-config \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file
+
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.92.0'
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: cargo fmt --check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: cargo build
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked
+
+  server:
+    name: Self-hosted server (.NET)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: fluxkit
+          POSTGRES_PASSWORD: fluxkit_ci_only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U fluxkit"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      FLUXKIT_TEST_DATABASE: 'Host=localhost;Port=5432;Database=postgres;Username=fluxkit;Password=fluxkit_ci_only'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build server
+        run: dotnet build server/Fluxkit.Server/Fluxkit.Server.csproj --configuration Release
+
+      - name: Restore server tests (locked)
+        run: dotnet restore server/Fluxkit.Server.Tests/Fluxkit.Server.Tests.csproj --locked-mode
+
+      - name: Run server tests
+        run: dotnet test server/Fluxkit.Server.Tests/Fluxkit.Server.Tests.csproj --no-restore --configuration Release
+
+  server-e2e:
+    name: Self-hosted server (HTTPS/OIDC e2e)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run disposable HTTPS/Keycloak e2e suite (server-only)
+        run: npm run test:server:e2e -- --server-only

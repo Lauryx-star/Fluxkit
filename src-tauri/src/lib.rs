@@ -3,6 +3,7 @@ mod history;
 mod http;
 mod imports;
 mod projects;
+mod server;
 
 use http::commands::*;
 use projects::commands::*;
@@ -29,6 +30,10 @@ fn app_info() -> AppInfo {
 pub fn run() {
     let application = tauri::Builder::default()
         .manage(ProjectState::default())
+        .manage(server::oidc::OidcState::default())
+        .manage(server::values::ValueState::default())
+        .manage(server::workspace::SyncState::default())
+        .manage(server::transfer::TransferState::default())
         .manage(HttpState::default())
         .manage(imports::commands::ImportState::default())
         .manage(exports::commands::ExportState::default())
@@ -71,6 +76,33 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            server::values::server_vault_action,
+            server::server_connection_get,
+            server::server_connection_set,
+            server::server_register,
+            server::server_login,
+            server::oidc::server_auth_mode,
+            server::oidc::server_oidc_login,
+            server::oidc::server_oidc_cancel,
+            server::server_logout,
+            server::server_projects,
+            server::server_open_project,
+            server::workspace::server_refresh_workspace,
+            server::server_delete_project,
+            server::transfer::server_preview_transfer,
+            server::transfer::server_prepare_transfer,
+            server::transfer::server_commit_transfer,
+            server::transfer::server_discard_transfer,
+            server::server_project_members,
+            server::server_add_project_member,
+            server::server_update_project_member,
+            server::server_remove_project_member,
+            server::server_account,
+            server::server_admin_users,
+            server::server_admin_approve_user,
+            server::server_admin_set_user_status,
+            server::server_admin_delete_user,
+            server::server_create_team_project,
             exports::commands::preview_openapi_export,
             exports::commands::save_openapi_export,
             exports::commands::discard_openapi_export,
@@ -82,6 +114,8 @@ pub fn run() {
             choose_project,
             restore_last_project,
             remember_project,
+            save_session,
+            restore_session,
             reload_project,
             rename_project,
             save_project_auth,

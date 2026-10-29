@@ -30,7 +30,7 @@ export function AuthEditor({
         >
           <option value="">Choose a project variable…</option>
           {id && !variables.some((item) => item.id === id) && (
-            <option value={id}>Missing variable — choose a replacement</option>
+            <option value={id}>Deleted variable — choose a replacement</option>
           )}
           {variables.map((item) => (
             <option key={item.id} value={item.id}>
@@ -111,31 +111,33 @@ export function AuthEditor({
         variable('Token variable', value.token, (token) => onChange({ ...value, token }))}
       {value?.kind === 'apiKey' && (
         <>
-          <label className="dialog-label">
-            API key name
-            <input
-              aria-label="API key name"
-              value={value.name}
-              maxLength={200}
-              required
-              disabled={disabled}
-              onChange={(event) => onChange({ ...value, name: event.target.value })}
-            />
-          </label>
-          <label className="dialog-label">
-            API key placement
-            <Select
-              aria-label="API key placement"
-              value={value.placement}
-              disabled={disabled}
-              onValueChange={(selectedValue) =>
-                onChange({ ...value, placement: selectedValue as 'header' | 'query' })
-              }
-            >
-              <option value="header">Header</option>
-              <option value="query">Query parameter</option>
-            </Select>
-          </label>
+          <div className="field-row">
+            <label className="dialog-label">
+              API key name
+              <input
+                aria-label="API key name"
+                value={value.name}
+                maxLength={200}
+                required
+                disabled={disabled}
+                onChange={(event) => onChange({ ...value, name: event.target.value })}
+              />
+            </label>
+            <label className="dialog-label">
+              API key placement
+              <Select
+                aria-label="API key placement"
+                value={value.placement}
+                disabled={disabled}
+                onValueChange={(selectedValue) =>
+                  onChange({ ...value, placement: selectedValue as 'header' | 'query' })
+                }
+              >
+                <option value="header">Header</option>
+                <option value="query">Query parameter</option>
+              </Select>
+            </label>
+          </div>
           {variable('API key variable', value.value, (id) => onChange({ ...value, value: id }))}
         </>
       )}

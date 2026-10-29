@@ -5,6 +5,21 @@ use super::{
 use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 
+/// Runs a project write. In a server workspace the change is then sent to the server as one
+/// batch; if the server rejects it, the local mirror is rolled back and the error returned, so
+/// a server workspace never keeps unconfirmed edits. Both steps hold the workspace sync lock.
+async fn write_through<T: Send + 'static>(
+    app: &tauri::AppHandle,
+    state: &State<'_, ProjectState>,
+    handle: &str,
+    write: impl FnOnce(&mut ProjectStore) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let _serialized = crate::server::workspace::guard(app).await;
+    let value = run(state, write).await?;
+    crate::server::workspace::publish(app, state, handle).await?;
+    Ok(value)
+}
+
 #[tauri::command]
 pub async fn environment_action(
     app: tauri::AppHandle,
@@ -17,17 +32,104 @@ pub async fn environment_action(
         .app_data_dir()
         .map_err(|_| "Could not locate local application settings.")?
         .join("environment-selection");
-    run(&state, move |store| {
-        store.with_environment(&handle, |root, project| {
-            super::environments::apply(
-                root,
-                &settings,
-                project,
-                action,
-                &super::environments::OsValues,
+    let remote_context = crate::server::values::context(
+        &state,
+        &handle,
+        matches!(
+            action,
+            super::environments::Action::Save { .. } | super::environments::Action::SetValue { .. }
+        ),
+    )
+    .await?;
+    let value_state = app
+        .state::<crate::server::values::ValueState>()
+        .inner()
+        .clone();
+    let remote = remote_context.is_some();
+    let saves = matches!(action, super::environments::Action::Save { .. });
+    let action = if let Some(context) = remote_context {
+        if let super::environments::Action::SetValue {
+            variable,
+            environment,
+            value,
+            expected,
+            expected_value_revision,
+        } = action
+        {
+            crate::server::values::set_value(
+                &app,
+                &context,
+                &variable,
+                environment.as_deref(),
+                value,
+                &expected,
+                expected_value_revision,
             )
-        })
-    })
+            .await?;
+            super::environments::Action::Load
+        } else {
+            crate::server::values::refresh(&app, &context).await?;
+            action
+        }
+    } else {
+        action
+    };
+    let apply = move |handle: String,
+                      action: super::environments::Action,
+                      settings: std::path::PathBuf,
+                      value_state: crate::server::values::ValueState| {
+        move |store: &mut ProjectStore| {
+            if matches!(
+                &action,
+                super::environments::Action::Save { .. }
+                    | super::environments::Action::SetValue { .. }
+            ) {
+                store.ensure_writable(&handle)?;
+            }
+            store.with_environment(&handle, |root, project| {
+                let mut reply = super::environments::apply(
+                    root,
+                    &settings,
+                    project,
+                    action,
+                    &crate::server::values::adapter(&value_state, root)?,
+                )?;
+                if let Some(identity) = super::store::server_owner(root)? {
+                    reply.view.server_values = Some(value_state.revisions(&identity, project)?);
+                }
+                Ok(reply)
+            })
+        }
+    };
+    if !(saves && remote) {
+        return run(&state, apply(handle, action, settings, value_state)).await;
+    }
+    // Saved definitions go to the server first; the server drops values of removed or
+    // reclassified variables, so reload values and answer with the refreshed view.
+    write_through(
+        &app,
+        &state,
+        &handle,
+        apply(
+            handle.clone(),
+            action,
+            settings.clone(),
+            value_state.clone(),
+        ),
+    )
+    .await?;
+    if let Some(context) = crate::server::values::context(&state, &handle, false).await? {
+        crate::server::values::refresh(&app, &context).await?;
+    }
+    run(
+        &state,
+        apply(
+            handle,
+            super::environments::Action::Load,
+            settings,
+            value_state,
+        ),
+    )
     .await
 }
 
@@ -45,6 +147,40 @@ pub async fn restore_last_project(
         .map_err(|_| "Could not locate local workspace settings.")?;
     run(&state, move |store| {
         super::workspace::restore(&settings, store)
+    })
+    .await
+}
+
+/// Reopens the projects and tabs open at the end of the previous run; none when no session
+/// was saved yet.
+#[tauri::command]
+pub async fn restore_session(
+    app: tauri::AppHandle,
+    state: State<'_, ProjectState>,
+) -> Result<Option<super::session::RestoredSession>, String> {
+    let settings = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Could not locate local workspace settings.")?;
+    run(&state, move |store| {
+        super::session::restore(&settings, store)
+    })
+    .await
+}
+
+/// Remembers the open projects, tabs (including unsaved edits) and layout for the next start.
+#[tauri::command]
+pub async fn save_session(
+    app: tauri::AppHandle,
+    state: State<'_, ProjectState>,
+    session: super::session::SessionInput,
+) -> Result<(), String> {
+    let settings = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Could not locate local workspace settings.")?;
+    run(&state, move |store| {
+        super::session::save(&settings, store, session)
     })
     .await
 }
@@ -122,22 +258,29 @@ pub async fn reload_project(
 
 #[tauri::command]
 pub async fn rename_project(
+    app: tauri::AppHandle,
     state: State<'_, ProjectState>,
     handle: String,
     name: String,
     expected: String,
 ) -> Result<ProjectView, String> {
-    run(&state, move |store| store.rename(&handle, name, &expected)).await
+    let owner = handle.clone();
+    write_through(&app, &state, &owner, move |store| {
+        store.rename(&handle, name, &expected)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn save_collection(
+    app: tauri::AppHandle,
     state: State<'_, ProjectState>,
     handle: String,
     collection: Collection,
     expected: Option<String>,
 ) -> Result<CollectionView, String> {
-    run(&state, move |store| {
+    let owner = handle.clone();
+    write_through(&app, &state, &owner, move |store| {
         store.save_collection(&handle, collection, expected)
     })
     .await
@@ -145,12 +288,14 @@ pub async fn save_collection(
 
 #[tauri::command]
 pub async fn remove_collection(
+    app: tauri::AppHandle,
     state: State<'_, ProjectState>,
     handle: String,
     id: String,
     expected: String,
 ) -> Result<(), String> {
-    run(&state, move |store| {
+    let owner = handle.clone();
+    write_through(&app, &state, &owner, move |store| {
         store.remove_collection(&handle, &id, &expected)
     })
     .await
@@ -178,7 +323,19 @@ pub async fn choose_attachment(
 }
 
 #[tauri::command]
-pub async fn close_project(state: State<'_, ProjectState>, handle: String) -> Result<(), String> {
+pub async fn close_project(
+    app: tauri::AppHandle,
+    state: State<'_, ProjectState>,
+    handle: String,
+) -> Result<(), String> {
+    match crate::server::values::context(&state, &handle, false).await {
+        Ok(Some(context)) => app
+            .state::<crate::server::values::ValueState>()
+            .lock(&context.identity)?,
+        Ok(None) => {}
+        // Closing a revoked handle must still work; it grants no access to its files.
+        Err(_) => app.state::<crate::server::values::ValueState>().clear(),
+    }
     run(&state, move |store| {
         store.close(&handle);
         Ok(())
@@ -188,12 +345,14 @@ pub async fn close_project(state: State<'_, ProjectState>, handle: String) -> Re
 
 #[tauri::command]
 pub async fn save_project_auth(
+    app: tauri::AppHandle,
     state: State<'_, ProjectState>,
     handle: String,
     auth: Option<super::model::Auth>,
     expected: String,
 ) -> Result<ProjectView, String> {
-    run(&state, move |store| {
+    let owner = handle.clone();
+    write_through(&app, &state, &owner, move |store| {
         store.save_auth(&handle, auth, &expected)
     })
     .await
@@ -201,12 +360,15 @@ pub async fn save_project_auth(
 
 #[tauri::command]
 pub async fn move_request(
+    app: tauri::AppHandle,
     state: State<'_, ProjectState>,
     handle: String,
     input: super::moving::MoveInput,
 ) -> Result<Vec<CollectionView>, String> {
     let owner = handle.clone();
-    run(&state, move |store| {
+    let published = handle.clone();
+    write_through(&app, &state, &published, move |store| {
+        store.ensure_writable(&handle)?;
         store.with_environment(&handle, |root, _| super::moving::apply(root, &owner, input))
     })
     .await

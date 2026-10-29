@@ -17,6 +17,9 @@ const STORE_ERROR: &str = "The OS credential store could not be accessed. Unlock
 pub struct Definition {
     pub id: String,
     pub name: String,
+    /// `None` is the legacy representation and is treated as secret for variables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -76,6 +79,47 @@ impl Definitions {
         Ok(())
     }
 }
+/// Names of `{{placeholders}}` in the given texts that no variable of the project defines, in
+/// order of first appearance. Malformed placeholders are left to resolution.
+pub fn unknown_variables<'a>(
+    texts: impl IntoIterator<Item = &'a str>,
+    definitions: &Definitions,
+) -> Vec<&'a str> {
+    let mut unknown: Vec<&str> = Vec::new();
+    for text in texts {
+        let mut remaining = text;
+        while let Some(start) = remaining.find("{{") {
+            let rest = &remaining[start + 2..];
+            let Some(end) = rest.find("}}") else {
+                break;
+            };
+            let name = &rest[..end];
+            if valid_variable_name(name)
+                && !definitions.variables.iter().any(|v| v.name == name)
+                && !unknown.contains(&name)
+            {
+                unknown.push(name);
+            }
+            remaining = &rest[end + 2..];
+        }
+    }
+    unknown
+}
+
+/// The message for placeholders whose variable does not exist (any more).
+pub fn unknown_variables_message(names: &[&str]) -> String {
+    let list = names
+        .iter()
+        .map(|name| format!("{{{{{name}}}}}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() == 1 {
+        format!("Unknown variable {list}: it is not defined in this project. Replace it before sending.")
+    } else {
+        format!("Unknown variables {list}: they are not defined in this project. Replace them before sending.")
+    }
+}
+
 fn valid_variable_name(name: &str) -> bool {
     name.bytes()
         .next()
@@ -92,11 +136,18 @@ pub struct View {
     pub data: Definitions,
     pub selected_environment: Option<String>,
     pub selection_missing: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_values: Option<crate::server::values::ValueRevisions>,
 }
 
 /// Only this adapter accesses platform credentials. Errors never include provider details or values.
 pub trait Values {
     fn get(&self, key: &str) -> Result<Option<String>, String>;
+    /// Whether a value is stored, without handing it out. Server secrets answer from metadata
+    /// so a locked vault can still show which slots are set.
+    fn exists(&self, key: &str) -> Result<bool, String> {
+        Ok(self.get(key)?.is_some())
+    }
     fn set(&self, key: &str, value: &str) -> Result<(), String>;
     fn delete(&self, key: &str) -> Result<(), String>;
 }
@@ -126,6 +177,76 @@ impl Values for OsValues {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(_) => Err(STORE_ERROR.into()),
         }
+    }
+}
+/// Server accounts get an independent OS-store namespace, including acquired tokens.
+/// Local projects retain their existing keys; no values are migrated implicitly.
+pub struct ScopedValues<V> {
+    source: V,
+    namespace: Option<String>,
+    remote: Option<crate::server::values::ValueAccess>,
+}
+impl<V> ScopedValues<V> {
+    pub fn for_root(source: V, root: Option<&Path>) -> Result<Self, String> {
+        let namespace = root
+            .map(store::server_owner)
+            .transpose()?
+            .flatten()
+            .map(|identity| identity.namespace());
+        Ok(Self {
+            source,
+            namespace,
+            remote: None,
+        })
+    }
+    pub fn with_remote(mut self, remote: crate::server::values::ValueAccess) -> Self {
+        self.remote = Some(remote);
+        self
+    }
+    fn remote_variable(&self, key: &str) -> bool {
+        self.namespace.is_some() && key.split('/').count() == 3
+    }
+    fn scoped_key(&self, key: &str) -> String {
+        match &self.namespace {
+            Some(namespace) => format!("server/{namespace}/{key}"),
+            None => key.to_string(),
+        }
+    }
+}
+impl<V: Values> Values for ScopedValues<V> {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        if self.remote_variable(key) {
+            return self
+                .remote
+                .as_ref()
+                .ok_or("Load synchronized server values first.")?
+                .get(key);
+        }
+        self.source.get(&self.scoped_key(key))
+    }
+    fn exists(&self, key: &str) -> Result<bool, String> {
+        if self.remote_variable(key) {
+            return self
+                .remote
+                .as_ref()
+                .ok_or("Load synchronized server values first.")?
+                .exists(key);
+        }
+        self.source.exists(&self.scoped_key(key))
+    }
+    fn set(&self, key: &str, value: &str) -> Result<(), String> {
+        if self.remote_variable(key) {
+            return Err("Server values must be saved through their authorized server API. Import definitions only, then configure values.".into());
+        }
+        self.source.set(&self.scoped_key(key), value)
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        if self.remote_variable(key) {
+            // The server removes the values of deleted or reclassified definitions in the same
+            // batch that saves the definitions; there is nothing to delete locally.
+            return Ok(());
+        }
+        self.source.delete(&self.scoped_key(key))
     }
 }
 /// The tuple is an implicit value reference, independent of display names and file paths.
@@ -196,13 +317,14 @@ fn write_selection(
 }
 pub fn load(root: &Path, settings: &Path, project: &str) -> Result<View, String> {
     let (data, revision) = definitions(root)?;
-    let saved = selected(settings, project)?;
+    let saved = selected(settings, &store::local_state_id(root, project)?)?;
     let selection_missing = data.environment(saved.as_deref()).is_err();
     Ok(View {
         revision,
         data,
         selected_environment: if selection_missing { None } else { saved },
         selection_missing,
+        server_values: None,
     })
 }
 
@@ -222,10 +344,22 @@ pub enum Action {
         environment: Option<String>,
         value: Option<String>,
         expected: String,
+        // Enum-level rename_all only renames variants; fields need their own camelCase name.
+        #[serde(default, rename = "expectedValueRevision")]
+        expected_value_revision: Option<i64>,
     },
     Reveal {
         variable: String,
         environment: Option<String>,
+    },
+    /// The variables table: ordinary values of the default slot and of one environment, and
+    /// only whether a secret slot is set. Secret contents still need an explicit Reveal.
+    Table {
+        environment: Option<String>,
+    },
+    /// Where saved requests and authentication settings use a variable, for the delete warning.
+    Usages {
+        variable: String,
     },
     Check {
         text: String,
@@ -241,6 +375,49 @@ pub enum Action {
 pub struct Reply {
     pub view: View,
     pub value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table: Option<Vec<TableRow>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usages: Option<store::VariableUsages>,
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableRow {
+    pub variable: String,
+    pub default: TableCell,
+    /// Absent when the table was requested without an environment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<TableCell>,
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableCell {
+    pub set: bool,
+    /// The stored value of an ordinary variable; never filled for secrets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+fn table_cell(
+    values: &impl Values,
+    project: &str,
+    variable: &Definition,
+    environment: Option<&str>,
+) -> Result<TableCell, String> {
+    let reference = key(project, &variable.id, environment);
+    if variable.secret.unwrap_or(true) {
+        return Ok(TableCell {
+            set: values.exists(&reference)?,
+            value: None,
+        });
+    }
+    let value = values.get(&reference)?;
+    Ok(TableCell {
+        set: value.is_some(),
+        value,
+    })
 }
 
 /// Caller holds the project lock across file and credential operations.
@@ -254,15 +431,38 @@ pub fn apply(
 ) -> Result<Reply, String> {
     let (current, revision) = definitions(root)?;
     let mut revealed = None;
+    let mut table = None;
+    let mut usages = None;
     match action {
         Action::Load => {}
         Action::Select { environment } => {
             current.environment(environment.as_deref())?;
-            write_selection(settings, project, environment.as_deref())?;
+            write_selection(
+                settings,
+                &store::local_state_id(root, project)?,
+                environment.as_deref(),
+            )?;
         }
         Action::Save { data, expected } => {
             data.validate()?;
             check_revision(&revision, &expected)?;
+            if store::server_owner(root)?.is_some() {
+                for variable in &current.variables {
+                    if data.variables.iter().any(|new| {
+                        new.id == variable.id
+                            && new.secret.unwrap_or(true) != variable.secret.unwrap_or(true)
+                    }) {
+                        for environment in std::iter::once(None).chain(
+                            current
+                                .environments
+                                .iter()
+                                .map(|environment| Some(environment.id.as_str())),
+                        ) {
+                            values.delete(&key(project, &variable.id, environment))?;
+                        }
+                    }
+                }
+            }
             let removing = current
                 .variables
                 .iter()
@@ -271,13 +471,6 @@ pub fn apply(
                     .environments
                     .iter()
                     .any(|e| !data.environments.iter().any(|n| n.id == e.id));
-            let removed_variables: Vec<_> = current
-                .variables
-                .iter()
-                .filter(|v| !data.variables.iter().any(|n| n.id == v.id))
-                .map(|v| v.id.as_str())
-                .collect();
-            store::check_auth_removal(root, &removed_variables)?;
             // Validate serialization before any irreversible credential deletion.
             let bytes = store::encode(&data)?;
             // Delete only tuples owned by removed definitions. Retained variables/defaults survive.
@@ -289,16 +482,16 @@ pub fn apply(
                     let removed_environment =
                         environment.is_some_and(|id| !data.environments.iter().any(|e| e.id == id));
                     if removed_variable || removed_environment {
-                        values.delete(&key(project, &variable.id, environment)).map_err(|_| "Could not finish deleting OS values. Definitions were kept; some values may already be removed. Unlock the credential store and retry the removal.".to_string())?;
+                        values.delete(&key(project, &variable.id, environment)).map_err(|error| if store::server_owner(root).ok().flatten().is_some() { error } else { "Could not finish deleting OS values. Definitions were kept; some values may already be removed. Unlock the credential store and retry the removal.".to_string() })?;
                     }
                 }
             }
             let write_result = (|| {
-                if selected(settings, project)?
+                if selected(settings, &store::local_state_id(root, project)?)?
                     .as_deref()
                     .is_some_and(|id| !data.environments.iter().any(|e| e.id == id))
                 {
-                    write_selection(settings, project, None)?;
+                    write_selection(settings, &store::local_state_id(root, project)?, None)?;
                 }
                 let path = root.join(FILE);
                 if revision == "missing" {
@@ -307,7 +500,7 @@ pub fn apply(
                     store::replace(root, &path, &expected, &bytes, "environments.json")
                 }
             })();
-            if removing {
+            if removing && store::server_owner(root)?.is_none() {
                 write_result.map_err(|_| "Definitions could not be saved after OS value deletion. Associated values may already be removed. Reload environments and retry the removal; deleted values cannot be restored from backups.".to_string())?;
             } else {
                 write_result?;
@@ -318,6 +511,7 @@ pub fn apply(
             environment,
             value,
             expected,
+            expected_value_revision: _,
         } => {
             check_revision(&revision, &expected)?;
             current.slot(&variable, environment.as_deref())?;
@@ -340,6 +534,39 @@ pub fn apply(
         } => {
             current.slot(&variable, environment.as_deref())?;
             revealed = values.get(&key(project, &variable, environment.as_deref()))?;
+        }
+        Action::Table { environment } => {
+            current.environment(environment.as_deref())?;
+            table = Some(
+                current
+                    .variables
+                    .iter()
+                    .map(|variable| {
+                        Ok(TableRow {
+                            variable: variable.id.clone(),
+                            default: table_cell(values, project, variable, None)?,
+                            environment: environment
+                                .as_deref()
+                                .map(|environment| {
+                                    table_cell(values, project, variable, Some(environment))
+                                })
+                                .transpose()?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
+            );
+        }
+        Action::Usages { variable } => {
+            let definition = current
+                .variables
+                .iter()
+                .find(|item| item.id == variable)
+                .ok_or("Variable no longer exists. Reload variables.")?;
+            usages = Some(store::variable_usages(
+                root,
+                &definition.id,
+                &definition.name,
+            )?);
         }
         Action::Check { text } => {
             if text.len() > 1024 * 1024 {
@@ -388,6 +615,8 @@ pub fn apply(
     Ok(Reply {
         view: load(root, settings, project)?,
         value: revealed,
+        table,
+        usages,
     })
 }
 
@@ -419,7 +648,7 @@ pub fn resolve(
                     .variables
                     .iter()
                     .find(|v| v.name == name)
-                    .ok_or("A referenced variable is not defined in this project.")?;
+                    .ok_or_else(|| unknown_variables_message(&[name]))?;
                 let override_value = if let Some(environment) = environment {
                     values.get(&key(project, &variable.id, Some(environment)))?
                 } else {

@@ -1,5 +1,5 @@
 use super::model::{validate_id, validate_name, Attachment, Collection, Project, SCHEMA_VERSION};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -30,13 +30,29 @@ pub struct ProjectView {
     pub handle: String,
     pub directory: String,
     pub revision: String,
+    pub read_only: bool,
+    pub server_sync: bool,
+    pub server_owned: bool,
+    pub server_recovery: bool,
     pub data: Project,
     pub collections: Vec<CollectionView>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ServerWorkspaceMarker {
+    pub server_url: String,
+    #[serde(default)]
+    pub account_id: Option<Uuid>,
+    pub server_project_id: Uuid,
+    pub revision: i64,
+}
+
 #[derive(Default)]
 pub struct ProjectStore {
-    roots: BTreeMap<String, (PathBuf, String)>,
+    roots: BTreeMap<String, (PathBuf, String, bool)>,
+    server_identity: Option<crate::server::ServerIdentity>,
+    server_identity_loaded: bool,
 }
 
 fn io<T>(result: std::io::Result<T>) -> Result<T, String> {
@@ -63,7 +79,7 @@ fn ensure_dir(path: &Path) -> Result<(), String> {
     safe(path, true)
 }
 
-fn lock(root: &Path) -> Result<File, String> {
+pub(crate) fn lock(root: &Path) -> Result<File, String> {
     safe(root, true)?;
     let private = root.join(".fluxkit");
     ensure_dir(&private)?;
@@ -161,7 +177,99 @@ pub(crate) fn replace(
     atomic(path, bytes, false)
 }
 
+pub(crate) fn server_owner(root: &Path) -> Result<Option<crate::server::ServerIdentity>, String> {
+    for name in ["server-workspace.json", "server-cache.json"] {
+        let path = root.join(".fluxkit").join(name);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                safe(&path, false)?;
+                let marker: crate::server::ServerCacheMarker = decode(&read(&path)?)?;
+                let account_id = marker.account_id.ok_or("This legacy server cache has no account owner. Sign in and reopen it from Server connection. Its files were preserved.")?;
+                return Ok(Some(crate::server::ServerIdentity {
+                    server_url: marker.server_url,
+                    account_id,
+                }));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(IO_ERROR.into()),
+        }
+    }
+    Ok(None)
+}
+
+/// Local history and environment selection are independent for each server account.
+pub(crate) fn local_state_id(root: &Path, project: &str) -> Result<String, String> {
+    match server_owner(root)? {
+        Some(identity) => {
+            let digest = Sha256::digest(format!("{}/{project}", identity.namespace()));
+            let mut bytes = [0; 16];
+            bytes.copy_from_slice(&digest[..16]);
+            Ok(Uuid::from_bytes(bytes).to_string())
+        }
+        None => Ok(project.to_string()),
+    }
+}
+
 impl ProjectStore {
+    pub(crate) fn set_server_identity(&mut self, identity: Option<crate::server::ServerIdentity>) {
+        self.server_identity = identity;
+        self.server_identity_loaded = true;
+    }
+    pub(crate) fn require_server_identity(
+        &self,
+        identity: &crate::server::ServerIdentity,
+    ) -> Result<(), String> {
+        if self.server_identity.as_ref() != Some(identity) {
+            return Err("This server project belongs to another account or session. Sign in with its account and reopen it.".into());
+        }
+        Ok(())
+    }
+
+    pub fn snapshot(&self, handle: &str) -> Result<(String, String, String), String> {
+        let root = self.root(handle)?;
+        let _lock = lock(&root)?;
+        let view = load(&root, handle)?;
+        let project_id = view.data.id.clone();
+        let name = view.data.name.clone();
+        if view.collections.iter().any(|collection| {
+            collection.data.requests.iter().any(|request| {
+                request.body.file.is_some()
+                    || request.body.fields.iter().any(|field| field.file.is_some())
+            })
+        }) {
+            return Err(
+                "Projects with local file attachments cannot be uploaded to a server yet.".into(),
+            );
+        }
+        let (environments, _) = super::environments::definitions(&root)?;
+        let value = serde_json::json!({
+            "project": view.data,
+            "collections": view.collections.into_iter().map(|collection| collection.data).collect::<Vec<_>>(),
+            "environments": environments,
+        });
+        let snapshot = serde_json::to_string(&value)
+            .map_err(|_| "Could not serialize the project snapshot.".to_string())?;
+        if snapshot.len() > 32 * 1024 * 1024 {
+            return Err("Project snapshot exceeds the 32 MiB server limit.".into());
+        }
+        Ok((project_id, name, snapshot))
+    }
+
+    pub(crate) fn server_workspace_marker(
+        &self,
+        handle: &str,
+    ) -> Result<ServerWorkspaceMarker, String> {
+        let root = self.ensure_writable(handle)?;
+        let path = root.join(".fluxkit/server-workspace.json");
+        safe(&path, false)?;
+        let marker: ServerWorkspaceMarker = decode(&read(&path)?)?;
+        if marker.revision < 1 || marker.server_project_id.to_string() != load_project(&root)?.0.id
+        {
+            return Err("Server workspace metadata does not match the local project.".into());
+        }
+        Ok(marker)
+    }
+
     /// Authorizes the project handle and holds its advisory lock for local value operations.
     pub fn with_environment<T>(
         &self,
@@ -192,35 +300,103 @@ impl ProjectStore {
             auth: None,
         };
         atomic(&root.join(PROJECT_FILE), &encode(&project)?, true)?;
-        self.register(root)
+        self.register(root, false, false)
     }
 
     pub fn open(&mut self, selected: &Path) -> Result<ProjectView, String> {
         // A selected root can itself be a link; authorize its canonical target once.
         let root = io(selected.canonicalize())?;
         let _lock = lock(&root)?;
-        self.register(root)
+        let marker = root.join(".fluxkit/server-cache.json");
+        let workspace_marker = root.join(".fluxkit/server-workspace.json");
+        let recovery = root.join(".fluxkit/server-recovery");
+        if recovery.exists() {
+            safe(&recovery, false)?;
+        }
+        let read_only = match fs::symlink_metadata(&marker) {
+            Ok(_) => {
+                safe(&marker, false)?;
+                true
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return Err(IO_ERROR.into()),
+        };
+        let server_sync = match fs::symlink_metadata(&workspace_marker) {
+            Ok(_) => {
+                safe(&workspace_marker, false)?;
+                let marker: ServerWorkspaceMarker = decode(&read(&workspace_marker)?)?;
+                if marker.revision < 1
+                    || marker.server_project_id.to_string() != load_project(&root)?.0.id
+                {
+                    return Err(
+                        "Server workspace metadata does not match the local project.".into(),
+                    );
+                }
+                true
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return Err(IO_ERROR.into()),
+        };
+        self.register(
+            root,
+            read_only || server_sync || recovery.exists(),
+            server_sync,
+        )
     }
 
-    fn register(&mut self, root: PathBuf) -> Result<ProjectView, String> {
+    pub(crate) fn open_server_workspace(&mut self, selected: &Path) -> Result<ProjectView, String> {
+        let root = io(selected.canonicalize())?;
+        let _lock = lock(&root)?;
+        let marker = root.join(".fluxkit/server-workspace.json");
+        safe(&marker, false)?;
+        let workspace: ServerWorkspaceMarker = decode(&read(&marker)?)?;
+        if workspace.revision < 1
+            || workspace.server_project_id.to_string() != load_project(&root)?.0.id
+        {
+            return Err("Server workspace metadata does not match the local project.".into());
+        }
+        if root.join(".fluxkit/server-recovery").exists() {
+            return Err("This workspace is a retained recovery copy. Open the current server workspace instead.".into());
+        }
+        self.register(root, false, true)
+    }
+
+    fn register(
+        &mut self,
+        root: PathBuf,
+        read_only: bool,
+        server_sync: bool,
+    ) -> Result<ProjectView, String> {
+        if let Some(identity) = server_owner(&root)? {
+            if !self.server_identity_loaded {
+                self.set_server_identity(crate::server::stored_identity()?);
+            }
+            self.require_server_identity(&identity)?;
+        }
         let (project, _) = load_project(&root)?;
         let handle = self
             .roots
             .iter()
-            .find(|(_, (path, id))| *path == root && *id == project.id)
+            .find(|(_, (path, id, _))| *path == root && *id == project.id)
             .map(|(id, _)| id.clone())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let view = load(&root, &handle)?;
-        self.roots.insert(handle, (root, project.id));
+        let mut view = load(&root, &handle)?;
+        view.server_owned = server_owner(&root)?.is_some();
+        view.read_only = read_only;
+        view.server_sync = server_sync && !read_only;
+        self.roots.insert(handle, (root, project.id, read_only));
         Ok(view)
     }
 
     fn root(&self, handle: &str) -> Result<PathBuf, String> {
-        let (root, project_id) = self
+        let (root, project_id, _) = self
             .roots
             .get(handle)
             .ok_or("Project is not open. Open it with the folder chooser first.")?;
         safe(root, true)?;
+        if let Some(identity) = server_owner(root)? {
+            self.require_server_identity(&identity)?;
+        }
         if load_project(root)?.0.id != *project_id {
             return Err(
                 "The project identity changed on disk. Close and reopen the project.".into(),
@@ -229,10 +405,29 @@ impl ProjectStore {
         Ok(root.clone())
     }
 
+    pub fn ensure_writable(&self, handle: &str) -> Result<PathBuf, String> {
+        let root = self.root(handle)?;
+        if self
+            .roots
+            .get(handle)
+            .is_some_and(|(_, _, read_only)| *read_only)
+        {
+            return Err("This server project is read-only in the local snapshot.".into());
+        }
+        Ok(root)
+    }
+
     pub fn reload(&self, handle: &str) -> Result<ProjectView, String> {
         let root = self.root(handle)?;
         let _lock = lock(&root)?;
-        load(&root, handle)
+        let mut view = load(&root, handle)?;
+        view.server_owned = server_owner(&root)?.is_some();
+        view.read_only = self
+            .roots
+            .get(handle)
+            .is_some_and(|(_, _, read_only)| *read_only);
+        view.server_sync = self.server_workspace_marker(handle).is_ok() && !view.read_only;
+        Ok(view)
     }
 
     pub fn rename(
@@ -242,7 +437,7 @@ impl ProjectStore {
         expected: &str,
     ) -> Result<ProjectView, String> {
         validate_name(&name)?;
-        let root = self.root(handle)?;
+        let root = self.ensure_writable(handle)?;
         let _lock = lock(&root)?;
         let mut view = load(&root, handle)?;
         view.data.name = name;
@@ -263,7 +458,7 @@ impl ProjectStore {
         expected: &str,
     ) -> Result<ProjectView, String> {
         super::model::validate_auth(auth.as_ref())?;
-        let root = self.root(handle)?;
+        let root = self.ensure_writable(handle)?;
         let _lock = lock(&root)?;
         let mut view = load(&root, handle)?;
         view.data.auth = auth;
@@ -284,7 +479,7 @@ impl ProjectStore {
         expected: Option<String>,
     ) -> Result<CollectionView, String> {
         collection.validate()?;
-        let root = self.root(handle)?;
+        let root = self.ensure_writable(handle)?;
         let _lock = lock(&root)?;
         let current = load(&root, handle)?;
         let dir = root.join("collections");
@@ -319,7 +514,7 @@ impl ProjectStore {
 
     pub fn remove_collection(&self, handle: &str, id: &str, expected: &str) -> Result<(), String> {
         validate_id(id)?;
-        let root = self.root(handle)?;
+        let root = self.ensure_writable(handle)?;
         let _lock = lock(&root)?;
         safe(&root.join("collections"), true)?;
         let path = root.join(format!("collections/{id}.json"));
@@ -335,7 +530,7 @@ impl ProjectStore {
     }
 
     pub fn attachment(&self, handle: &str, selected: &Path) -> Result<Attachment, String> {
-        let root = self.root(handle)?;
+        let root = self.ensure_writable(handle)?;
         let _lock = lock(&root)?;
         load_project(&root)?;
         let dir = root.join("attachments");
@@ -412,36 +607,70 @@ pub(crate) fn load(root: &Path, handle: &str) -> Result<ProjectView, String> {
         handle: handle.into(),
         directory: root.to_string_lossy().into(),
         revision: revision(&bytes),
+        read_only: false,
+        server_sync: false,
+        server_owned: server_owner(root)?.is_some(),
+        server_recovery: root.join(".fluxkit/server-recovery").exists(),
         data: project,
         collections,
     })
 }
 
-/// Credential cleanup must not remove variables still referenced by persisted auth settings.
-pub(super) fn check_auth_removal(root: &Path, removed: &[&str]) -> Result<(), String> {
-    if removed.is_empty() {
-        return Ok(());
+/// Where saved project content uses a variable: request text by `{{name}}` and authentication
+/// settings by identity. Deleting the variable stays allowed; this only feeds the warning.
+#[derive(Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VariableUsages {
+    pub requests: Vec<String>,
+    pub authentication: Vec<String>,
+}
+
+pub(crate) fn variable_usages(root: &Path, id: &str, name: &str) -> Result<VariableUsages, String> {
+    let view = load(root, "variable-usages")?;
+    let placeholder = format!("{{{{{name}}}}}");
+    let uses = |auth: &Option<super::model::Auth>| {
+        auth.as_ref()
+            .is_some_and(|auth| auth.variable_ids().contains(&id))
+    };
+    let mut usages = VariableUsages::default();
+    if uses(&view.data.auth) {
+        usages.authentication.push("Project authentication".into());
     }
-    let view = load(root, "credential-cleanup")?;
-    let auth = view
-        .data
-        .auth
-        .iter()
-        .chain(view.collections.iter().flat_map(|c| {
-            c.data
-                .auth
-                .iter()
-                .chain(c.data.folders.iter().filter_map(|f| f.auth.as_ref()))
-                .chain(c.data.requests.iter().filter_map(|r| r.auth.as_ref()))
-        }));
-    for configuration in auth {
-        if configuration
-            .variable_ids()
-            .iter()
-            .any(|id| removed.contains(id))
-        {
-            return Err("A variable is still referenced by saved authentication settings. Replace or remove those authentication references before deleting the variable. No values were deleted.".into());
+    for collection in &view.collections {
+        let collection = &collection.data;
+        if uses(&collection.auth) {
+            usages
+                .authentication
+                .push(format!("Collection {}", collection.name));
+        }
+        for folder in &collection.folders {
+            if uses(&folder.auth) {
+                usages
+                    .authentication
+                    .push(format!("Folder {} in {}", folder.name, collection.name));
+            }
+        }
+        for request in &collection.requests {
+            if uses(&request.auth) {
+                usages
+                    .authentication
+                    .push(format!("Request {} in {}", request.name, collection.name));
+            }
+            let entries = request.params.iter().chain(&request.headers);
+            let in_text = request.url.contains(&placeholder)
+                || request.body.text.contains(&placeholder)
+                || entries.into_iter().any(|entry| {
+                    entry.key.contains(&placeholder) || entry.value.contains(&placeholder)
+                })
+                || request.body.fields.iter().any(|field| {
+                    field.key.contains(&placeholder) || field.value.contains(&placeholder)
+                });
+            if in_text {
+                usages
+                    .requests
+                    .push(format!("{} › {}", collection.name, request.name));
+            }
         }
     }
-    Ok(())
+    Ok(usages)
 }

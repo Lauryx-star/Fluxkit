@@ -57,7 +57,7 @@ pub struct Request {
     pub body: Body,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Entry {
     pub id: u32,
@@ -66,7 +66,7 @@ pub struct Entry {
     pub value: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Body {
     pub kind: BodyKind,
@@ -75,7 +75,7 @@ pub struct Body {
     pub file: Option<Attachment>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum BodyKind {
     None,
@@ -86,7 +86,7 @@ pub enum BodyKind {
     File,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FormField {
     pub id: u32,
@@ -96,7 +96,7 @@ pub struct FormField {
     pub file: Option<Attachment>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Attachment {
     pub path: String,
@@ -387,7 +387,7 @@ impl Auth {
 }
 
 /// Sanitized imported schemas/descriptions; examples/default values and server values are excluded.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OpenApiMetadata {
     pub version: String,
@@ -397,7 +397,7 @@ pub struct OpenApiMetadata {
 }
 
 /// Source variable names map to local identities for explicitly associated environment imports.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PostmanMetadata {
     pub version: String,

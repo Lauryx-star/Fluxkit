@@ -65,9 +65,33 @@ fn unique_name(title: &str, names: impl Iterator<Item = String>) -> String {
     }
     name
 }
+/// Turns a source label into a valid Fluxkit variable name (letters, digits, `_`, `.`, `-`).
+fn variable_name(source: &str) -> String {
+    let mut name: String = source
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(180)
+        .collect();
+    if name.is_empty() {
+        name = "variable".into();
+    } else if !name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+        name.insert(0, '_');
+    }
+    name
+}
 #[derive(Default)]
 struct Mapper {
-    prefix: String,
+    /// Existing project variables by name; matching source references reuse them.
+    existing: HashMap<String, Definition>,
+    /// Every name in the project or this import, so generated names stay unique.
+    taken: HashSet<String>,
     variables: Vec<ImportedVariable>,
     bindings: BTreeMap<String, String>,
     warnings: Vec<String>,
@@ -91,7 +115,30 @@ impl Mapper {
         }
         self.warn("Some requests need manual configuration and are locked against sending and token acquisition until their import review is explicitly confirmed and saved.");
     }
-    fn new_variable(&mut self, source: &str, mut value: Option<String>) -> Result<String, String> {
+    fn new(definitions: &Definitions, bindings: BTreeMap<String, String>) -> Self {
+        Mapper {
+            existing: definitions
+                .variables
+                .iter()
+                .map(|v| (v.name.clone(), v.clone()))
+                .collect(),
+            taken: definitions
+                .variables
+                .iter()
+                .map(|v| v.name.clone())
+                .collect(),
+            bindings,
+            ..Default::default()
+        }
+    }
+    /// `secret` classifies the definition: secret values are never shared as plain project data
+    /// in server workspaces. Only literal credentials and Postman `type: secret` are secret.
+    fn new_variable(
+        &mut self,
+        source: &str,
+        mut value: Option<String>,
+        secret: bool,
+    ) -> Result<String, String> {
         if self.variables.len() >= 1000 {
             return Err("Import exceeds the 1,000-variable limit.".into());
         }
@@ -106,20 +153,24 @@ impl Mapper {
             value = None;
             self.block("Nested placeholders in stored variable values cannot be reproduced by Fluxkit's single-pass resolution. Flatten those source values before import.");
         }
-        let slug: String = source
-            .chars()
-            .take(65)
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect();
+        let base = variable_name(source);
+        let mut name = base.clone();
+        let mut suffix = 2;
+        while !self.taken.insert(name.clone()) {
+            name = format!("{base}_{suffix}");
+            suffix += 1;
+        }
         let definition = Definition {
             id: Uuid::new_v4().to_string(),
-            name: format!("{}_{}_{}", self.prefix, self.variables.len() + 1, slug),
+            name,
+            secret: Some(secret),
         };
         let id = definition.id.clone();
         self.variables.push(ImportedVariable {
             definition,
             value,
             environment: None,
+            reused: false,
         });
         Ok(id)
     }
@@ -136,9 +187,35 @@ impl Mapper {
         if let Some(id) = self.bindings.get(name) {
             return Ok(id.clone());
         }
-        let id = self.new_variable(name, None)?;
+        let id = if let Some(definition) = self.existing.get(name).cloned() {
+            self.warn("Source variables named like existing project variables reuse those variables. Their existing values stay unchanged; Postman defaults are not stored for them. Rename them in the preview to create separate variables.");
+            let id = definition.id.clone();
+            self.variables.push(ImportedVariable {
+                definition,
+                value: None,
+                environment: None,
+                reused: true,
+            });
+            id
+        } else {
+            self.new_variable(name, None, false)?
+        };
         self.bindings.insert(name.into(), id.clone());
         Ok(id)
+    }
+    /// Postman `type: secret` marks a new import-owned variable secret. Existing project
+    /// variables keep their classification.
+    fn classify(&mut self, id: &str, source: &Value) {
+        if source.get("type").and_then(Value::as_str) != Some("secret") {
+            return;
+        }
+        if let Some(variable) = self
+            .variables
+            .iter_mut()
+            .find(|v| v.definition.id == id && !v.reused)
+        {
+            variable.definition.secret = Some(true);
+        }
     }
     fn placeholder(&self, id: &str) -> Result<String, String> {
         self.variables
@@ -172,13 +249,6 @@ impl Mapper {
         }
         Ok(out)
     }
-    fn value(&mut self, name: &str, text: &str) -> Result<String, String> {
-        if text.contains("{{") || text.contains("}}") {
-            return self.rewrite(text);
-        }
-        let id = self.new_variable(name, Some(text.into()))?;
-        self.placeholder(&id)
-    }
     fn credential(&mut self, name: &str, text: &str) -> Result<String, String> {
         if let Some(source) = text.strip_prefix("{{").and_then(|s| s.strip_suffix("}}")) {
             if !source.contains(['{', '}']) {
@@ -187,9 +257,9 @@ impl Mapper {
         }
         if text.contains("{{") || text.contains("}}") {
             self.block("Composed Basic/Bearer/API Key credentials require a single variable reference or literal value. Adapt the source credential before import.");
-            return self.new_variable(name, None);
+            return self.new_variable(name, None, true);
         }
-        self.new_variable(name, Some(text.into()))
+        self.new_variable(name, Some(text.into()), true)
     }
     fn auth_credential(
         &mut self,
@@ -198,17 +268,17 @@ impl Mapper {
     ) -> Result<String, String> {
         match attributes.get(key) {
             Some(value) => self.credential(key, value),
-            None => self.new_variable(key, None),
+            None => self.new_variable(key, None, true),
         }
     }
-    fn composition(&mut self, text: &str) -> Result<Composition, String> {
+    fn composition(&mut self, name: &str, text: &str) -> Result<Composition, String> {
         // Literal segments are also OS-held, so token inputs never copy reusable values to files.
         let mut rest = text;
         let mut parts = vec![];
         while let Some(start) = rest.find("{{") {
             if start > 0 {
                 parts.push(Part::Variable {
-                    id: self.new_variable("token_input", Some(rest[..start].into()))?,
+                    id: self.new_variable(name, Some(rest[..start].into()), false)?,
                 });
             }
             let tail = &rest[start + 2..];
@@ -222,7 +292,7 @@ impl Mapper {
         }
         if !rest.is_empty() {
             parts.push(Part::Variable {
-                id: self.new_variable("token_input", Some(rest.into()))?,
+                id: self.new_variable(name, Some(rest.into()), false)?,
             });
         }
         Ok(Composition {
@@ -274,7 +344,10 @@ impl Mapper {
                 };
                 Auth::ApiKey {
                     name,
-                    value: self.auth_credential(&attributes, "value")?,
+                    value: match attributes.get("value") {
+                        Some(value) => self.credential("apiKey", value)?,
+                        None => self.new_variable("apiKey", None, true)?,
+                    },
                     placement,
                 }
             }
@@ -296,7 +369,7 @@ impl Mapper {
                     }
                 };
                 let token_url = if get("accessTokenUrl").is_empty() {
-                    let id = self.new_variable("token_url", None)?;
+                    let id = self.new_variable("tokenUrl", None, false)?;
                     Composition {
                         parts: vec![Part::Variable { id }],
                         separator: String::new(),
@@ -305,14 +378,14 @@ impl Mapper {
                         base64: false,
                     }
                 } else {
-                    self.composition(&get("accessTokenUrl"))?
+                    self.composition("tokenUrl", &get("accessTokenUrl"))?
                 };
                 Auth::Oauth2 {
                     config: Box::new(OAuth2 {
                         token_url,
                         client_id: self.auth_credential(&attributes, "clientId")?,
                         client_secret: self.auth_credential(&attributes, "clientSecret")?,
-                        scope: self.composition(&get("scope"))?,
+                        scope: self.composition("scope", &get("scope"))?,
                         client_authentication,
                     }),
                 }
@@ -320,7 +393,7 @@ impl Mapper {
             "oauth2" if !get("accessToken").is_empty() => {
                 self.warn("An OAuth configuration with a saved access token becomes manual Bearer authentication. Its original browser/renewal flow is not reproduced.");
                 Auth::Bearer {
-                    token: self.credential("access_token", &get("accessToken"))?,
+                    token: self.credential("accessToken", &get("accessToken"))?,
                 }
             }
             _ => {
@@ -370,7 +443,7 @@ impl Mapper {
                     id: result.len() as u32,
                     enabled: true,
                     key: self.rewrite(name.trim())?,
-                    value: self.value("header", value.trim())?,
+                    value: self.rewrite(value.trim())?,
                 });
             }
             return Ok(result);
@@ -384,7 +457,7 @@ impl Mapper {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 key: self.rewrite(name)?,
-                value: self.value(key, &item.get("value").and_then(scalar).unwrap_or_default())?,
+                value: self.rewrite(&item.get("value").and_then(scalar).unwrap_or_default())?,
             });
         }
         Ok(result)
@@ -416,12 +489,12 @@ impl Mapper {
                 for field in array(source,mode)? {
                     if field.get("type").and_then(Value::as_str) == Some("file") {
                         self.needs_review("Multipart file fields have no local attachment. Open Body and attach the intended local file, or deliberately remove/disable the field. Source file paths were never opened.");
-                        let id=self.new_variable("select_local_file",None)?;
+                        let id=self.new_variable(&format!("{}_file",string(field,"key")?),None,false)?;
                         body.fields.push(FormField {id:body.fields.len() as u32,enabled:!field.get("disabled").and_then(Value::as_bool).unwrap_or(false),key:self.rewrite(string(field,"key")?)?,value:self.placeholder(&id)?,file:None});
                         continue;
                     }
                     if field.get("contentType").and_then(Value::as_str).is_some_and(|s|!s.is_empty()) {self.block("Per-field multipart Content-Type cannot be reproduced. Adapt those fields before import.");}
-                    body.fields.push(FormField {id:body.fields.len() as u32,enabled:!field.get("disabled").and_then(Value::as_bool).unwrap_or(false),key:self.rewrite(string(field,"key")?)?,value:self.value("form",&field.get("value").and_then(scalar).unwrap_or_default())?,file:None});
+                    body.fields.push(FormField {id:body.fields.len() as u32,enabled:!field.get("disabled").and_then(Value::as_bool).unwrap_or(false),key:self.rewrite(string(field,"key")?)?,value:self.rewrite(&field.get("value").and_then(scalar).unwrap_or_default())?,file:None});
                 }
             },
             "file" => {body.kind=BodyKind::File;self.warn("Choose a body attachment after import. No source file path is read or copied.");},
@@ -516,7 +589,7 @@ impl Mapper {
                     id: params.len() as u32,
                     enabled: true,
                     key: self.rewrite(&name)?,
-                    value: self.value("query", &value)?,
+                    value: self.rewrite(&value)?,
                 });
             }
         }
@@ -562,17 +635,22 @@ impl Mapper {
                         })
                         .collect::<String>()
                 });
-                let id = self.new_variable("path", candidate)?;
-                segments.push(self.placeholder(&id)?);
-                self.warn("Postman :path values are encoded as one segment. Supply encoded segments when editing their local values.");
+                match candidate.filter(|v| !v.is_empty()) {
+                    Some(value) => {
+                        segments.push(value);
+                        self.warn("Postman :path values are inserted into the URL, encoded as one segment.");
+                    }
+                    None => {
+                        let id = self.new_variable(name, None, false)?;
+                        segments.push(self.placeholder(&id)?);
+                        self.warn("Postman :path parameters without a value become new variables that need a value before sending.");
+                    }
+                }
             } else {
                 segments.push(self.rewrite(segment)?);
             }
         }
         url = format!("{}{}", self.rewrite(&head)?, segments.join("/"));
-        if !url.contains("{{") {
-            url = self.value("url", &url)?;
-        }
         let headers = self.entries(source, "header")?;
         let body = self.body(source)?;
         let auth = self.auth(source, false)?;
@@ -695,7 +773,9 @@ fn finish(
                     .find(|(_, id)| **id == v.definition.id)
                     .map(|(name, _)| name.clone()),
                 name: v.definition.name.clone(),
-                has_default: v.value.is_some(),
+                has_default: v.value.is_some() && (!v.reused || v.environment.is_some()),
+                existing: v.reused,
+                secret: v.definition.secret.unwrap_or(true),
             })
             .collect(),
         requests: if environment_name.is_some() {
@@ -731,6 +811,8 @@ fn finish(
         variables: mapper.variables,
         definitions,
         definitions_saved: false,
+        local_saved: false,
+        synced: false,
         created: Instant::now(),
     })
 }
@@ -760,12 +842,9 @@ pub fn collection(
         return Err("Postman collection item must be an array.".into());
     }
     let id = Uuid::new_v4().to_string();
-    let mut mapper = Mapper {
-        prefix: format!("pm_{}", &id[..8]),
-        ..Default::default()
-    };
-    mapper.warn("All source variables receive new project identities and names. Missing/global placeholders become unconfigured variables; existing project values are never adopted.");
-    mapper.warn("Literal header/query/form values and recognized credentials use OS-held variables. Raw body content remains editable plaintext in collection JSON after confirmation.");
+    let mut mapper = Mapper::new(&definitions, BTreeMap::new());
+    mapper.warn("Source variable names are kept. Names that already exist in the project reuse that project variable; missing/global placeholders become unconfigured variables.");
+    mapper.warn("Literal URLs and header/query/form/path values stay editable request content in collection JSON. Recognized credentials use OS-held variables. Review literal values before sharing the collection.");
     mapper.report(&source)?;
     let mut seen = HashSet::new();
     for v in array(&source, "variable")? {
@@ -774,6 +853,7 @@ pub fn collection(
             return Err("Duplicate collection variable names are ambiguous.".into());
         }
         let id = mapper.binding(name)?;
+        mapper.classify(&id, v);
         if v.get("disabled").and_then(Value::as_bool) == Some(true) {
             mapper.warn("Disabled collection variables import without a local value.");
             continue;
@@ -853,12 +933,9 @@ pub fn environment(
     definitions.environments.push(Definition {
         id: env_id.clone(),
         name: name.clone(),
+        secret: None,
     });
-    let mut mapper = Mapper {
-        bindings: metadata.variables.clone(),
-        prefix: format!("pm_{}", &env_id[..8]),
-        ..Default::default()
-    };
+    let mut mapper = Mapper::new(&definitions, metadata.variables.clone());
     mapper.warn("A new project-wide environment is added; selection stays unchanged. Matching source names use this collection's variable identities. Other collections only use them if they explicitly reference the same variables.");
     let mut seen = HashSet::new();
     for item in array(&source, "values")? {
@@ -883,8 +960,9 @@ pub fn environment(
         let definition = if let Some(id) = metadata.variables.get(key) {
             definitions.variables.iter().find(|d|&d.id==id).cloned().ok_or("A mapped collection variable was removed. Restore it or reimport the collection before importing this environment.")?
         } else {
-            mapper.warn("Environment keys not referenced by the selected collection receive new standalone project variables. They are not automatically connected to requests.");
+            mapper.warn("Environment keys not referenced by the selected collection use the existing project variable with that name or receive a new standalone variable.");
             let id = mapper.binding(key)?;
+            mapper.classify(&id, item);
             mapper
                 .variables
                 .iter()
@@ -892,6 +970,12 @@ pub fn environment(
                 .map(|v| v.definition.clone())
                 .ok_or("Variable mapping failed.")?
         };
+        if item.get("type").and_then(Value::as_str) == Some("secret")
+            && definition.secret == Some(false)
+            && value.take().is_some()
+        {
+            mapper.warn("Secret environment values of ordinary (non-secret) variables were not adopted. Mark the variable secret or enter the value manually.");
+        }
         if let Some(v) = mapper
             .variables
             .iter_mut()
@@ -904,6 +988,7 @@ pub fn environment(
                 definition,
                 value,
                 environment: Some(env_id.clone()),
+                reused: true,
             });
         }
     }

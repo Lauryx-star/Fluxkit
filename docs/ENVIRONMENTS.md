@@ -3,12 +3,19 @@
 Every collection and request uses the environment selected for its project in the header.
 **Defaults** selects shared default values without an environment override. Selection is
 local to this machine and persists across restarts, independently for each project UUID.
-Open a saved project folder after restarting; recent folders and tabs are not restored.
+All projects open at the end of the previous run reopen on startup, together with their request
+tabs (see [FILE_FORMAT.md](FILE_FORMAT.md#open-projects-and-tabs)).
 
 ## Definitions and references
 
-**Variables** opens the project manager. Add, rename, or remove environments and variables.
-Definition changes save immediately. Variable names are case-sensitive and unique within
+**Variables** opens the project manager. Environments are a compact list at the top: add,
+rename (pencil) or remove (×). Variables are a table with one row per variable and the columns
+**Variable**, **Default** and one environment chosen in the drop-down above the table. That
+drop-down only chooses the column; the environment used for requests stays the one selected in
+the header. A filter narrows long lists. New variables are ordinary unless **Secret** is
+checked when adding them; the lock icon in front of a name switches the classification after a
+confirmation. The pencil next to a name renames it; the bin icon (on hover or keyboard focus)
+removes it. Definition changes save immediately. Variable names are case-sensitive and unique within
 one project. Names start with an ASCII letter or underscore and then contain letters,
 digits, underscores, dots, or hyphens. Environment display names are also unique.
 Renaming retains UUIDs and OS value associations. Because templates reference variable
@@ -32,18 +39,20 @@ share value associations and selection; a copy is not a newly identified project
 
 ## Value editing and resolution
 
-Choose a variable and a slot: **Shared default** or one environment. Type a replacement and
-choose **Save value**. Empty strings are valid, explicit values. Saving clears the editor.
-New input is readable by default. **Hide value** masks the editor; **Show value** makes
-its current contents readable again. This switch neither loads nor saves a value and does
-not mark the input as changed. Changing slots, clearing, or successfully saving resets
-the empty editor to readable input. No partial value prefixes are loaded automatically.
-All variables continue to use OS storage and the same log/history redaction rules;
-visibility is an editor preference, not a confidentiality classification.
-**Load & reveal** explicitly reads that single slot and displays its value. Opening a project,
-changing the selected environment, or opening the manager does not preload values.
-**Clear editor** clears UI memory without removing the saved slot. Unsaved edits require
-confirmation before changing slots, reloading, closing the manager, or closing the window.
+Opening the manager lists the stored values of the default slot and of the environment in the
+third column. Ordinary values are shown in plain text; secret variables (including older
+definitions without a classification) show `••••••••` when set, and their content is read only
+when the eye icon next to that cell is clicked; clicking it again masks it. An environment cell
+without its own value shows **↳ Default**: requests use the default value there. Cells without
+a value show *not set*; an explicitly empty value shows *empty*.
+
+The pencil in a value cell opens a small popup; **Save** or Enter writes that single slot at once,
+Escape or **Cancel** discards the input. Empty strings are valid, explicit values. Secret input is
+masked in the popup and can be shown with its eye icon. × removes a slot's value after a
+confirmation; an environment slot then falls back to the default. A failed save keeps the popup
+and its input. An unsaved popup or new variable name counts as an unsaved change for closing the
+manager or the window, and **Save & quit** saves both. All variables continue to use OS storage
+(local projects) and the same log/history redaction rules.
 
 Use `{{variableName}}` in URLs, enabled query/header keys and values, text/JSON bodies,
 and enabled form keys and text values. Substitution is literal and single-pass, with no
@@ -79,8 +88,14 @@ is exposed. Native access runs on a blocking worker, outside the UI thread.
 
 ## Ownership, deletion, and failure recovery
 
-A variable owns its default slot and one slot per environment in its project. Removing a
-variable deletes all those local slots. Removing an environment deletes that environment's
+A variable owns its default slot and one slot per environment in its project. Before removing
+a variable, Fluxkit lists the saved requests that contain `{{name}}` anywhere (URL, parameters,
+headers, body; enabled or not) and the authentication settings that use it, and asks for
+confirmation. Requests are not changed. Sending a request that still contains the placeholder
+stops before anything is resolved with “Unknown variable {{name}}: it is not defined in this
+project. Replace it before sending.”, naming every unknown variable of the active fields at
+once; the editor marks such placeholders as undefined. Removing a variable deletes all its
+local slots. Removing an environment deletes that environment's
 slots for every variable and preserves defaults and other environments. **Remove value**
 deletes only the selected slot. Each UI action explicitly confirms the permanent local
 value deletion. Close project never deletes definitions or values. Missing entries count
@@ -129,7 +144,7 @@ is not intercepted. Suggestions use definitions only and never fetch credential 
 
 Hovering a highlighted token explicitly reveals that variable's effective value in a small
 tooltip, using the current project environment and shared-default fallback. This includes
-sensitive values: there is no per-variable secret classification yet. No other variables
+sensitive values: the current secret classification does not suppress explicit hover reveal. No other variables
 are read. Missing values, unknown names, locked stores, and stale project/environment
 state show errors. Empty values are identified explicitly. Values are rendered as text,
 never HTML. Moving away, scrolling, editing the field, or switching project/environment
@@ -151,13 +166,19 @@ the manager’s **Use Defaults** recovery button can replace a malformed selecti
 
 The main window has one narrow `environment_action(handle, action)` command. Handles must
 have been granted by the native project chooser. Tagged actions are `load`, `select`,
-`save`, `setValue`, `reveal`, `preview`, and `check`. `save` carries definitions plus their expected
+`save`, `setValue`, `reveal`, `table`, `usages`, `preview`, and `check`. `usages` carries a
+variable ID and returns `usages` with the labels of saved `requests` and `authentication`
+settings that use it. `save` carries definitions plus their expected
 revision; `setValue` carries variable/environment IDs, nullable value (null deletes), and
-expected definition revision. `reveal` returns only the explicitly requested slot. Replies
+expected definition revision. `reveal` returns only the explicitly requested slot. `table`
+carries a nullable environment ID and returns `table`: per variable, the `default` cell and (with
+an environment) the `environment` cell, each `{ set, value? }`. `value` is filled only for ordinary
+variables; for secrets only `set` is reported (in server workspaces from metadata, without the
+vault key). Replies
 contain `view` (definitions/revision/selection/stale-selection flag) and nullable `value`.
 `preview` carries a variable ID, expected definition revision, and expected nullable
-environment ID. Rust checks both before reading the effective value. Only reveal and
-preview return a value. Errors never include resolved data or native provider details.
+environment ID. Rust checks both before reading the effective value. Only reveal, preview and
+the ordinary values of `table` return values. Errors never include resolved data or native provider details.
 
 Routine tests use temporary folders and a fake values adapter. The separate opt-in OS test
 creates a random isolated synthetic credential, verifies reading, and deletes it:
@@ -168,3 +189,23 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked os_credential_roundtrip
 
 The test is excluded from the default suite because it requires OS-store access. It must
 be exercised on each platform before claiming that platform's integration is verified.
+
+## Server values and account isolation
+
+Server workspaces resolve ordinary values from shared project values and secrets from the
+caller's client-encrypted values, with no OS plaintext fallback. The account vault must be
+unlocked before secret resolution. Older definitions without `secret` remain secret. Changing
+classification is explicit and does not read or upload any stored value; the server removes
+values of the old kind, and deleting a definition removes its values.
+
+Server `setValue` additionally carries `expectedValueRevision`, the revision of the edited slot
+(`0` when it has no value yet); replies include `view.serverValues: { slots }`, keyed by
+`variableId/environmentId` (`default` for the default slot). Both the loaded definition revision
+and the slot revision must match. On conflicts, input is preserved; Reload fetches current
+revisions before an explicit retry. Saved definitions are already on the server, so values for
+new definitions can be stored right away. Imports store values themselves
+([SERVER_VALUES.md](SERVER_VALUES.md#imports-into-server-workspaces)).
+
+Caches, environment selection and acquired tokens are scoped to verified server URL and account
+UUID. Local-only projects retain their OS keys and behavior. See
+[SERVER_VALUES.md](SERVER_VALUES.md) for transfer consent, encryption, offline access and limits.

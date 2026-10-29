@@ -11,19 +11,24 @@ local project files, and migration from existing API clients.
 - English is the primary language for code, documentation, and application text.
 - Projects use readable JSON files and folders in a user-selected location, without a database.
 - Personal application settings and machine-specific state live outside portable projects.
-- No Fluxkit account, hosted backend, synchronization, or remote telemetry is required.
-- Reusable variable values, including usernames, live in the OS credential store.
-  Project files contain definitions and references rather than those values.
+- Local mode needs no Fluxkit account, backend, synchronization, or remote telemetry.
+- An optional, self-hosted server mode stores synchronized workspace data. There is no
+  Fluxkit-hosted service or cloud dependency.
+- In local mode, reusable variable values live in the OS credential store. In server mode,
+  ordinary values are project data and visible to authorized members; secret values remain
+  user-specific and are client-encrypted before upload. Project files contain definitions
+  and references rather than OS credential values.
 
 ## Projects and navigation
 
 The hierarchy is project, collection, nested folders, and requests. A collection usually
 represents an API application. Requests can live directly in a collection or in folders.
 
-On desktop startup, reopen the last active project if its saved files and identity remain
-valid. Keep its path only in local app-data settings. An unavailable project produces a
-recoverable warning; explicitly closing the last project leaves the next startup empty.
-This restores saved project definitions, not unsaved request drafts or response payloads.
+On desktop startup, reopen every project that was open, with its request tabs (including
+unsaved edits the user chose to keep), the active tab and the request/response divider. Keep
+this only in local app-data settings. An unavailable project produces a recoverable warning and
+its tabs stay open without a project; closing all projects leaves the next startup empty.
+Response payloads are never restored.
 
 Environments belong to a project and apply to all its collections and requests. Each
 project selects its own environment independently. The same variable can hold different
@@ -131,6 +136,28 @@ attempts, and do not silently replay requests that could repeat side effects.
 Login and renewal requests must not recursively trigger their own authentication flow.
 Only accept extracted values after the response passes the configured success conditions.
 Keep credentials and extracted values out of project JSON, logs, and diagnostic exports.
+
+## Optional self-hosted server
+
+Local-only operation remains complete without a server. An operator may deploy a separate
+ASP.NET Core and PostgreSQL service and configure the desktop client with its URL. Approved
+users receive a personal project; personal data is visible only to its owner. Team projects
+share all collections among members. Project administrators manage team membership. There are
+no private collections in a team project.
+
+The server stores projects as individually versioned rows (collections, folders, requests,
+environments, variables), ordinary project values, memberships and per-user encrypted secret
+values. Request history always remains local. Changes in a server workspace are saved on the
+server as they are made; members editing different requests never conflict, and a save over a
+request someone else changed asks first. Other members' changes appear automatically. Offline
+copies are read-only. Local project files remain after upload. Local OS credential-store values
+are uploaded only when explicitly selected in the transfer preview.
+
+Local accounts require administrator approval before accessing project data. OIDC is an
+alternative server authentication mode, not a simultaneous option. The provider secret stays
+on the server. OIDC identities are linked by `(issuer, subject)` and new registrations require
+administrator approval. See [SELF_HOSTED_BACKEND.md](SELF_HOSTED_BACKEND.md) for the data,
+authorization, sync, encryption, and deployment contract and its implementation status.
 
 ## Minimal request history
 
@@ -256,7 +283,7 @@ on each before claiming release support. A build on one host does not prove anot
 
 ## Deferred capabilities
 
-- Fluxkit accounts, hosted synchronization, and collaboration services.
+- A Fluxkit-hosted service, cloud synchronization, and remote telemetry.
 - Browser-based OAuth and OAuth grants beyond Client Credentials.
 - Arbitrary scripting and multi-step workflow automation.
 - Full request/response history and automatic payload archival.

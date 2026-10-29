@@ -97,12 +97,14 @@ impl Mapper<'_> {
             self.blockers.push(text.into());
         }
     }
+    /// Server URLs and token endpoints are ordinary values; credentials stay secret.
     fn variable(
         &mut self,
         name: &str,
         mut value: Option<String>,
         source: &str,
     ) -> Result<(String, String), String> {
+        let secret = !(source == "Server URL" || source.ends_with("(token endpoint)"));
         if self.variables.len() >= 1000 {
             return Err("This import exceeds the 1,000 project-variable limit. Split the specification into smaller collections.".into());
         }
@@ -135,9 +137,11 @@ impl Mapper<'_> {
             definition: Definition {
                 id: id.clone(),
                 name,
+                secret: Some(secret),
             },
             value,
             environment: None,
+            reused: false,
         });
         Ok((id, placeholder))
     }
@@ -854,6 +858,8 @@ pub fn plan(
                 source_name: Some(mapper.sources[i].clone()),
                 name: v.definition.name.clone(),
                 has_default: v.value.is_some(),
+                existing: false,
+                secret: v.definition.secret.unwrap_or(true),
             })
             .collect(),
         requests: collection
@@ -885,6 +891,8 @@ pub fn plan(
         variables: mapper.variables,
         definitions: updated,
         definitions_saved: false,
+        local_saved: false,
+        synced: false,
         created: Instant::now(),
     })
 }

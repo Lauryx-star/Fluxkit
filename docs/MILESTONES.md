@@ -166,3 +166,39 @@ Acceptance criteria:
 - Startup, memory use, and interaction responsiveness are measured with stated conditions.
 - Setup, storage, migration limits, supported formats, and known limitations are documented.
 - Signing, publishing, and automatic updates proceed only under their own explicit scope.
+
+## Milestone 10 Optional self-hosted server
+
+Status: in progress; implementation handoff and ordered remaining work are in
+[SELF_HOSTED_BACKEND.md](SELF_HOSTED_BACKEND.md#handoff-status-2026-10-27). The initial
+ASP.NET Core/PostgreSQL server project provides local registration and admin approval, personal
+projects, team project membership, normalized per-row storage with revisions, atomic change
+batches and a change feed, and per-user encrypted values. The desktop includes account-scoped
+caches and workspaces, writes each saved change through to the server, loads other members'
+changes every 15 seconds and resolves concurrent edits of the same request explicitly. Server
+administrators can delete empty team projects. Shared values, explicit local-to-server transfer preview and client-side secret
+encryption with account-key wrapping are implemented; see [SERVER_VALUES.md](SERVER_VALUES.md).
+OIDC browser login, issuer/subject mapping and administrator approval are implemented; see
+[OIDC.md](OIDC.md). Full deployment/platform validation and explicit existing-account linking
+remain open. A reproducible [Keycloak/HTTPS E2E suite](../server/e2e/README.md) validates the
+real browser/provider/API path and native encrypted-value protocol. See [server setup](../server/README.md).
+
+Acceptance criteria:
+
+- The desktop can select local or server mode and authenticate against the configured server.
+- Local account and OIDC modes are mutually exclusive server configurations; pending users
+  cannot read project data before administrator approval.
+- Approved users automatically receive a private personal project; team projects grant data
+  access through explicit membership only.
+- Team members can read and change every collection in their project; administrators manage
+  memberships without gaining personal-project access.
+- Local-to-server upload previews the data and creates a server copy. Original local project files
+  remain available after a verified successful upload.
+- The client keeps a read-only local copy for offline access and never queues offline
+  writes. History remains local in both modes.
+- Ordinary values are visible to project members. Secrets are encrypted client-side with
+  Argon2id-derived wrapping keys and authenticated encryption; each user can decrypt only
+  their own values. Forgotten master passwords without recovery permanently lose access.
+- PostgreSQL migrations, account administration, backups, restore, and TLS deployment are
+  documented and validated.
+- OIDC client secrets remain server-side and identities use stable issuer/subject keys.

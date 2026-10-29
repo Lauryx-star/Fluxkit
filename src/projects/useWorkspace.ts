@@ -15,11 +15,93 @@ import {
   type ProjectView,
   type SavedRequest,
 } from './types';
+import { isServerConflict, mergeRefreshedView, refreshNotice } from './serverRefresh';
+import { asSaved, restoredDrafts, sessionInput, withoutEdits } from './session';
+
+/** How often open server workspaces pull other members' changes. */
+export const SERVER_POLL_MS = 15_000;
+
+interface Startup {
+  projects: ProjectView[];
+  active: string | null;
+  drafts: Draft[];
+  activeId: number | null;
+  requestPaneRatio: number | null;
+  problems: string[];
+}
+
+/** Reopens a read-only server copy online; the copy is closed either way. */
+async function online(view: ProjectView) {
+  if (!view.readOnly || view.serverRecovery) {
+    return view;
+  }
+  try {
+    const refreshed = await native.openServerProject(view.data.id);
+    if (refreshed.handle !== view.handle) {
+      await native.closeProject(view.handle);
+    }
+    return refreshed;
+  } catch (reason) {
+    await native.closeProject(view.handle);
+    throw reason;
+  }
+}
+
+async function restore(): Promise<Startup> {
+  const session = await native.restoreSession();
+  if (!session) {
+    // No session saved yet (first start after upgrading): the last active project only.
+    const view = await native.restoreLastProject().then((view) => (view ? online(view) : null));
+    return {
+      projects: view ? [view] : [],
+      active: view?.handle ?? null,
+      drafts: [],
+      activeId: null,
+      requestPaneRatio: null,
+      problems: [],
+    };
+  }
+  const projects: ProjectView[] = [];
+  const handles = new Map<string, string>();
+  const problems = session.unavailable.map(
+    (directory) => `The project in ${directory} could not be reopened.`,
+  );
+  for (const view of session.projects) {
+    try {
+      const opened = await online(view);
+      projects.push(opened);
+      handles.set(view.handle, opened.handle);
+    } catch (reason) {
+      problems.push(
+        typeof reason === 'string' ? reason : `“${view.data.name}” could not be reopened.`,
+      );
+    }
+  }
+  const restored = restoredDrafts(session.tabs, handles);
+  // Unedited tabs follow the saved requests; edited ones are flagged if those changed meanwhile.
+  let drafts = restored.drafts;
+  for (const view of projects) {
+    drafts = mergeRefreshedView(drafts, view).drafts;
+  }
+  const activeId = session.activeTab === null ? null : (restored.ids[session.activeTab] ?? null);
+  return {
+    projects,
+    active:
+      (session.activeProject && handles.get(session.activeProject)) ?? projects[0]?.handle ?? null,
+    drafts,
+    activeId: drafts.some((item) => item.id === activeId) ? activeId : (drafts.at(-1)?.id ?? null),
+    requestPaneRatio: session.requestPaneRatio,
+    problems: problems.length
+      ? [...problems, 'Their open requests were kept without a project.']
+      : [],
+  };
+}
 
 export function useWorkspace(
   additionalChanges = false,
   saveAdditionalChanges?: () => Promise<boolean>,
   additionalBusy = false,
+  requestPaneRatio: number | null = null,
 ) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -33,7 +115,10 @@ export function useWorkspace(
   } | null>(null);
   const [restoring, setRestoring] = useState(() => native.isDesktop());
   const [busy, setBusy] = useState(() => native.isDesktop());
-  const startup = useRef<Promise<ProjectView | null> | null>(null);
+  const startup = useRef<Promise<Startup> | null>(null);
+  const [restoredRatio, setRestoredRatio] = useState<number | null>(null);
+  // Set once the quit flow wrote the final session, so no pending autosave overwrites it.
+  const sessionClosed = useRef(false);
   const remembered = useRef<string | null>(null);
   const rememberQueue = useRef<Promise<void>>(Promise.resolve());
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +132,10 @@ export function useWorkspace(
     message: string;
     resolve: (yes: boolean) => void;
   } | null>(null);
+  const [conflict, setConflict] = useState<{ message: string; draftId: number } | null>(null);
+  // Server refreshes never overlap other workspace operations, so views cannot arrive out of order.
+  const busyRef = useRef(false);
+  const refreshing = useRef<Promise<unknown>>(Promise.resolve());
   const [nameDialog, setNameDialog] = useState<{
     title: string;
     initial: string;
@@ -79,15 +168,20 @@ export function useWorkspace(
     }
     let disposed = false;
     // StrictMode replays effects: reuse the same native restore instead of registering twice.
-    startup.current ??= native.restoreLastProject();
+    startup.current ??= restore();
     void startup.current
       .then(
-        (view) => {
+        (restored) => {
           if (!disposed) {
-            remembered.current = view?.handle ?? null;
-            if (view) {
-              setProjects([view]);
-              setActiveHandle(view.handle);
+            remembered.current = restored.active;
+            setProjects(restored.projects);
+            setActiveHandle(restored.active);
+            setDrafts(restored.drafts);
+            setActiveId(restored.activeId);
+            setNextId(restored.drafts.length + 1);
+            setRestoredRatio(restored.requestPaneRatio);
+            if (restored.problems.length) {
+              setError(restored.problems.join(' '));
             }
           }
         },
@@ -134,6 +228,22 @@ export function useWorkspace(
       disposed = true;
     };
   }, [desktop, restoring, activeHandle]);
+
+  // Remember open projects, tabs (with unsaved edits) and the layout for the next start.
+  useEffect(() => {
+    if (!desktop || restoring || quitInFlight.current) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      if (quitInFlight.current || sessionClosed.current) {
+        return;
+      }
+      void native
+        .saveSession(sessionInput(projects, activeHandle, drafts, activeId, requestPaneRatio))
+        .catch(() => {});
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [desktop, restoring, projects, activeHandle, drafts, activeId, requestPaneRatio]);
 
   const ask = useCallback(
     (message: string) =>
@@ -185,19 +295,29 @@ export function useWorkspace(
   }, [desktop]);
 
   async function perform(operation: () => Promise<void>) {
-    if (busy) {
+    if (busy || busyRef.current) {
       return;
     }
     setError(null);
     setBusy(true);
+    busyRef.current = true;
+    const handle = activeHandle;
+    let conflicted = false;
     try {
+      await refreshing.current;
       await operation();
     } catch (reason: unknown) {
+      conflicted = isServerConflict(reason);
       setError(
         typeof reason === 'string' ? reason : 'The operation failed. Your edits are still open.',
       );
     } finally {
+      busyRef.current = false;
       setBusy(false);
+    }
+    // A rejected write leaves the workspace at the server state it knew; load what changed.
+    if (conflicted && handle && projects.find((item) => item.handle === handle)?.serverSync) {
+      await refreshServerWorkspace(handle, true);
     }
   }
 
@@ -250,6 +370,89 @@ export function useWorkspace(
         acceptProject(view);
       }
     });
+  }
+  async function openServerProject(projectId: string) {
+    const view = await native.openServerProject(projectId);
+    acceptProject(view);
+  }
+  /**
+   * Loads other members' changes into an open server workspace. Unedited editors follow the
+   * server; edited ones keep their content and are flagged. Returns the refreshed view.
+   */
+  function refreshServerWorkspace(handle: string, quiet = false) {
+    const run = refreshing.current.then(async () => {
+      const view = await native.refreshServerWorkspace(handle);
+      setProjects((items) => items.map((item) => (item.handle === view.handle ? view : item)));
+      const outcome = mergeRefreshedView(drafts, view);
+      setDrafts((items) => mergeRefreshedView(items, view).drafts);
+      if (outcome.closed.length) {
+        setActiveId((id) => (id !== null && outcome.closed.includes(id) ? null : id));
+      }
+      const notice = refreshNotice(outcome);
+      if (notice) {
+        setError(notice);
+      }
+      return view;
+    });
+    refreshing.current = run.catch(() => {});
+    return run.catch((reason: unknown) => {
+      if (!quiet) {
+        throw reason;
+      }
+      return null;
+    });
+  }
+  const pollServer = useEffectEvent(() => {
+    if (busyRef.current || quitInFlight.current || document.visibilityState === 'hidden') {
+      return;
+    }
+    for (const item of projects) {
+      if (item.serverSync) {
+        void refreshServerWorkspace(item.handle, true);
+      }
+    }
+  });
+  const polling = projects.some((item) => item.serverSync);
+  useEffect(() => {
+    if (!desktop || !polling) {
+      return;
+    }
+    const timer = window.setInterval(() => pollServer(), SERVER_POLL_MS);
+    const focus = () => pollServer();
+    window.addEventListener('focus', focus);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', focus);
+    };
+  }, [desktop, polling]);
+  /** Deletes an empty server project after closing every open copy of it on this device. */
+  async function deleteServerProject(projectId: string, revision: number) {
+    const open = projects.filter((item) => item.data.id === projectId);
+    const handles = new Set(open.map((item) => item.handle));
+    if (
+      drafts.some(
+        (item) => item.projectHandle && handles.has(item.projectHandle) && isDirty(item),
+      ) &&
+      !(await ask('Close this project and discard its unsaved request changes?'))
+    ) {
+      return false;
+    }
+    for (const item of open) {
+      await native.closeProject(item.handle);
+    }
+    if (open.length) {
+      const remaining = projects.filter((item) => !handles.has(item.handle));
+      setProjects(remaining);
+      setActiveHandle((current) =>
+        current && handles.has(current) ? (remaining[0]?.handle ?? null) : current,
+      );
+      setDrafts((items) =>
+        items.filter((item) => !item.projectHandle || !handles.has(item.projectHandle)),
+      );
+      setActiveId(null);
+    }
+    await native.deleteServerProject(projectId, revision);
+    return true;
   }
   function renameProject() {
     if (!project) {
@@ -643,7 +846,36 @@ export function useWorkspace(
     }
     return { owner, collection };
   }
-  function saveDraft() {
+  /** Writes one editor into its collection and marks it saved. */
+  async function writeDraft(item: Draft, owner: ProjectView, collection: CollectionView) {
+    const data = requestData(item);
+    const exists = collection.data.requests.some((r) => r.id === data.id);
+    const requests = exists
+      ? collection.data.requests.map((r) => (r.id === data.id ? data : r))
+      : [...collection.data.requests, data];
+    const view = await native.saveCollection(
+      owner.handle,
+      { ...collection.data, requests },
+      collection.revision,
+    );
+    updateCollection(owner.handle, view);
+    setDrafts((items) =>
+      items.map((entry) =>
+        entry.id === item.id
+          ? {
+              ...entry,
+              projectHandle: owner.handle,
+              collectionId: collection.data.id,
+              savedSnapshot: JSON.stringify(data),
+              serverChanged: false,
+              serverDeleted: false,
+              serverSnapshot: undefined,
+            }
+          : entry,
+      ),
+    );
+  }
+  async function saveDraft() {
     if (!draft || busy) {
       return;
     }
@@ -655,30 +887,77 @@ export function useWorkspace(
       return;
     }
     const { owner, collection } = destination;
-    const data = requestData(draft);
+    if (
+      (draft.serverChanged &&
+        !(await ask(
+          `“${draft.name}” was changed elsewhere while you were editing it. Overwrite the saved version with yours?`,
+        ))) ||
+      (draft.serverDeleted &&
+        !(await ask(`“${draft.name}” was deleted on the server. Save it again to recreate it?`)))
+    ) {
+      return;
+    }
+    const item = draft;
     void perform(async () => {
-      const exists = collection.data.requests.some((r) => r.id === data.id);
-      const requests = exists
-        ? collection.data.requests.map((r) => (r.id === data.id ? data : r))
-        : [...collection.data.requests, data];
-      const view = await native.saveCollection(
-        owner.handle,
-        { ...collection.data, requests },
-        collection.revision,
+      try {
+        await writeDraft(item, owner, collection);
+      } catch (reason: unknown) {
+        if (owner.serverSync && isServerConflict(reason)) {
+          setConflict({ message: reason, draftId: item.id });
+        }
+        throw reason;
+      }
+    });
+  }
+  /**
+   * Resolves a rejected save: either discard the edits in favour of the server version, or
+   * load the server version underneath the edits and save them on top of it.
+   */
+  function resolveConflict(choice: 'server' | 'mine' | 'cancel') {
+    const pending = conflict;
+    setConflict(null);
+    const item = drafts.find((entry) => entry.id === pending?.draftId);
+    if (!pending || !item?.projectHandle || choice === 'cancel') {
+      return;
+    }
+    const handle = item.projectHandle;
+    void perform(async () => {
+      const view = await native.refreshServerWorkspace(handle);
+      setProjects((items) => items.map((entry) => (entry.handle === view.handle ? view : entry)));
+      const located = view.collections.find((entry) =>
+        entry.data.requests.some((request) => request.id === item.requestId),
       );
-      updateCollection(owner.handle, view);
-      setDrafts((items) =>
-        items.map((item) =>
-          item.id === draft.id
-            ? {
-                ...item,
-                projectHandle: owner.handle,
-                collectionId: collection.data.id,
-                savedSnapshot: JSON.stringify(data),
-              }
-            : item,
-        ),
-      );
+      if (choice === 'server') {
+        const request = located?.data.requests.find((entry) => entry.id === item.requestId);
+        setDrafts((items) =>
+          request && located
+            ? items.map((entry) =>
+                entry.id === item.id
+                  ? fromRequest(item.id, request, view.handle, located.data.id)
+                  : entry,
+              )
+            : items.filter((entry) => entry.id !== item.id),
+        );
+        if (!request) {
+          setActiveId((id) => (id === item.id ? null : id));
+        }
+        return;
+      }
+      const collection =
+        located ?? view.collections.find((entry) => entry.data.id === item.collectionId);
+      if (!collection) {
+        throw new Error(
+          'The collection of this request was deleted on the server. Move the request to another collection to keep it.',
+        );
+      }
+      // Keep the server's placement; a request whose folder is gone lands in the collection root.
+      const placed = located?.data.requests.find((entry) => entry.id === item.requestId);
+      const folderId =
+        placed?.folderId ??
+        (collection.data.folders.some((folder) => folder.id === item.folderId)
+          ? item.folderId
+          : null);
+      await writeDraft({ ...item, collectionId: collection.data.id, folderId }, view, collection);
     });
   }
 
@@ -722,7 +1001,11 @@ export function useWorkspace(
     }
   }
 
-  async function finishQuit(choice: 'cancel' | 'discard' | 'save') {
+  /**
+   * Quitting: `save` saves every edit first, `keep` keeps unsaved edits for the next start and
+   * `discard` reopens only the saved versions next time.
+   */
+  async function finishQuit(choice: 'cancel' | 'discard' | 'save' | 'keep') {
     if (quitInFlight.current) {
       return;
     }
@@ -745,6 +1028,21 @@ export function useWorkspace(
         }
       }
       await rememberQueue.current;
+      const tabs =
+        choice === 'save' ? asSaved(drafts) : choice === 'discard' ? withoutEdits(drafts) : drafts;
+      const final = native.saveSession(
+        sessionInput(projects, activeHandle, tabs, activeId, requestPaneRatio),
+      );
+      sessionClosed.current = true;
+      if (choice === 'keep') {
+        // Quitting would lose the edits if they could not be written.
+        await final.catch((reason: unknown) => {
+          sessionClosed.current = false;
+          throw reason;
+        });
+      } else {
+        await final.catch(() => {});
+      }
       await getCurrentWindow().destroy();
     } catch (reason: unknown) {
       setQuitOpen(true);
@@ -789,6 +1087,10 @@ export function useWorkspace(
   }
   return {
     ask,
+    restoredRatio,
+    conflict,
+    resolveConflict,
+    deleteServerProject,
     acceptImportedProject: (view: ProjectView) => {
       setProjects((items) => items.map((item) => (item.handle === view.handle ? view : item)));
     },
@@ -823,6 +1125,13 @@ export function useWorkspace(
     desktop,
     createProject,
     openProject,
+    openServerProject,
+    refreshServerWorkspace: async (handle: string) => {
+      if (busyRef.current) {
+        throw 'Wait for the current operation to finish, then refresh again.';
+      }
+      await refreshServerWorkspace(handle);
+    },
     renameProject,
     reloadProject,
     closeProject,

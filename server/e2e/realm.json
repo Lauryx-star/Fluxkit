@@ -1,0 +1,48 @@
+{
+  "realm": "fluxkit-e2e",
+  "loginTheme": "keycloak.v2",
+  "enabled": true,
+  "sslRequired": "all",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "loginWithEmailAllowed": false,
+  "clients": [
+    {
+      "clientId": "fluxkit-e2e",
+      "secret": "SyntheticE2eClientSecret42",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["https://fluxkit.test:18443/api/auth/oidc/callback"],
+      "attributes": { "pkce.code.challenge.method": "S256" }
+    }
+  ],
+  "users": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "username": "e2e-admin",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "admin@synthetic.test",
+      "firstName": "Synthetic",
+      "lastName": "Administrator",
+      "credentials": [
+        { "type": "password", "value": "SyntheticAdmin42!password", "temporary": false }
+      ]
+    },
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "username": "e2e-member",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "member@synthetic.test",
+      "firstName": "Synthetic",
+      "lastName": "Member",
+      "credentials": [
+        { "type": "password", "value": "SyntheticMember42!password", "temporary": false }
+      ]
+    }
+  ]
+}

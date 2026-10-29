@@ -5,6 +5,158 @@ export interface AppInfo {
   version: string;
 }
 
+export interface ServerConnection {
+  serverUrl: string;
+  authenticated: boolean;
+  accountId?: string | null;
+}
+
+export interface ServerProject {
+  id: string;
+  name: string;
+  kind: string;
+  revision: number;
+  canManageMembers?: boolean;
+  canEdit?: boolean;
+  createdAt?: string | null;
+  collectionCount?: number | null;
+}
+
+export interface ServerProjectMember {
+  id: string;
+  username: string;
+  role: 'member' | 'projectAdmin';
+}
+
+export interface ServerAccount {
+  id: string;
+  username: string;
+  isServerAdmin: boolean;
+}
+
+export interface ServerAccountAdminView extends ServerAccount {
+  status: 'pending' | 'active' | 'disabled';
+  createdAt?: string | null;
+  /** Collections in the personal project, which deleting the account removes. */
+  personalCollections?: number | null;
+  teamProjects?: number | null;
+}
+
+export function getServerConnection() {
+  return invoke<ServerConnection>('server_connection_get');
+}
+export function setServerConnection(serverUrl: string) {
+  return invoke<ServerConnection>('server_connection_set', { serverUrl });
+}
+export function registerServerAccount(username: string, password: string) {
+  return invoke<void>('server_register', { username, password });
+}
+export function getServerAuthMode() {
+  return invoke<{ mode: 'local' | 'oidc' }>('server_auth_mode');
+}
+export function loginWithOidc() {
+  return invoke<ServerConnection>('server_oidc_login');
+}
+export function cancelOidcLogin() {
+  return invoke<void>('server_oidc_cancel');
+}
+export function loginToServer(username: string, password: string) {
+  return invoke<ServerConnection>('server_login', { username, password });
+}
+export function logoutFromServer() {
+  return invoke<ServerConnection>('server_logout');
+}
+export function listServerProjects() {
+  return invoke<ServerProject[]>('server_projects');
+}
+export function openServerProject(projectId: string) {
+  return invoke<import('./projects/types').ProjectView>('server_open_project', { projectId });
+}
+/** Pulls the server's latest state into an open server workspace. */
+export function refreshServerWorkspace(handle: string) {
+  return invoke<import('./projects/types').ProjectView>('server_refresh_workspace', { handle });
+}
+/** Deletes an empty team project; only server administrators may do this. */
+export function deleteServerProject(projectId: string, revision: number) {
+  return invoke<void>('server_delete_project', { projectId, revision });
+}
+export interface VaultStatus {
+  configured: boolean;
+  unlocked: boolean;
+}
+export function serverVaultAction(
+  action: 'status' | 'create' | 'unlock' | 'lock' | 'changePassword',
+  password?: string,
+) {
+  return invoke<VaultStatus>('server_vault_action', { action, password: password ?? null });
+}
+export interface TransferSlot {
+  variableId: string;
+  environmentId: string;
+}
+export interface TransferPreview {
+  id: string;
+  name: string;
+  collections: number;
+  requests: number;
+  definitions: import('./environments/types').Definitions;
+  ready: boolean;
+  selected: number;
+  available: number;
+  missing: TransferSlot[];
+}
+export function previewServerTransfer(handle: string) {
+  return invoke<TransferPreview>('server_preview_transfer', { handle });
+}
+export function prepareServerTransfer(handle: string, id: string, selections: TransferSlot[]) {
+  return invoke<TransferPreview>('server_prepare_transfer', { handle, id, selections });
+}
+export function commitServerTransfer(handle: string, id: string) {
+  return invoke<ServerProject>('server_commit_transfer', { handle, id });
+}
+export function discardServerTransfer(id: string) {
+  return invoke<void>('server_discard_transfer', { id });
+}
+export function listServerProjectMembers(projectId: string) {
+  return invoke<ServerProjectMember[]>('server_project_members', { projectId });
+}
+export function addServerProjectMember(
+  projectId: string,
+  username: string,
+  role: ServerProjectMember['role'],
+) {
+  return invoke<void>('server_add_project_member', { projectId, username, role });
+}
+export function updateServerProjectMember(
+  projectId: string,
+  userId: string,
+  role: ServerProjectMember['role'],
+) {
+  return invoke<void>('server_update_project_member', { projectId, userId, role });
+}
+export function removeServerProjectMember(projectId: string, userId: string) {
+  return invoke<void>('server_remove_project_member', { projectId, userId });
+}
+export function getServerAccount() {
+  return invoke<ServerAccount>('server_account');
+}
+export function listServerAdminUsers() {
+  return invoke<ServerAccountAdminView[]>('server_admin_users');
+}
+export function approveServerUser(userId: string) {
+  return invoke<void>('server_admin_approve_user', { userId });
+}
+export function setServerUserStatus(userId: string, status: 'active' | 'disabled') {
+  return invoke<void>('server_admin_set_user_status', { userId, status });
+}
+/** Permanently deletes an account with its personal project, vault and encrypted values. */
+export function deleteServerUser(userId: string) {
+  return invoke<void>('server_admin_delete_user', { userId });
+}
+export function createServerTeamProject(name: string) {
+  return invoke<ServerProject>('server_create_team_project', { name });
+}
+
 export function isDesktop(): boolean {
   return isTauri();
 }
@@ -21,6 +173,35 @@ export function restoreLastProject() {
 }
 export function rememberProject(handle: string | null) {
   return invoke<void>('remember_project', { handle });
+}
+export interface SessionTab {
+  /** An open project handle; null for a tab without a project. */
+  project: string | null;
+  draft: import('./projects/types').Draft;
+}
+export interface SessionInput {
+  projects: string[];
+  activeProject: string | null;
+  tabs: SessionTab[];
+  activeTab: number | null;
+  requestPaneRatio: number | null;
+}
+export interface RestoredSession {
+  projects: import('./projects/types').ProjectView[];
+  activeProject: string | null;
+  /** Drafts come back as saved; validate before use. */
+  tabs: { project: string | null; draft: unknown }[];
+  activeTab: number | null;
+  requestPaneRatio: number | null;
+  unavailable: string[];
+}
+/** Reopens the projects and tabs of the previous run; null when none was saved yet. */
+export function restoreSession() {
+  return invoke<RestoredSession | null>('restore_session');
+}
+/** Remembers open projects, tabs (including unsaved edits) and the layout for the next start. */
+export function saveSession(session: SessionInput) {
+  return invoke<void>('save_session', { session });
 }
 export function reloadProject(handle: string) {
   return invoke<import('./projects/types').ProjectView>('reload_project', { handle });

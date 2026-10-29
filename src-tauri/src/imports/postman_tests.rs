@@ -1,6 +1,6 @@
 use super::{postman, storage, tests::Fake};
 use crate::projects::{
-    environments::{self, Definitions},
+    environments::{self, Definition, Definitions},
     model::{Auth, BodyKind},
     store::{self, ProjectStore},
 };
@@ -38,11 +38,35 @@ fn collection_maps_hierarchy_auth_bodies_and_scopes_without_writes_or_private_so
     assert!(get.auth.is_none());
     assert_eq!(get.params.len(), 2);
     assert!(!get.params[1].enabled);
-    assert!(!get.url.contains('?'));
-    assert!(plan
+    assert_eq!(get.url, "{{baseUrl}}/products/a%2Fb");
+    assert_eq!(get.params[0].value, "yes");
+    assert_eq!(get.headers[0].value, "{{username}}");
+    assert_eq!(get.headers[1].value, "synthetic-header");
+    let form = &plan.collection.requests[3];
+    assert_eq!(form.url, "https://synthetic.invalid/form");
+    assert_eq!(form.params[0].value, "a/b");
+    assert_eq!(form.headers[0].value, "synthetic-trace");
+    assert_eq!(
+        plan.collection.requests[4].url,
+        "https://synthetic.invalid:8443/oauth"
+    );
+    let names: Vec<_> = plan
         .variables
         .iter()
-        .any(|v| v.value.as_deref() == Some("a%2Fb")));
+        .map(|v| v.definition.name.as_str())
+        .collect();
+    for name in [
+        "baseUrl",
+        "token",
+        "username",
+        "password",
+        "clientId",
+        "clientSecret",
+    ] {
+        assert!(names.contains(&name), "{names:?}");
+    }
+    assert!(names.iter().all(|n| !n.starts_with("pm_")));
+    assert!(plan.variables.iter().all(|v| !v.reused));
     assert!(matches!(
         plan.collection.requests[1].auth,
         Some(Auth::Basic { .. })
@@ -73,7 +97,6 @@ fn collection_maps_hierarchy_auth_bodies_and_scopes_without_writes_or_private_so
     for private in [
         "synthetic-token",
         "synthetic-password",
-        "synthetic-header",
         "synthetic-client-secret",
         "SAVED_RESPONSE_MUST_NOT_PERSIST",
         "must never run",
@@ -82,6 +105,7 @@ fn collection_maps_hierarchy_auth_bodies_and_scopes_without_writes_or_private_so
         assert!(!preview.contains(private));
     }
     assert!(serialized.contains("synthetic-body"));
+    assert!(serialized.contains("synthetic-header"));
     let fake = Fake::default();
     storage::apply(root.path(), &project.data.id, &mut plan, true, &fake).unwrap();
     let imported = store.reload(&project.handle).unwrap();
@@ -399,13 +423,51 @@ fn imported_environment_resolution_uses_own_scope_and_collection_default_fallbac
         .unwrap(),
         "https://synthetic.invalid/api/products/a%2Fb"
     );
-    let second = postman::collection(COLLECTION, &project, defs, revision).unwrap();
+    let project = store.reload(&project.handle).unwrap();
+    let (defs, revision) = environments::definitions(root.path()).unwrap();
+    let mut second = postman::collection(COLLECTION, &project, defs.clone(), revision).unwrap();
     assert_eq!(second.collection.name, "Synthetic Shop (import 2)");
-    assert!(second.variables.iter().all(|v| !env
-        .definitions
+    // Source names matching existing project variables reuse their identity.
+    let first = imported.collection.postman.as_ref().unwrap();
+    assert_eq!(
+        second.collection.postman.as_ref().unwrap().variables,
+        first.variables
+    );
+    for source in ["baseUrl", "token", "username"] {
+        let variable = second
+            .variables
+            .iter()
+            .find(|v| v.definition.name == source)
+            .unwrap();
+        assert!(variable.reused);
+        assert_eq!(variable.definition.id, first.variables[source]);
+    }
+    assert!(second
+        .preview
         .variables
         .iter()
-        .any(|d| d.id == v.definition.id || d.name == v.definition.name)));
+        .filter(|v| v.existing)
+        .all(|v| !v.has_default));
+    // Generated credentials never reuse; they get a numbered name instead.
+    assert!(second
+        .variables
+        .iter()
+        .any(|v| v.definition.name == "password_2" && !v.reused));
+    assert_eq!(
+        second.definitions.variables.len(),
+        defs.variables.len() + second.variables.iter().filter(|v| !v.reused).count()
+    );
+    // An existing default that differs from the Postman default is neither an error nor
+    // overwritten.
+    let base_key = format!("{}/{}/default", project.data.id, first.variables["baseUrl"]);
+    fake.values
+        .borrow_mut()
+        .insert(base_key.clone(), "https://edited.synthetic.invalid".into());
+    storage::apply(root.path(), &project.data.id, &mut second, true, &fake).unwrap();
+    assert_eq!(
+        fake.values.borrow()[&base_key],
+        "https://edited.synthetic.invalid"
+    );
 }
 
 #[test]
@@ -487,7 +549,7 @@ fn large_postman_mapping_bounds_preview_and_records_observed_work() {
 }
 
 #[test]
-fn protocol_placeholders_and_raw_query_null_do_not_capture_existing_variables_or_drop_queries() {
+fn protocol_placeholders_keep_source_names_and_raw_query_null_does_not_drop_queries() {
     let root = tempdir().unwrap();
     let mut store = ProjectStore::default();
     let project = store
@@ -504,13 +566,17 @@ fn protocol_placeholders_and_raw_query_null_do_not_capture_existing_variables_or
     )
     .unwrap();
     let request = &plan.collection.requests[0];
-    assert!(!request.url.contains("{{protocol}}"));
-    assert!(request.url.starts_with("{{pm_"));
+    assert_eq!(request.url, "{{protocol}}://synthetic.invalid/path");
     assert_eq!(request.params.len(), 1);
-    assert!(plan
+    assert_eq!(request.params[0].value, "a/b");
+    // The second variable is the fixture's root Bearer {{token}} without a collection value.
+    let names: Vec<_> = plan
         .variables
         .iter()
-        .any(|v| v.value.as_deref() == Some("a/b")));
+        .map(|v| v.definition.name.as_str())
+        .collect();
+    assert_eq!(names, ["protocol", "token"]);
+    assert_eq!(plan.variables[0].value.as_deref(), Some("https"));
 }
 
 #[test]
@@ -542,9 +608,10 @@ fn unsupported_auth_dynamic_values_and_local_files_import_as_review_locked_reque
     assert!(plan.collection.requests[4].import_issues.is_empty());
     assert_eq!(plan.collection.requests[3].body.fields.len(), 1);
     assert!(plan.collection.requests[3].body.fields[0].file.is_none());
-    assert!(plan.collection.requests[3].body.fields[0]
-        .value
-        .starts_with("{{pm_"));
+    assert_eq!(
+        plan.collection.requests[3].body.fields[0].value,
+        "{{file_file}}"
+    );
     assert!(!serde_json::to_string(&plan.collection)
         .unwrap()
         .contains("NEVER_OPEN_SOURCE_FILE"));
@@ -561,4 +628,247 @@ fn unsupported_auth_dynamic_values_and_local_files_import_as_review_locked_reque
     assert!(!project.collections[0].data.requests[0]
         .import_issues
         .is_empty());
+}
+
+#[test]
+fn literal_urls_stay_literal_and_path_parameters_without_values_need_variables() {
+    let root = tempdir().unwrap();
+    let mut store = ProjectStore::default();
+    let project = store.create(root.path(), "Literals".into()).unwrap();
+    let source = json!({"info":{"name":"Literal API","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},"item":[
+        {"name":"Test","request":{"method":"GET","url":{"raw":"https://localhost:5002/api/v0/info/Test","protocol":"https","host":["localhost"],"port":"5002","path":["api","v0","info","Test"]}}},
+        {"name":"Version","request":{"method":"GET","url":{"raw":"{{baseUrlEpitopId}}/api/v0/info/version","host":["{{baseUrlEpitopId}}"],"path":["api","v0","info","version"]}}},
+        {"name":"Item","request":{"method":"GET","url":{"raw":"https://localhost:5002/items/:id","variable":[{"key":"id"}]}}}
+    ]});
+    let plan = postman::collection(
+        &serde_json::to_vec(&source).unwrap(),
+        &project,
+        Definitions::default(),
+        "missing".into(),
+    )
+    .unwrap();
+    let urls: Vec<_> = plan
+        .collection
+        .requests
+        .iter()
+        .map(|r| r.url.as_str())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://localhost:5002/api/v0/info/Test",
+            "{{baseUrlEpitopId}}/api/v0/info/version",
+            "https://localhost:5002/items/{{id}}"
+        ]
+    );
+    let names: Vec<_> = plan
+        .preview
+        .variables
+        .iter()
+        .map(|v| v.name.as_str())
+        .collect();
+    assert_eq!(names, ["baseUrlEpitopId", "id"]);
+    assert_eq!(
+        plan.preview.variables[0].source_name.as_deref(),
+        Some("baseUrlEpitopId")
+    );
+}
+
+#[test]
+fn invalid_or_colliding_source_names_become_unique_valid_variable_names() {
+    let root = tempdir().unwrap();
+    let mut store = ProjectStore::default();
+    let project = store.create(root.path(), "Names".into()).unwrap();
+    let source = json!({"info":{"name":"Names","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+        "variable":[{"key":"base url","value":"https://synthetic.invalid"},{"key":"base_url","value":"x"}],
+        "item":[{"name":"A","request":{"method":"GET","url":"{{base url}}/{{base_url}}/{{1st}}"}}]});
+    let plan = postman::collection(
+        &serde_json::to_vec(&source).unwrap(),
+        &project,
+        Definitions::default(),
+        "missing".into(),
+    )
+    .unwrap();
+    assert_eq!(
+        plan.collection.requests[0].url,
+        "{{base_url}}/{{base_url_2}}/{{_1st}}"
+    );
+    plan.definitions.validate().unwrap();
+}
+
+#[test]
+fn postman_preview_rename_creates_reuses_and_detaches_variables() {
+    let root = tempdir().unwrap();
+    let mut store = ProjectStore::default();
+    let project = store.create(root.path(), "Rename".into()).unwrap();
+    let existing = Definition {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: "sharedToken".into(),
+        secret: None,
+    };
+    let definitions = Definitions {
+        variables: vec![existing.clone()],
+        ..Definitions::default()
+    };
+    let mut plan =
+        postman::collection(COLLECTION, &project, definitions, "missing".into()).unwrap();
+    let token_id = plan.collection.postman.as_ref().unwrap().variables["token"].clone();
+    let bearer = |plan: &super::Plan| match &plan.collection.auth {
+        Some(Auth::Bearer { token }) => token.clone(),
+        _ => panic!("bearer auth expected"),
+    };
+    assert_eq!(bearer(&plan), token_id);
+
+    // A free name renames the new variable in place.
+    super::rename::variable(&mut plan, "baseUrl", "epitopUrl").unwrap();
+    assert!(plan.collection.requests[0]
+        .url
+        .starts_with("{{epitopUrl}}/"));
+    assert!(plan.preview.requests[0].url.starts_with("{{epitopUrl}}/"));
+    assert!(plan
+        .definitions
+        .variables
+        .iter()
+        .any(|v| v.name == "epitopUrl"));
+
+    // An existing project variable name rebinds references to it; values stay untouched.
+    super::rename::variable(&mut plan, "token", "sharedToken").unwrap();
+    assert_eq!(bearer(&plan), existing.id);
+    assert_eq!(
+        plan.collection.postman.as_ref().unwrap().variables["token"],
+        existing.id
+    );
+    assert!(!plan.definitions.variables.iter().any(|v| v.id == token_id));
+    let shared = plan
+        .variables
+        .iter()
+        .find(|v| v.definition.id == existing.id)
+        .unwrap();
+    assert!(shared.reused);
+    assert!(plan
+        .preview
+        .variables
+        .iter()
+        .any(|v| v.name == "sharedToken" && v.existing && !v.has_default));
+
+    // Renaming a reused variable detaches it into a new import-owned variable.
+    super::rename::variable(&mut plan, "sharedToken", "ownToken").unwrap();
+    let own = plan
+        .variables
+        .iter()
+        .find(|v| v.definition.name == "ownToken")
+        .unwrap();
+    assert!(!own.reused);
+    assert_ne!(own.definition.id, existing.id);
+    assert_eq!(bearer(&plan), own.definition.id);
+    assert!(plan
+        .definitions
+        .variables
+        .iter()
+        .any(|v| v.id == existing.id && v.name == "sharedToken"));
+
+    // Another new import variable's name is rejected without changing the plan.
+    let before = serde_json::to_vec(&plan.collection).unwrap();
+    assert!(super::rename::variable(&mut plan, "ownToken", "username").is_err());
+    assert!(super::rename::variable(&mut plan, "ownToken", "bad name").is_err());
+    assert_eq!(serde_json::to_vec(&plan.collection).unwrap(), before);
+    plan.definitions_saved = true;
+    assert!(super::rename::variable(&mut plan, "ownToken", "other").is_err());
+}
+
+#[test]
+fn only_literal_credentials_and_postman_secret_types_are_secret() {
+    let root = tempdir().unwrap();
+    let mut store = ProjectStore::default();
+    let project = store.create(root.path(), "Classes".into()).unwrap();
+    let mut source: Value = serde_json::from_slice(COLLECTION).unwrap();
+    source["variable"][1]["type"] = "secret".into();
+    let plan = postman::collection(
+        &serde_json::to_vec(&source).unwrap(),
+        &project,
+        Definitions::default(),
+        "missing".into(),
+    )
+    .unwrap();
+    let secret = |name: &str| {
+        plan.definitions
+            .variables
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap()
+            .secret
+    };
+    // Postman type: secret, and literal auth credentials.
+    for name in ["token", "password", "clientId", "clientSecret"] {
+        assert_eq!(secret(name), Some(true), "{name}");
+    }
+    // Ordinary source variables and non-credential auth inputs.
+    for name in ["baseUrl", "username", "scope"] {
+        assert_eq!(secret(name), Some(false), "{name}");
+    }
+    assert!(plan
+        .preview
+        .variables
+        .iter()
+        .any(|v| v.name == "baseUrl" && !v.secret));
+    assert!(plan.is_secret(&plan.collection.postman.as_ref().unwrap().variables["token"]));
+
+    // Value slots: every new variable with a value, in the default slot.
+    let slots: Vec<_> = plan.value_slots().collect();
+    let base = &plan.collection.postman.as_ref().unwrap().variables["baseUrl"];
+    assert!(slots.contains(&(base.as_str(), "default", "https://synthetic.invalid/api")));
+    assert!(slots
+        .iter()
+        .any(|(_, _, value)| *value == "synthetic-password"));
+}
+
+#[test]
+fn environment_import_classifies_new_keys_and_keeps_secret_values_out_of_ordinary_variables() {
+    let root = tempdir().unwrap();
+    let mut store = ProjectStore::default();
+    let project = store.create(root.path(), "Env classes".into()).unwrap();
+    let mut imported = postman::collection(
+        COLLECTION,
+        &project,
+        Definitions::default(),
+        "missing".into(),
+    )
+    .unwrap();
+    storage::apply(
+        root.path(),
+        &project.data.id,
+        &mut imported,
+        false,
+        &Fake::default(),
+    )
+    .unwrap();
+    let project = store.reload(&project.handle).unwrap();
+    let (defs, revision) = environments::definitions(root.path()).unwrap();
+    let source = json!({"name":"Classes","_postman_variable_scope":"environment","values":[
+        {"key":"baseUrl","value":"https://secret-typed.invalid","type":"secret","enabled":true},
+        {"key":"apiPassword","value":"synthetic-env-secret","type":"secret","enabled":true},
+        {"key":"region","value":"eu","type":"default","enabled":true}
+    ]});
+    let plan = postman::environment(
+        &serde_json::to_vec(&source).unwrap(),
+        &project,
+        defs,
+        revision,
+        &imported.collection.id,
+    )
+    .unwrap();
+    let find = |name: &str| {
+        plan.variables
+            .iter()
+            .find(|v| v.definition.name == name)
+            .unwrap()
+    };
+    // baseUrl is an ordinary collection variable: its secret-typed value is not adopted.
+    assert!(find("baseUrl").value.is_none());
+    assert_eq!(find("apiPassword").definition.secret, Some(true));
+    assert_eq!(find("region").definition.secret, Some(false));
+    let env = plan.definitions.environments[0].id.as_str();
+    let slots: Vec<_> = plan.value_slots().collect();
+    assert!(slots.iter().all(|(_, environment, _)| *environment == env));
+    assert_eq!(slots.len(), 2);
 }

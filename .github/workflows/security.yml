@@ -1,0 +1,157 @@
+name: Security Analysis
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: javascript-typescript
+            build-mode: none
+          - language: csharp
+            build-mode: manual
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        if: matrix.language == 'csharp'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Build server for analysis
+        if: matrix.language == 'csharp'
+        run: dotnet build server/Fluxkit.Server/Fluxkit.Server.csproj --configuration Release
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:${{ matrix.language }}'
+
+  dependency-review:
+    name: Dependency review (PR diff)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Scan dependency changes for known vulnerabilities
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
+
+  npm-audit:
+    name: npm audit (frontend dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit for known vulnerabilities
+        run: npm audit --audit-level=high
+
+  cargo-audit:
+    name: cargo audit (Rust dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.92.0'
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Audit for known vulnerabilities
+        run: cargo audit --file src-tauri/Cargo.lock
+
+  dotnet-vulnerable-packages:
+    name: dotnet list --vulnerable (server dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore server
+        run: dotnet restore server/Fluxkit.Server/Fluxkit.Server.csproj --locked-mode
+
+      - name: Restore server tests
+        run: dotnet restore server/Fluxkit.Server.Tests/Fluxkit.Server.Tests.csproj --locked-mode
+
+      - name: Check server for vulnerable packages
+        run: |
+          set -o pipefail
+          dotnet list server/Fluxkit.Server/Fluxkit.Server.csproj package --vulnerable --include-transitive --no-restore | tee vulnerable-server.txt
+          ! grep -q "has the following vulnerable packages" vulnerable-server.txt
+
+      - name: Check server tests for vulnerable packages
+        run: |
+          set -o pipefail
+          dotnet list server/Fluxkit.Server.Tests/Fluxkit.Server.Tests.csproj package --vulnerable --include-transitive --no-restore | tee vulnerable-tests.txt
+          ! grep -q "has the following vulnerable packages" vulnerable-tests.txt
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
