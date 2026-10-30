@@ -158,6 +158,10 @@ Exported metrics:
 Labels are aggregates only: no user names, project names, identifiers, URLs or values. Counters
 start at zero after each restart, as usual for Prometheus; use `rate()`/`increase()`.
 
+An importable [Grafana dashboard and setup guide](monitoring/README.md) covers Fluxkit usage,
+API traffic and process health, with selectable Prometheus data source, job and instance.
+The guide explains process-local activity, shared database counts and snapshot freshness limits.
+
 ## Backend regression tests
 
 The test project uses xUnit and ASP.NET Core's in-process test host, with real PostgreSQL.
