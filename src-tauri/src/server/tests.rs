@@ -374,3 +374,19 @@ fn deleting_a_project_removes_only_its_local_copies() {
     assert!(Path::new(&kept.directory).exists());
     remove_local_copies(&scoped, id).unwrap();
 }
+
+#[test]
+fn server_errors_name_the_status_and_a_safe_redirect_target() {
+    assert_eq!(
+        super::status_error(400, None),
+        "The Fluxkit server rejected the request (HTTP 400)."
+    );
+    assert_eq!(
+        super::status_error(301, Some("https://other.example.test/")),
+        "The server answered with a redirect to https://other.example.test/ (HTTP 301). Enter the final HTTPS server URL without a path, and check the reverse proxy."
+    );
+    assert!(super::status_error(302, Some("https://x.test/\nInjected"))
+        .starts_with("The server answered with a redirect (HTTP 302)."));
+    assert!(super::status_error(401, None).ends_with("approve your account (HTTP 401)."));
+    assert!(super::status_error(502, None).ends_with("(HTTP 502)."));
+}

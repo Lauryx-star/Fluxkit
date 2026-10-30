@@ -456,14 +456,38 @@ fn cached_project_list(root: &Path, server_url: &str) -> Result<Vec<ServerProjec
 }
 
 async fn response_error(response: reqwest::Response) -> String {
-    match response.status().as_u16() {
-        401 | 403 => "The server rejected this account or session. Sign in again or ask the administrator to approve your account.".into(),
-        404 => "The requested server resource was not found or is not available to this account.".into(),
-        409 => "The server reported a conflict. Reload before retrying.".into(),
-        429 => "Too many authentication attempts. Wait before trying again.".into(),
-        500..=599 => "The Fluxkit server encountered an error. Try again later.".into(),
-        _ => "The Fluxkit server rejected the request.".into(),
-    }
+    status_error(
+        response.status().as_u16(),
+        response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+    )
+}
+
+/// User-facing text for a failed server call. The status code is always included so that a
+/// reverse-proxy problem (redirects, 400, 405, 413, ...) can be matched with its access log.
+fn status_error(status: u16, location: Option<&str>) -> String {
+    let message = match status {
+        300..=399 => {
+            // Requests never follow redirects: credentials must not be sent to another origin.
+            let target = location
+                .filter(|value| value.len() <= 200 && !value.chars().any(char::is_control))
+                .map(|value| format!(" to {value}"))
+                .unwrap_or_default();
+            return format!(
+                "The server answered with a redirect{target} (HTTP {status}). Enter the final HTTPS server URL without a path, and check the reverse proxy."
+            );
+        }
+        401 | 403 => "The server rejected this account or session. Sign in again or ask the administrator to approve your account.",
+        404 => "The requested server resource was not found or is not available to this account.",
+        409 => "The server reported a conflict. Reload before retrying.",
+        413 => "The request is too large for the server or its reverse proxy.",
+        429 => "Too many authentication attempts. Wait before trying again.",
+        500..=599 => "The Fluxkit server or its reverse proxy encountered an error. Try again later.",
+        _ => "The Fluxkit server rejected the request.",
+    };
+    format!("{} (HTTP {status})", message.trim_end_matches('.')) + "."
 }
 
 async fn server_api_request(
@@ -482,11 +506,15 @@ async fn server_api_request(
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|_| "Could not create a secure server connection.".to_string())?;
+    let method_needs_length = matches!(method, reqwest::Method::POST | reqwest::Method::PUT);
     let mut request = client
         .request(method, api_url(&current.server_url, path)?)
         .bearer_auth(read_token(&current.server_url)?);
     if let Some(body) = body {
         request = request.json(&body);
+    } else if method_needs_length {
+        // Some reverse proxies reject unframed POST/PUT requests with 411 Length Required.
+        request = request.header(reqwest::header::CONTENT_LENGTH, 0);
     }
     request
         .send()
