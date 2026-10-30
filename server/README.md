@@ -56,6 +56,46 @@ Authorization Code with PKCE and explicit administrator approval. Follow [OIDC.m
 for provider registration, bootstrap and Compose settings. Switching modes does not automatically
 link or migrate existing accounts. Existing tokens must sign in again after this upgrade.
 
+## Production deployment
+
+[`docker-compose.prod.yml`](docker-compose.prod.yml) runs a published image at a pinned version
+(see Published images), stores PostgreSQL data in a host directory and publishes the server only
+on `127.0.0.1` for an nginx on the same host. The database has no host port. The server runs
+with a read-only root filesystem, no Linux capabilities and a `/health/ready` healthcheck; both
+containers rotate their logs.
+
+```bash
+cp .env.production.example .env.production
+chmod 600 .env.production
+# Replace every CHANGE_ME value, set FLUXKIT_IMAGE, FLUXKIT_VERSION and FLUXKIT_DATA_DIR.
+docker compose -f docker-compose.prod.yml --env-file .env.production up -d
+```
+
+To upgrade, change `FLUXKIT_VERSION` and run the same `up -d` command; the schema migrates on
+start. Back up `FLUXKIT_DATA_DIR` (or `pg_dump`) before upgrading. A minimal nginx site:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name fluxkit.example.org;
+    # ssl_certificate / ssl_certificate_key ...
+    client_max_body_size 30m;   # matches the server's 30 MB request limit
+
+    location = /metrics {
+        allow 10.0.0.0/24;   # Prometheus host(s)
+        deny all;
+        proxy_pass http://127.0.0.1:8080;
+    }
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;   # nginx defaults to HTTP/1.0 towards the upstream
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
 ## Metrics
 
 The server serves Prometheus metrics at `/metrics` on the API port. The endpoint needs no login,

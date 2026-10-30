@@ -1,0 +1,79 @@
+# Production deployment: published image, pinned version, database on a host directory.
+# nginx on the same host terminates TLS and proxies to 127.0.0.1:${FLUXKIT_PORT}; see README.
+#
+#   cp .env.production.example .env.production   # replace every CHANGE_ME value
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d
+name: fluxkit
+
+services:
+  database:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: fluxkit
+      POSTGRES_USER: fluxkit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - ${FLUXKIT_DATA_DIR:?Set FLUXKIT_DATA_DIR to the host directory for PostgreSQL data}:/var/lib/postgresql/data
+    # Only the server reaches the database; no host port is published.
+    networks: [backend]
+    shm_size: 128mb
+    security_opt: ['no-new-privileges:true']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U fluxkit -d fluxkit']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+
+  server:
+    image: ${FLUXKIT_IMAGE:?Set FLUXKIT_IMAGE, e.g. ghcr.io/<owner>/fluxkit-server}:${FLUXKIT_VERSION:?Set FLUXKIT_VERSION to a published yyyy.MM.dd.<commit> tag}
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Database: Host=database;Database=fluxkit;Username=fluxkit;Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      Auth__Mode: ${FLUXKIT_AUTH_MODE:-local}
+      Auth__SigningKey: ${FLUXKIT_SIGNING_KEY:?Set FLUXKIT_SIGNING_KEY to a unique random secret of at least 32 bytes}
+      Bootstrap__AdminUsername: ${FLUXKIT_ADMIN_USERNAME:-}
+      Bootstrap__AdminPassword: ${FLUXKIT_ADMIN_PASSWORD:-}
+      Auth__Oidc__Authority: ${FLUXKIT_OIDC_AUTHORITY:-}
+      Auth__Oidc__PublicOrigin: ${FLUXKIT_PUBLIC_ORIGIN:-}
+      Auth__Oidc__ClientId: ${FLUXKIT_OIDC_CLIENT_ID:-}
+      Auth__Oidc__ClientSecret: ${FLUXKIT_OIDC_CLIENT_SECRET:-}
+      Bootstrap__OidcSubject: ${FLUXKIT_OIDC_ADMIN_SUBJECT:-}
+      Metrics__Enabled: ${FLUXKIT_METRICS_ENABLED:-true}
+    # Loopback only: nginx on this host is the single entry point (TLS, /metrics IP allowlist).
+    ports:
+      - '127.0.0.1:${FLUXKIT_PORT:-8080}:8080'
+    networks: [backend]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    healthcheck:
+      # The runtime image has no curl/wget; bash's /dev/tcp is enough for the readiness probe.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8080 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          head -n 1 <&3 | grep -q ' 200 '
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *logging
+
+networks:
+  backend:
