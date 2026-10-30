@@ -1,5 +1,6 @@
 import { Icon } from './Icon';
 import { VariableInput } from '../environments/VariableInput';
+import { historyKey } from '../environments/textHistory';
 
 export interface Entry {
   id: number;
@@ -12,11 +13,16 @@ export function KeyValueEditor({
   label,
   entries,
   onChange,
+  historyScope,
 }: {
   label: string;
   entries: Entry[];
   onChange: (entries: Entry[]) => void;
+  /** Enables undo/redo per key and value field, e.g. the scope of the open tab. */
+  historyScope?: string;
 }) {
+  const field = (id: number, part: 'key' | 'value') =>
+    historyScope ? historyKey(historyScope, `${label.toLowerCase()}:${id}:${part}`) : undefined;
   function update(id: number, patch: Partial<Entry>) {
     onChange(entries.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)));
   }
@@ -42,12 +48,14 @@ export function KeyValueEditor({
             placeholder="Key"
             value={entry.key}
             onChange={(key) => update(entry.id, { key })}
+            historyKey={field(entry.id, 'key')}
           />
           <VariableInput
             label={`${label} value ${index + 1}`}
             placeholder="Value"
             value={entry.value}
             onChange={(value) => update(entry.id, { value })}
+            historyKey={field(entry.id, 'value')}
           />
           <button
             className="icon-button"

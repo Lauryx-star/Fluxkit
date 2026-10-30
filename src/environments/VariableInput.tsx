@@ -1,6 +1,7 @@
 import { useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { environmentAction } from '../native';
 import { VariableContext } from './VariableContext';
+import { recordEdit, redoEdit, undoEdit } from './textHistory';
 
 interface Props {
   label: string;
@@ -8,10 +9,19 @@ interface Props {
   onChange: (value: string) => void;
   placeholder?: string;
   variant?: 'url' | 'pair' | 'body';
+  /** Enables Ctrl/Cmd+Z undo and Ctrl/Cmd+Shift+Z or Ctrl+Y redo with a history under this key. */
+  historyKey?: string;
 }
 
 /** Native text editing with a synchronized, non-interactive syntax mirror. */
-export function VariableInput({ label, value, onChange, placeholder, variant = 'pair' }: Props) {
+export function VariableInput({
+  label,
+  value,
+  onChange,
+  placeholder,
+  variant = 'pair',
+  historyKey,
+}: Props) {
   const context = useContext(VariableContext);
   const input = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
   const mirror = useRef<HTMLDivElement>(null);
@@ -182,6 +192,9 @@ export function VariableInput({ label, value, onChange, placeholder, variant = '
     onCompositionStart: () => setComposing(true),
     onCompositionEnd: () => setComposing(false),
     onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      if (historyKey) {
+        recordEdit(historyKey, value, event.target.value, caret.start);
+      }
       onChange(event.target.value);
       setCaret({ start: event.target.selectionStart ?? 0, end: event.target.selectionEnd ?? 0 });
       setActive(0);
@@ -189,6 +202,31 @@ export function VariableInput({ label, value, onChange, placeholder, variant = '
     },
     onKeyDown: (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       if (event.nativeEvent.isComposing) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      if (
+        historyKey &&
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        (key === 'z' || key === 'y')
+      ) {
+        // The field's own history: the webview's native undo does not survive controlled updates.
+        event.preventDefault();
+        const position = event.currentTarget.selectionStart ?? value.length;
+        const restored =
+          key === 'z' && !event.shiftKey
+            ? undoEdit(historyKey, value, position)
+            : redoEdit(historyKey, value, position);
+        if (restored) {
+          onChange(restored.text);
+          hidePreview();
+          requestAnimationFrame(() => {
+            input.current?.setSelectionRange(restored.caret, restored.caret);
+            setCaret({ start: restored.caret, end: restored.caret });
+            syncScroll();
+          });
+        }
         return;
       }
       if (event.key === 'Escape') {

@@ -50,6 +50,7 @@ import { DEFAULT_REQUEST_PANE_RATIO } from './projects/session';
 import { ServerUsers } from './server/ServerUsers';
 import { VariableContext } from './environments/VariableContext';
 import { VariableInput } from './environments/VariableInput';
+import { historyKey, keepHistoryScopes } from './environments/textHistory';
 import type { EnvironmentView } from './environments/types';
 
 type EditorTab = 'Params' | 'Headers' | 'Body' | 'Auth';
@@ -202,6 +203,8 @@ export default function App() {
     closeDraft,
   } = workspace;
   const busy = workspaceBusy || choosingImport || importBusy || exportBusy;
+  // Undo histories belong to open tabs; closing a tab discards its history.
+  useEffect(() => keepHistoryScopes(drafts.map((item) => `draft:${item.id}`)), [drafts]);
   const exportProject = workspace.projects.find((p) => p.handle === exportHandle);
   async function prepareExport(target: ExportTarget) {
     if (!exportHandle || exportBusy) {
@@ -1009,6 +1012,7 @@ export default function App() {
                         variant="url"
                         placeholder="https://api.example.com/v1/resource"
                         value={urlFieldText(draft, urlText)}
+                        historyKey={historyKey(`draft:${draft.id}`, 'url')}
                         onChange={(text) => {
                           setUrlText({ draft: draft.id, text });
                           updateDraft(splitUrl(text, draft.params));
@@ -1132,6 +1136,7 @@ export default function App() {
                           label="Parameter"
                           entries={draft.params}
                           onChange={(params) => updateDraft({ params })}
+                          historyScope={`draft:${draft.id}`}
                         />
                       )}
                       {editorTab === 'Headers' && (
@@ -1150,6 +1155,7 @@ export default function App() {
                             label="Header"
                             entries={draft.headers}
                             onChange={(headers) => updateDraft({ headers })}
+                            historyScope={`draft:${draft.id}`}
                           />
                         </>
                       )}

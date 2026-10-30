@@ -58,6 +58,59 @@ describe('desktop foundation', () => {
     expect(screen.queryByRole('textbox', { name: 'Request URL' })).not.toBeInTheDocument();
   });
 
+  it('undoes request body edits per tab with Ctrl+Z and redoes them with Ctrl+Shift+Z', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'New request tab' }));
+    await user.click(screen.getByRole('tab', { name: 'Body' }));
+    await selectOption(user, screen.getByRole('combobox', { name: 'Body type' }), 'text');
+    await user.type(screen.getByRole('textbox', { name: 'Request body' }), 'first tab');
+    await user.click(screen.getByRole('button', { name: 'New request tab' }));
+    await user.click(screen.getByRole('tab', { name: 'Body' }));
+    await selectOption(user, screen.getByRole('combobox', { name: 'Body type' }), 'text');
+    const second = screen.getByRole('textbox', { name: 'Request body' });
+    await user.type(second, 'second tab');
+    await user.keyboard('{Control>}z{/Control}');
+    expect(second).toHaveValue('');
+    await user.keyboard('{Control>}{Shift>}z{/Shift}{/Control}');
+    expect(second).toHaveValue('second tab');
+    const tabs = screen.getByLabelText('Request tabs');
+    await user.click(within(tabs).getByRole('button', { name: 'GET Request 1' }));
+    await user.click(screen.getByRole('tab', { name: 'Body' }));
+    const first = screen.getByRole('textbox', { name: 'Request body' });
+    expect(first).toHaveValue('first tab');
+    await user.click(first);
+    await user.keyboard('{Control>}z{/Control}');
+    expect(first).toHaveValue('');
+    await user.keyboard('{Control>}z{/Control}');
+    expect(first).toHaveValue('');
+  });
+
+  it('undoes URL, parameter and header edits field by field', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'New request tab' }));
+    const url = screen.getByRole('textbox', { name: 'Request URL' });
+    await user.type(url, 'https://example.test/items?page=2');
+    await user.click(screen.getByRole('tab', { name: 'Params' }));
+    const value = screen.getByRole('textbox', { name: 'Parameter value 1' });
+    await user.type(value, '0');
+    expect(url).toHaveValue('https://example.test/items?page=20');
+    await user.keyboard('{Control>}z{/Control}');
+    expect(value).toHaveValue('2');
+    expect(url).toHaveValue('https://example.test/items?page=2');
+    await user.click(url);
+    await user.keyboard('{Control>}z{/Control}');
+    expect(url).toHaveValue('');
+    await user.keyboard('{Control>}y{/Control}');
+    expect(url).toHaveValue('https://example.test/items?page=2');
+    await user.click(screen.getByRole('tab', { name: 'Headers' }));
+    const header = screen.getByRole('textbox', { name: 'Header key 1' });
+    await user.type(header, 'Accept');
+    await user.keyboard('{Control>}z{/Control}');
+    expect(header).toHaveValue('');
+  });
+
   it('mirrors URL query parameters in the parameter table in both directions', async () => {
     const user = userEvent.setup();
     render(<App />);

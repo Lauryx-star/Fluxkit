@@ -1,6 +1,7 @@
 import { Select } from '../ui/Select';
 import { KeyValueEditor } from '../components/KeyValueEditor';
 import { VariableInput } from '../environments/VariableInput';
+import { historyKey } from '../environments/textHistory';
 import type { Attachment, Draft } from './types';
 
 export function BodyEditor({
@@ -39,6 +40,7 @@ export function BodyEditor({
           placeholder={draft.bodyFormat === 'json' ? '{\n  "hello": "world"\n}' : 'Request content'}
           value={draft.body}
           onChange={(body) => onChange({ body })}
+          historyKey={historyKey(`draft:${draft.id}`, 'body')}
         />
       )}
       {(draft.bodyFormat === 'urlEncoded' || draft.bodyFormat === 'multipart') && (

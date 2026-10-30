@@ -56,6 +56,13 @@ must not be manually set. POST, PUT and PATCH without body content send `Content
 because servers such as IIS reject unframed requests with 411 Length Required. CONNECT
 tunnelling is unsupported.
 
+The URL, query parameter and header fields and the text/JSON body editor each have their own
+undo history per open tab: Ctrl+Z (⌘Z) undoes, Ctrl+Shift+Z (⌘⇧Z) or Ctrl+Y redoes. Fast typing
+is grouped into one step; a pause, a new line or switching between typing and deleting starts the
+next. The histories live only in memory and end when the tab closes. A field's history starts over
+when its text is replaced from outside, such as by a server refresh or by the URL and parameter
+table updating each other.
+
 Text and JSON bodies send their literal resolved UTF-8 content, without JSON rewriting or
 an obligatory JSON-validity check (invalid payloads can be useful API tests). Default media
 types are text/plain with UTF-8 and application/json; a manually chosen Content-Type wins.
