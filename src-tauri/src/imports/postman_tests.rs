@@ -872,3 +872,44 @@ fn environment_import_classifies_new_keys_and_keeps_secret_values_out_of_ordinar
     assert!(slots.iter().all(|(_, environment, _)| *environment == env));
     assert_eq!(slots.len(), 2);
 }
+
+#[test]
+fn json_braces_and_missing_urls_import_like_postman() {
+    let root = tempdir().unwrap();
+    let mut store = ProjectStore::default();
+    let project = store
+        .create(root.path(), "Synthetic braces".into())
+        .unwrap();
+    let mut source: Value = serde_json::from_slice(COLLECTION).unwrap();
+    source["item"] = json!([
+        {"name":"Nested JSON","request":{"method":"POST","url":"https://synthetic.invalid/{{path}}","body":{"mode":"raw","raw":"{\"filter\":{\"id\":{{id}}}, \"tags\":{\"a\":{\"b\":1}}, \"tpl\":\"{{ x\", \"close\":\"}}\", \"triple\":\"{{{name}}}\"}","options":{"raw":{"language":"json"}}}}},
+        {"name":"Draft without URL","request":{"method":"GET","header":[]}}
+    ]);
+    let plan = postman::collection(
+        &serde_json::to_vec(&source).unwrap(),
+        &project,
+        Definitions::default(),
+        "missing".into(),
+    )
+    .unwrap();
+    let body = &plan.collection.requests[0].body.text;
+    assert_eq!(
+        body,
+        "{\"filter\":{\"id\":{{id}}}, \"tags\":{\"a\":{\"b\":1}}, \"tpl\":\"{{ x\", \"close\":\"}}\", \"triple\":\"{{{name}}}\"}"
+    );
+    let names: Vec<_> = plan
+        .variables
+        .iter()
+        .map(|v| v.definition.name.as_str())
+        .collect();
+    assert!(names.contains(&"path") && names.contains(&"id") && names.contains(&"name"));
+    assert!(!names
+        .iter()
+        .any(|name| name.contains('{') || name.contains(' ')));
+    assert_eq!(plan.collection.requests[1].url, "");
+    assert!(plan
+        .preview
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("without a URL")));
+}

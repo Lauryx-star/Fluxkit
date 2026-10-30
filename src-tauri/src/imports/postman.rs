@@ -224,24 +224,31 @@ impl Mapper {
             .map(|v| format!("{{{{{}}}}}", v.definition.name))
             .ok_or("Imported variable identity is unavailable.".into())
     }
+    /// Rewrites `{{name}}` placeholders to project variables. Like Postman, anything that is not
+    /// a well-formed placeholder stays literal text: JSON such as `{"a":{"b":1}}`, a lone `{{`
+    /// or `}}`, and braces around a name (`{{{name}}}` keeps the outer braces).
     fn rewrite(&mut self, text: &str) -> Result<String, String> {
         let mut rest = text;
         let mut out = String::new();
         while let Some(start) = rest.find("{{") {
-            if rest[..start].contains("}}") {
-                return Err("Unbalanced Postman variable placeholders.".into());
-            }
-            out.push_str(&rest[..start]);
             let tail = &rest[start + 2..];
-            let end = tail
-                .find("}}")
-                .ok_or("Unbalanced Postman variable placeholders.")?;
-            let id = self.binding(tail[..end].trim())?;
+            let name = tail.find("}}").map(|end| &tail[..end]).filter(|name| {
+                !name.trim().is_empty()
+                    && name.len() <= 200
+                    // A quote means the braces belong to different JSON strings.
+                    && !name.contains(['{', '}', '"'])
+                    && !name.chars().any(char::is_control)
+            });
+            let Some(name) = name else {
+                // Not a placeholder here: keep one brace and look again from the next one.
+                out.push_str(&rest[..=start]);
+                rest = &rest[start + 1..];
+                continue;
+            };
+            out.push_str(&rest[..start]);
+            let id = self.binding(name.trim())?;
             out.push_str(&self.placeholder(&id)?);
-            rest = &tail[end + 2..];
-        }
-        if rest.contains("}}") {
-            return Err("Unbalanced Postman variable placeholders.".into());
+            rest = &tail[name.len() + 2..];
         }
         out.push_str(rest);
         if out.len() > 4 * 1024 * 1024 {
@@ -512,7 +519,15 @@ impl Mapper {
             source
         };
         self.report(source)?;
-        let raw_url = source.get("url").ok_or("Postman request URL is missing.")?;
+        // Postman omits `url` for requests whose URL was never filled in.
+        let empty = Value::String(String::new());
+        let raw_url = match source.get("url") {
+            Some(url) if !url.is_null() => url,
+            _ => {
+                self.warn("Requests without a URL in Postman were imported with an empty URL. Fill in the URL before sending.");
+                &empty
+            }
+        };
         let mut url = if let Some(raw) = raw_url
             .as_str()
             .or_else(|| raw_url.get("raw").and_then(Value::as_str))
@@ -709,9 +724,17 @@ impl Mapper {
                 });
                 self.items(item, collection, Some(id), depth + 1)?;
             } else {
-                collection
-                    .requests
-                    .push(self.request(item, parent.clone())?);
+                let request = self.request(item, parent.clone()).map_err(|error| {
+                    let name = item
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unnamed");
+                    format!(
+                        "Request “{}”: {error}",
+                        name.chars().take(80).collect::<String>()
+                    )
+                })?;
+                collection.requests.push(request);
             }
             if collection.folders.len() + collection.requests.len() > 10_000 {
                 return Err("Import exceeds 10,000 collection items.".into());

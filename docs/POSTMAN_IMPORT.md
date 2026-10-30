@@ -31,6 +31,11 @@ value become new variables named after the parameter that need a value before se
 fragments are omitted. Body-file requests require explicit attachment selection
 after import; no source path is opened or copied. Inline file data is not adopted.
 
+Like Postman, only well-formed `{{name}}` placeholders become variables; other braces stay
+literal text, such as nested JSON (`{"a":{"b":1}}`), a lone `{{` or `}}`, or braces that span
+JSON strings. Requests saved in Postman without a URL import with an empty URL and a warning.
+Import errors name the request they come from.
+
 Collection/folder/request Basic, Bearer and header/query API Key auth map to native auth
 models. Missing auth inherits, with explicit None at collection root to isolate an imported
 API from an existing project's auth. `noauth` stays explicit None. OAuth2 Client Credentials
