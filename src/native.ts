@@ -187,6 +187,8 @@ export interface SessionInput {
   tabs: SessionTab[];
   activeTab: number | null;
   requestPaneRatio: number | null;
+  /** Expanded collection and folder ids, most recently expanded last; null = all expanded. */
+  treeExpanded: string[] | null;
 }
 export interface RestoredSession {
   projects: import('./projects/types').ProjectView[];
@@ -195,6 +197,7 @@ export interface RestoredSession {
   tabs: { project: string | null; draft: unknown }[];
   activeTab: number | null;
   requestPaneRatio: number | null;
+  treeExpanded?: string[] | null;
   unavailable: string[];
 }
 /** Reopens the projects and tabs of the previous run; null when none was saved yet. */

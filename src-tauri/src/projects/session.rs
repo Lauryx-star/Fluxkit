@@ -19,6 +19,8 @@ const FILE: &str = "session.json";
 const LIMIT: u64 = 16 * 1024 * 1024;
 const MAX_PROJECTS: usize = 50;
 const MAX_TABS: usize = 200;
+/// Collection and folder ids whose tree branch was expanded; older entries beyond this are dropped.
+const MAX_EXPANDED: usize = 10_000;
 const SETTINGS_ERROR: &str =
     "Could not save the open tabs for the next start. Check app-data permissions and disk space.";
 const INVALID: &str =
@@ -48,6 +50,9 @@ struct Stored {
     tabs: Vec<StoredTab>,
     active_tab: Option<usize>,
     request_pane_ratio: Option<f64>,
+    /// Expanded collections and folders; none in sessions saved before this was remembered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tree_expanded: Option<Vec<String>>,
 }
 
 /// What the UI hands over: open handles stand for projects.
@@ -59,6 +64,9 @@ pub struct SessionInput {
     tabs: Vec<SessionTab>,
     active_tab: Option<usize>,
     request_pane_ratio: Option<f64>,
+    /// Expanded collections and folders; none while every branch is still expanded.
+    #[serde(default)]
+    tree_expanded: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -78,6 +86,7 @@ pub struct RestoredSession {
     tabs: Vec<SessionTab>,
     active_tab: Option<usize>,
     request_pane_ratio: Option<f64>,
+    tree_expanded: Option<Vec<String>>,
     /// Projects that could not be reopened (moved, deleted, invalid); their tabs are kept
     /// without a project so unsaved edits are not lost.
     unavailable: Vec<String>,
@@ -130,6 +139,9 @@ fn decode(bytes: &[u8]) -> Result<Stored, String> {
             !project.directory.is_absolute() || validate_id(&project.project_id).is_err()
         })
         || valid_ratio(stored.request_pane_ratio).is_err()
+        || stored.tree_expanded.as_ref().is_some_and(|ids| {
+            ids.len() > MAX_EXPANDED || ids.iter().any(|id| validate_id(id).is_err())
+        })
     {
         return Err(INVALID.into());
     }
@@ -186,6 +198,17 @@ pub fn save(
         tabs,
         active_tab,
         request_pane_ratio: valid_ratio(input.request_pane_ratio)?,
+        tree_expanded: input.tree_expanded.map(|ids| {
+            let mut kept: Vec<String> = Vec::new();
+            for id in ids {
+                if validate_id(&id).is_ok() && !kept.contains(&id) {
+                    kept.push(id);
+                }
+            }
+            // The UI lists the most recently expanded last; keep those when over the limit.
+            let excess = kept.len().saturating_sub(MAX_EXPANDED);
+            kept.split_off(excess)
+        }),
     };
     let bytes = serde_json::to_vec(&stored).map_err(|_| SETTINGS_ERROR)?;
     if bytes.len() as u64 > LIMIT {
@@ -249,6 +272,7 @@ pub fn restore(
             .collect(),
         active_tab: stored.active_tab,
         request_pane_ratio: stored.request_pane_ratio,
+        tree_expanded: stored.tree_expanded,
         unavailable,
     }))
 }
@@ -272,7 +296,39 @@ mod tests {
                 .collect(),
             active_tab: Some(1),
             request_pane_ratio: Some(0.75),
+            tree_expanded: None,
         }
+    }
+
+    #[test]
+    fn expanded_tree_branches_are_remembered_validated_and_optional() {
+        let settings = tempdir().unwrap();
+        let folder = tempdir().unwrap();
+        let mut projects = ProjectStore::default();
+        let a = projects.create(folder.path(), "Tree".into()).unwrap();
+        let open = uuid::Uuid::new_v4().to_string();
+        let older = uuid::Uuid::new_v4().to_string();
+        let mut session = input(&[&a.handle], vec![]);
+        session.tree_expanded = Some(vec![
+            older.clone(),
+            "not-an-id".into(),
+            open.clone(),
+            open.clone(),
+        ]);
+        save(settings.path(), &projects, session).unwrap();
+        let restored = restore(settings.path(), &mut ProjectStore::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.tree_expanded, Some(vec![older, open]));
+
+        // Sessions from before keep every branch expanded (no list at all).
+        save(settings.path(), &projects, input(&[&a.handle], vec![])).unwrap();
+        let bytes = std::fs::read(settings.path().join(FILE)).unwrap();
+        assert!(!String::from_utf8(bytes).unwrap().contains("treeExpanded"));
+        let restored = restore(settings.path(), &mut ProjectStore::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.tree_expanded, None);
     }
 
     #[test]

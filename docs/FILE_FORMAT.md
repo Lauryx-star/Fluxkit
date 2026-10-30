@@ -197,6 +197,13 @@ project that cannot be reopened is reported and its tabs stay open without a pro
 a `session.json` (first start after upgrading) only `workspace.json`'s last project reopens.
 Without a saved divider the response takes the bottom quarter.
 
+`treeExpanded` lists the collection and folder IDs that are expanded in the project tree, most
+recently expanded last (at most 10,000; IDs of projects that are not open are kept for when they
+open again). Every other collection or folder starts collapsed, including ones added since the
+last run (for example by other server members). Collections and folders the user creates or
+imports are added to the list, so they open expanded. Without the field (sessions from before, or nothing collapsed yet) every branch is
+expanded; the first collapse starts the list from all branches of the open projects.
+
 Tab contents are request templates as typed, including unsaved edits, and can contain literal
 credentials typed into a request. They never contain resolved variable values or responses.
 The file is created owner-only (on Unix) and limited to 16 MiB, 50 projects and 200 tabs; invalid

@@ -11,6 +11,7 @@ export function sessionInput(
   drafts: Draft[],
   activeId: number | null,
   requestPaneRatio: number | null,
+  treeExpanded: string[] | null = null,
 ): SessionInput {
   const index = drafts.findIndex((item) => item.id === activeId);
   return {
@@ -19,7 +20,33 @@ export function sessionInput(
     tabs: drafts.map((draft) => ({ project: draft.projectHandle, draft })),
     activeTab: index < 0 ? null : index,
     requestPaneRatio,
+    treeExpanded,
   };
+}
+
+/** Collection and folder ids of the open projects, in tree order. */
+export function treeIds(projects: ProjectView[]) {
+  return projects.flatMap((project) =>
+    project.collections.flatMap((collection) => [
+      collection.data.id,
+      ...collection.data.folders.map((folder) => folder.id),
+    ]),
+  );
+}
+
+/** Expands branches (for example ones the user just created) and keeps them most recent last. */
+export function withExpanded(expanded: string[] | null, ids: string[]) {
+  return expanded === null ? null : [...expanded.filter((item) => !ids.includes(item)), ...ids];
+}
+
+/**
+ * Expands or collapses one branch. Without a remembered state every branch is expanded, so the
+ * first toggle starts from all ids of the open projects. Expanded ids are kept most recent last;
+ * ids of branches that are not open right now are kept for when their project opens again.
+ */
+export function toggleExpanded(expanded: string[] | null, id: string, projects: ProjectView[]) {
+  const current = expanded ?? treeIds(projects);
+  return current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
 }
 
 /** Tabs as the user would find them after discarding unsaved edits. */

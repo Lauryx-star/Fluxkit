@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { asSaved, restoredDrafts, sessionInput, withoutEdits } from './session';
+import {
+  asSaved,
+  restoredDrafts,
+  sessionInput,
+  toggleExpanded,
+  treeIds,
+  withExpanded,
+  withoutEdits,
+} from './session';
 import { emptyDraft, fromRequest, isDirty, type ProjectView, type SavedRequest } from './types';
 
 const saved: SavedRequest = {
@@ -27,7 +35,34 @@ describe('session tabs', () => {
       ],
       activeTab: 1,
       requestPaneRatio: 0.6,
+      treeExpanded: null,
     });
+  });
+
+  it('expands created branches last and leaves an unremembered state fully expanded', () => {
+    expect(withExpanded(['a', 'b'], ['b', 'c'])).toEqual(['a', 'b', 'c']);
+    expect(withExpanded(null, ['c'])).toBeNull();
+  });
+
+  it('starts remembering tree expansion from all open branches at the first toggle', () => {
+    const view = {
+      handle: 'one',
+      collections: [
+        { revision: '1', data: { id: 'c1', folders: [{ id: 'f1' }, { id: 'f2' }] } },
+        { revision: '1', data: { id: 'c2', folders: [] } },
+      ],
+    } as unknown as ProjectView;
+    expect(treeIds([view])).toEqual(['c1', 'f1', 'f2', 'c2']);
+    const first = toggleExpanded(null, 'f1', [view]);
+    expect(first).toEqual(['c1', 'f2', 'c2']);
+    // Re-expanding moves the id to the end; ids of closed projects are kept.
+    expect(toggleExpanded(['closed', ...first], 'f1', [view])).toEqual([
+      'closed',
+      'c1',
+      'f2',
+      'c2',
+      'f1',
+    ]);
   });
 
   it('discarding drops new tabs and returns edited tabs to their saved version', () => {

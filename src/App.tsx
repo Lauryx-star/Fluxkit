@@ -46,7 +46,12 @@ import { EnvironmentControls } from './environments/EnvironmentControls';
 import { ServerConnection } from './server/ServerConnection';
 import { VaultLock } from './server/VaultLock';
 import { SettingsDialog } from './projects/SettingsDialog';
-import { DEFAULT_REQUEST_PANE_RATIO } from './projects/session';
+import {
+  DEFAULT_REQUEST_PANE_RATIO,
+  toggleExpanded,
+  treeIds,
+  withExpanded,
+} from './projects/session';
 import { ServerUsers } from './server/ServerUsers';
 import { VariableContext } from './environments/VariableContext';
 import { VariableInput } from './environments/VariableInput';
@@ -104,6 +109,8 @@ export default function App() {
   // The divider position is part of the saved session; without one the response takes the
   // bottom quarter.
   const [requestPaneRatio, setRequestPaneRatio] = useState(DEFAULT_REQUEST_PANE_RATIO);
+  /** Expanded collections and folders, most recent last; null while every branch is expanded. */
+  const [treeExpanded, setTreeExpanded] = useState<string[] | null>(null);
   const [resizingSplit, setResizingSplit] = useState(false);
   useEffect(() => {
     if (!resizingSplit) {
@@ -161,6 +168,19 @@ export default function App() {
     saveOtherEditors,
     choosingImport || importBusy || exportBusy,
     requestPaneRatio,
+    treeExpanded,
+    (ids) => setTreeExpanded((old) => withExpanded(old, ids)),
+  );
+  // Apply the remembered tree expansion once: branches not remembered as expanded (including
+  // collections and folders added since) start collapsed.
+  const [appliedTree, setAppliedTree] = useState<typeof workspace.restoredTree>(null);
+  if (workspace.restoredTree !== null && workspace.restoredTree !== appliedTree) {
+    setAppliedTree(workspace.restoredTree);
+    setTreeExpanded(workspace.restoredTree.expanded);
+  }
+  const expandedSet = useMemo(
+    () => (treeExpanded === null ? null : new Set(treeExpanded)),
+    [treeExpanded],
   );
   // Apply the restored divider position once, when the session has been read.
   const [appliedRatio, setAppliedRatio] = useState<number | null>(null);
@@ -317,6 +337,14 @@ export default function App() {
         importDialog.preview.id,
         storeValues,
       );
+      // Collections and folders the import added open expanded, like ones created by hand.
+      const before = new Set(
+        treeIds(workspace.projects.filter((item) => item.handle === result.project.handle)),
+      );
+      const added = treeIds([result.project]).filter((id) => !before.has(id));
+      if (added.length) {
+        setTreeExpanded((old) => withExpanded(old, added));
+      }
       workspace.acceptImportedProject(result.project);
       setEnvironmentState((items) => {
         const next = { ...items };
@@ -594,6 +622,10 @@ export default function App() {
                 )}
                 <ProjectTree
                   collections={project.collections}
+                  isExpanded={(id) => expandedSet === null || expandedSet.has(id)}
+                  onToggle={(id) =>
+                    setTreeExpanded((old) => toggleExpanded(old, id, workspace.projects))
+                  }
                   busy={busy}
                   readOnly={project.readOnly}
                   onAuth={(id, folder) => editAuthentication(id, folder?.id ?? null)}

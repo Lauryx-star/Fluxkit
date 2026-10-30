@@ -25,7 +25,9 @@ The hierarchy is project, collection, nested folders, and requests. A collection
 represents an API application. Requests can live directly in a collection or in folders.
 
 On desktop startup, reopen every project that was open, with its request tabs (including
-unsaved edits the user chose to keep), the active tab and the request/response divider. Keep
+unsaved edits the user chose to keep), the active tab, the request/response divider and which
+collections and folders are expanded (ones added since start collapsed; ones the user creates or
+imports open expanded). Keep
 this only in local app-data settings. An unavailable project produces a recoverable warning and
 its tabs stay open without a project; closing all projects leaves the next startup empty.
 Response payloads are never restored.

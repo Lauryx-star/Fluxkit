@@ -22,11 +22,21 @@ interface Props {
   onRename: (id: string, folder?: Folder) => void;
   onRemove: (id: string, folder?: Folder, request?: SavedRequest) => void;
   onOpen: (id: string, request: SavedRequest) => void;
+  /** Controlled expansion of collections and folders (remembered across starts). */
+  isExpanded?: (id: string) => boolean;
+  onToggle?: (id: string) => void;
 }
 
 export function ProjectTree(props: Props) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [localCollapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const collapsed = {
+    has: (id: string) => (props.isExpanded ? !props.isExpanded(id) : localCollapsed.has(id)),
+  };
   function toggle(id: string) {
+    if (props.onToggle) {
+      props.onToggle(id);
+      return;
+    }
     setCollapsed((old) => {
       const next = new Set(old);
       if (next.has(id)) {

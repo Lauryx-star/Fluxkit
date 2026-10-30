@@ -27,6 +27,7 @@ interface Startup {
   drafts: Draft[];
   activeId: number | null;
   requestPaneRatio: number | null;
+  treeExpanded: string[] | null;
   problems: string[];
 }
 
@@ -58,6 +59,7 @@ async function restore(): Promise<Startup> {
       drafts: [],
       activeId: null,
       requestPaneRatio: null,
+      treeExpanded: null,
       problems: [],
     };
   }
@@ -91,6 +93,7 @@ async function restore(): Promise<Startup> {
     drafts,
     activeId: drafts.some((item) => item.id === activeId) ? activeId : (drafts.at(-1)?.id ?? null),
     requestPaneRatio: session.requestPaneRatio,
+    treeExpanded: session.treeExpanded ?? null,
     problems: problems.length
       ? [...problems, 'Their open requests were kept without a project.']
       : [],
@@ -102,6 +105,9 @@ export function useWorkspace(
   saveAdditionalChanges?: () => Promise<boolean>,
   additionalBusy = false,
   requestPaneRatio: number | null = null,
+  treeExpanded: string[] | null = null,
+  /** Called with the collection/folder ids (and their parents) the user just created. */
+  onBranchesCreated?: (ids: string[]) => void,
 ) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -117,6 +123,8 @@ export function useWorkspace(
   const [busy, setBusy] = useState(() => native.isDesktop());
   const startup = useRef<Promise<Startup> | null>(null);
   const [restoredRatio, setRestoredRatio] = useState<number | null>(null);
+  /** Set once after the session was read: the remembered tree expansion (null = all). */
+  const [restoredTree, setRestoredTree] = useState<{ expanded: string[] | null } | null>(null);
   // Set once the quit flow wrote the final session, so no pending autosave overwrites it.
   const sessionClosed = useRef(false);
   const remembered = useRef<string | null>(null);
@@ -180,6 +188,7 @@ export function useWorkspace(
             setActiveId(restored.activeId);
             setNextId(restored.drafts.length + 1);
             setRestoredRatio(restored.requestPaneRatio);
+            setRestoredTree({ expanded: restored.treeExpanded });
             if (restored.problems.length) {
               setError(restored.problems.join(' '));
             }
@@ -239,11 +248,22 @@ export function useWorkspace(
         return;
       }
       void native
-        .saveSession(sessionInput(projects, activeHandle, drafts, activeId, requestPaneRatio))
+        .saveSession(
+          sessionInput(projects, activeHandle, drafts, activeId, requestPaneRatio, treeExpanded),
+        )
         .catch(() => {});
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [desktop, restoring, projects, activeHandle, drafts, activeId, requestPaneRatio]);
+  }, [
+    desktop,
+    restoring,
+    projects,
+    activeHandle,
+    drafts,
+    activeId,
+    requestPaneRatio,
+    treeExpanded,
+  ]);
 
   const ask = useCallback(
     (message: string) =>
@@ -572,6 +592,7 @@ export function useWorkspace(
           };
           const view = await native.saveCollection(project.handle, data, null);
           updateCollection(project.handle, view);
+          onBranchesCreated?.([data.id]);
           setSelection({ handle: project.handle, collectionId: data.id, folderId: null });
         });
       },
@@ -600,6 +621,7 @@ export function useWorkspace(
             collection.revision,
           );
           updateCollection(project.handle, view);
+          onBranchesCreated?.([id, ...(parentId ? [parentId] : []), folder.id]);
           setSelection({ handle: project.handle, collectionId: id, folderId: folder.id });
         });
       },
@@ -1031,7 +1053,7 @@ export function useWorkspace(
       const tabs =
         choice === 'save' ? asSaved(drafts) : choice === 'discard' ? withoutEdits(drafts) : drafts;
       const final = native.saveSession(
-        sessionInput(projects, activeHandle, tabs, activeId, requestPaneRatio),
+        sessionInput(projects, activeHandle, tabs, activeId, requestPaneRatio, treeExpanded),
       );
       sessionClosed.current = true;
       if (choice === 'keep') {
@@ -1088,6 +1110,7 @@ export function useWorkspace(
   return {
     ask,
     restoredRatio,
+    restoredTree,
     conflict,
     resolveConflict,
     deleteServerProject,

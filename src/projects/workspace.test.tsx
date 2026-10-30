@@ -178,6 +178,20 @@ async function openSettings(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('local project workflows', () => {
+  it('opens collections the user creates expanded, also after collapsing others', async () => {
+    const user = await setupCollection();
+    const tree = screen.getByRole('region', { name: 'Project collections' });
+    const shop = within(tree).getByRole('button', { name: 'Shop API' });
+    await user.click(shop);
+    expect(shop).toHaveAttribute('aria-expanded', 'false');
+    await user.click(screen.getByRole('button', { name: 'Create collection' }));
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Admin API');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    const admin = await within(tree).findByRole('button', { name: 'Admin API' });
+    expect(admin).toHaveAttribute('aria-expanded', 'true');
+    expect(shop).toHaveAttribute('aria-expanded', 'false');
+  });
+
   it('sends the unsaved draft with a 60-second default and displays response views', async () => {
     const user = await setupCollection();
     await user.click(screen.getByRole('button', { name: 'New request in Shop API' }));
@@ -591,6 +605,10 @@ describe('authentication workflows', () => {
 
 it('previews and imports a new collection while preserving open unsaved requests', async () => {
   const user = await setupCollection();
+  // With the tree state remembered (something collapsed), the import still opens expanded.
+  const tree = screen.getByRole('region', { name: 'Project collections' });
+  await user.click(within(tree).getByRole('button', { name: 'Shop API' }));
+  await user.click(within(tree).getByRole('button', { name: 'Shop API' }));
   await user.click(screen.getByRole('button', { name: 'New request in Shop API' }));
   await user.type(
     screen.getByRole('textbox', { name: 'Request URL' }),
@@ -638,6 +656,10 @@ it('previews and imports a new collection while preserving open unsaved requests
     'https://example.test/unsaved',
   );
   expect(stored.collections[0]?.data.requests).toHaveLength(0);
+  expect(within(tree).getByRole('button', { name: 'Imported API' })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
 });
 it('cancels previews without writing and shows recoverable native import failures', async () => {
   const user = await setupCollection();
@@ -1025,6 +1047,57 @@ describe('session restore', () => {
       name: 'Resize request and response panes',
     });
     await waitFor(() => expect(divider).toHaveAttribute('aria-valuenow', '60'));
+  });
+
+  it('restores collapsed collections and folders and collapses branches added since', async () => {
+    const user = userEvent.setup();
+    const view = project('Tree', [savedRequest('a', 'https://a.invalid')]);
+    const remembered = view.collections[0]!;
+    remembered.data.folders = [
+      { id: crypto.randomUUID(), name: 'Kept open', parentId: null, auth: null },
+      { id: crypto.randomUUID(), name: 'Added since', parentId: null, auth: null },
+    ] as typeof remembered.data.folders;
+    const added = structuredClone(remembered);
+    added.data.id = crypto.randomUUID();
+    added.data.name = 'New API';
+    added.data.folders = [];
+    view.collections.push(added);
+    vi.mocked(native.restoreSession).mockResolvedValue({
+      projects: [view],
+      activeProject: view.handle,
+      tabs: [],
+      activeTab: null,
+      requestPaneRatio: null,
+      treeExpanded: [remembered.data.id, remembered.data.folders[0]!.id],
+      unavailable: [],
+    });
+    render(<App />);
+    const tree = await screen.findByRole('region', { name: 'Project collections' });
+    await waitFor(() =>
+      expect(within(tree).getByRole('button', { name: 'Tree API' })).toHaveAttribute(
+        'aria-expanded',
+        'true',
+      ),
+    );
+    expect(within(tree).getByRole('button', { name: 'Kept open' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    expect(within(tree).getByRole('button', { name: 'Added since' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    const newer = within(tree).getByRole('button', { name: 'New API' });
+    expect(newer).toHaveAttribute('aria-expanded', 'false');
+    await user.click(newer);
+    expect(newer).toHaveAttribute('aria-expanded', 'true');
+    await waitFor(() =>
+      expect(native.saveSession).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          treeExpanded: [remembered.data.id, remembered.data.folders[0]!.id, added.data.id],
+        }),
+      ),
+    );
   });
 
   it('remembers open tabs and the layout while working', async () => {
