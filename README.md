@@ -167,6 +167,11 @@ installer bundles once you need distributable packages — signing, notarization
 are separate, not-yet-implemented scope. The bundle identifier `app.fluxkit.desktop` is a
 development placeholder.
 
+The desktop version is defined once, as `version` in `src-tauri/Cargo.toml`. The app info, the
+`Fluxkit/<version>` User-Agent and the installer bundles all use it; `tauri.conf.json` and
+`package.json` intentionally carry no version. Windows installers require `major.minor.patch`
+with at most 255.65535.65535.
+
 ## Getting started (self-hosted server)
 
 The server is entirely optional — skip this section if you only want the local desktop app.

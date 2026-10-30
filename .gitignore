@@ -12,3 +12,5 @@ server/.dotnet-home/
 server/.tools/
 .env
 **/.env
+.env.production
+**/.env.production
