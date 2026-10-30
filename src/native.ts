@@ -9,6 +9,8 @@ export interface ServerConnection {
   serverUrl: string;
   authenticated: boolean;
   accountId?: string | null;
+  /** The previous sign-in to this server expired or was revoked. */
+  sessionEnded?: boolean;
 }
 
 export interface ServerProject {

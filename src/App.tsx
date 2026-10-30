@@ -719,6 +719,17 @@ export default function App() {
             {workspace.error && (
               <div role="alert" className="error-banner">
                 <span>{workspace.error}</span>
+                {workspace.error.startsWith('Your server sign-in has ended') && (
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      workspace.setError(null);
+                      setServerConnectionOpen(true);
+                    }}
+                  >
+                    Sign in again
+                  </button>
+                )}
                 <button
                   className="icon-button"
                   aria-label="Dismiss error"

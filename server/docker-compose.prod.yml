@@ -50,6 +50,10 @@ services:
       Auth__Oidc__ClientSecret: ${FLUXKIT_OIDC_CLIENT_SECRET:-}
       Bootstrap__OidcSubject: ${FLUXKIT_OIDC_ADMIN_SUBJECT:-}
       Metrics__Enabled: ${FLUXKIT_METRICS_ENABLED:-true}
+      Auth__SessionIdleDays: ${FLUXKIT_SESSION_IDLE_DAYS:-7}
+      Auth__SessionMaxDays: ${FLUXKIT_SESSION_MAX_DAYS:-90}
+      # nginx reaches the container through Docker's network gateway; trust its X-Forwarded-For.
+      Proxy__TrustedNetworks: ${FLUXKIT_TRUSTED_PROXIES:-172.16.0.0/12,192.168.0.0/16,10.0.0.0/8}
     # Loopback only: nginx on this host is the single entry point (TLS, /metrics IP allowlist).
     ports:
       - '127.0.0.1:${FLUXKIT_PORT:-8080}:8080'

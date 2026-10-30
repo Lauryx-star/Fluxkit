@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.HttpOverrides;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
@@ -40,6 +41,27 @@ if (mode == "local" && (IsExampleSecret(builder.Configuration["Bootstrap:AdminUs
     || IsExampleSecret(builder.Configuration["Bootstrap:AdminPassword"]!)))
     throw new InvalidOperationException("Replace the example administrator credentials before starting the server.");
 var signingKey = new SymmetricSecurityKey(signingBytes);
+AuthTokens.Validate(builder.Configuration);
+// Behind a reverse proxy every request comes from the proxy's address. Trusting X-Forwarded-For
+// from configured networks restores the client address (for rate limits); only the last hop,
+// the one the trusted proxy appended, is used.
+var trustedProxies = (builder.Configuration["Proxy:TrustedNetworks"] ?? "")
+    .Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+    .Select(value => System.Net.IPNetwork.TryParse(value, out var network)
+        ? network
+        : throw new InvalidOperationException($"Proxy:TrustedNetworks contains an invalid network: {value}"))
+    .ToList();
+if (trustedProxies.Count > 0)
+{
+    builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    {
+        options.ForwardedHeaders = ForwardedHeaders.XForwardedFor;
+        options.ForwardLimit = 1;
+        options.KnownProxies.Clear();
+        options.KnownIPNetworks.Clear();
+        foreach (var network in trustedProxies) { options.KnownIPNetworks.Add(network); }
+    });
+}
 
 builder.Services.AddDbContext<FluxkitDb>(options => options.UseNpgsql(connection));
 builder.Services.AddSingleton<UsageMetrics>();
@@ -105,12 +127,16 @@ builder.Services.AddRateLimiter(options => options.AddPolicy("auth", context =>
             AutoReplenishment = true
         })));
 
+builder.Services.AddRateLimiter(options => options.AddPolicy("refresh", context =>
+    RateLimitPartition.GetFixedWindowLimiter(context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 120, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 })));
 builder.Services.AddRateLimiter(options => options.AddPolicy("oidc-poll", context =>
     RateLimitPartition.GetFixedWindowLimiter(context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 120, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 })));
 var app = builder.Build();
 var usage = app.Services.GetRequiredService<UsageMetrics>();
 app.UseExceptionHandler();
+if (trustedProxies.Count > 0) { app.UseForwardedHeaders(); }
 app.UseRouting();
 // Request counts and durations per route template (never per concrete path or identifier).
 app.UseHttpMetrics(options => options.SetMetricFactory(Metrics.WithCustomRegistry(usage.Registry)));
@@ -163,7 +189,7 @@ if (mode == "local")
 
     app.MapPost("/api/auth/login", async (
         LoginInput input, UserManager<FluxkitUser> users, SignInManager<FluxkitUser> signIn,
-        IConfiguration configuration) =>
+        IConfiguration configuration, FluxkitDb db) =>
     {
         if (input is null || string.IsNullOrWhiteSpace(input.Username) || input.Password is null)
             return Results.Unauthorized();
@@ -180,11 +206,25 @@ if (mode == "local")
             return Results.Unauthorized();
         }
         usage.Login("local", "success");
-        return Results.Ok(AuthTokens.Create(user, configuration));
+        return Results.Ok(await AuthTokens.StartSession(user, configuration, db));
     }).AllowAnonymous().RequireRateLimiting("auth");
 
 }
 else { OidcLogin.Map(app); }
+
+// Desktop sessions in both modes: refresh tokens rotate on every use and expire after inactivity.
+app.MapPost("/api/auth/refresh", async (RefreshInput input, IConfiguration configuration, FluxkitDb db,
+    HttpResponse response, CancellationToken ct) =>
+{
+    response.Headers.CacheControl = "no-store";
+    var reply = await AuthTokens.Refresh(input?.RefreshToken, configuration, db, ct);
+    return reply is null ? Results.Unauthorized() : Results.Ok(reply);
+}).AllowAnonymous().RequireRateLimiting("refresh");
+app.MapPost("/api/auth/logout", async (RefreshInput input, FluxkitDb db, CancellationToken ct) =>
+{
+    await AuthTokens.Revoke(input?.RefreshToken, db, ct);
+    return Results.NoContent();
+}).AllowAnonymous().RequireRateLimiting("refresh");
 
 app.MapGet("/api/account", async (ClaimsPrincipal principal, FluxkitDb db, CancellationToken ct) =>
 {
@@ -255,6 +295,11 @@ app.MapPut("/api/admin/users/{id:guid}/status", async (
     if (user.Status != input.Status) { usage.AccountChange(input.Status == "active" ? "reactivated" : "disabled"); }
     user.Status = input.Status;
     await db.SaveChangesAsync(ct);
+    if (input.Status != "active")
+    {
+        // Disabled accounts lose their desktop sessions; access tokens already fail validation.
+        await db.RefreshSessions.Where(session => session.UserId == id).ExecuteDeleteAsync(ct);
+    }
     return Results.NoContent();
 }).RequireAuthorization(policy => policy.RequireRole("serverAdmin"));
 

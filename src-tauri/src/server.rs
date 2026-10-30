@@ -43,12 +43,141 @@ impl ServerIdentity {
         )
     }
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Session {
     identity: ServerIdentity,
     access_token: String,
+    /// Rotating refresh token; sessions stored by older versions have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refresh_token: Option<String>,
+    /// Unix seconds at which the access token expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_at: Option<i64>,
+    /// Stays the same for one sign-in while its tokens are refreshed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    login_id: Option<uuid::Uuid>,
 }
+impl Session {
+    fn same_login(&self, other: &Session) -> bool {
+        self.identity == other.identity
+            && match (self.login_id, other.login_id) {
+                (Some(left), Some(right)) => left == right,
+                _ => self.access_token == other.access_token,
+            }
+    }
+    fn needs_refresh(&self, now: i64) -> bool {
+        self.refresh_token.is_some()
+            && self
+                .expiry()
+                .is_none_or(|expires| expires - now < REFRESH_MARGIN_SECONDS)
+    }
+    /// Sessions from before refresh tokens only have the `exp` claim of their access token.
+    fn expiry(&self) -> Option<i64> {
+        self.expires_at.or_else(|| jwt_expiry(&self.access_token))
+    }
+    fn expired(&self, now: i64) -> bool {
+        self.refresh_token.is_none() && self.expiry().is_some_and(|expires| expires <= now)
+    }
+}
+/// The unverified `exp` claim of a JWT, used only to notice that a stored token has expired.
+fn jwt_expiry(token: &str) -> Option<i64> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let payload = token.split('.').nth(1)?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()?
+        .get("exp")?
+        .as_i64()
+}
+/// The account whose sign-in ended (expired or revoked) since the app started; the connection
+/// dialog then offers to sign in again directly.
+static ENDED: std::sync::Mutex<Option<ServerIdentity>> = std::sync::Mutex::new(None);
+fn set_ended(identity: Option<ServerIdentity>) {
+    if let Ok(mut ended) = ENDED.lock() {
+        *ended = identity;
+    }
+}
+/// Removes a sign-in that the server no longer accepts, unless a newer sign-in replaced it.
+fn end_session(session: &Session) -> Result<String, String> {
+    if read_session()?.is_some_and(|current| current.same_login(session)) {
+        match token_entry()?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(_) => return Err(TOKEN_ERROR.into()),
+        }
+        set_ended(Some(session.identity.clone()));
+    }
+    Ok(SESSION_ENDED.into())
+}
+/// Access tokens are renewed this long before they expire.
+const REFRESH_MARGIN_SECONDS: i64 = 120;
+/// Serializes refreshes: a refresh token is single-use, so two concurrent refreshes would end
+/// the session.
+static REFRESHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64)
+}
+fn write_session(session: &Session) -> Result<(), String> {
+    token_entry()?
+        .set_secret(&serde_json::to_vec(session).map_err(|_| TOKEN_ERROR)?)
+        .map_err(|_| TOKEN_ERROR.to_string())
+}
+
+/// The stored session for the configured server, with its access token renewed when it is about
+/// to expire. Network failures keep the current token so offline handling still applies; a
+/// rejected refresh token (inactive too long, signed out, account disabled) ends the session.
+async fn fresh_session(root: &Path) -> Result<Session, String> {
+    let session = session_for(root)?;
+    if session.expired(unix_now()) {
+        return Err(end_session(&session)?);
+    }
+    if !session.needs_refresh(unix_now()) {
+        return Ok(session);
+    }
+    let _refreshing = REFRESHING.lock().await;
+    let session = session_for(root)?;
+    if !session.needs_refresh(unix_now()) {
+        return Ok(session);
+    }
+    let Some(refresh_token) = session.refresh_token.clone() else {
+        return Ok(session);
+    };
+    let response = http_client()?
+        .post(api_url(&session.identity.server_url, "/api/auth/refresh")?)
+        .json(&serde_json::json!({ "refreshToken": refresh_token }))
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(_) => return Ok(session),
+    };
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(end_session(&session)?);
+    }
+    if !response.status().is_success() {
+        return Ok(session);
+    }
+    let reply: LoginReply = response
+        .json()
+        .await
+        .map_err(|_| "The server returned an invalid session renewal.".to_string())?;
+    let renewed = Session {
+        identity: session.identity.clone(),
+        access_token: reply.access_token,
+        refresh_token: reply.refresh_token,
+        expires_at: reply.expires_in.map(|seconds| unix_now() + seconds),
+        login_id: session.login_id,
+    };
+    // A sign-out or another sign-in during the renewal wins over the renewed tokens.
+    if !read_session()?.is_some_and(|current| current.same_login(&session)) {
+        return Err("The server session changed. Reopen the project.".into());
+    }
+    write_session(&renewed)?;
+    Ok(renewed)
+}
+const SESSION_ENDED: &str = "Your server sign-in has ended (unused for too long, signed out elsewhere, or the account was disabled). Open Server connection and sign in again.";
 fn read_session() -> Result<Option<Session>, String> {
     match token_entry()?.get_secret() {
         Ok(value) => serde_json::from_slice(&value)
@@ -78,7 +207,7 @@ fn account_root(root: &Path, identity: &ServerIdentity) -> Result<PathBuf, Strin
 }
 fn ensure_session(session: &Session) -> Result<(), String> {
     let current = read_session()?.ok_or("The server session changed. Reopen the project.")?;
-    if current.identity != session.identity || current.access_token != session.access_token {
+    if !current.same_login(session) {
         return Err("The server session changed. Reopen the project.".into());
     }
     Ok(())
@@ -90,6 +219,8 @@ pub struct ConnectionView {
     server_url: String,
     authenticated: bool,
     account_id: Option<uuid::Uuid>,
+    /// The previous sign-in to this server ended; the dialog offers to sign in again.
+    session_ended: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -165,6 +296,10 @@ pub(crate) struct ServerCacheMarker {
 #[serde(rename_all = "camelCase")]
 struct LoginReply {
     access_token: String,
+    #[serde(default)]
+    expires_in: Option<i64>,
+    #[serde(default)]
+    refresh_token: Option<String>,
 }
 
 fn settings(path: &Path) -> Result<Settings, String> {
@@ -216,13 +351,6 @@ fn normalize_url(value: &str) -> Result<String, String> {
 
 fn token_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(SERVICE, ACCOUNT).map_err(|_| TOKEN_ERROR.into())
-}
-
-fn read_token(server_url: &str) -> Result<String, String> {
-    read_session()?
-        .filter(|session| session.identity.server_url == server_url)
-        .map(|session| session.access_token)
-        .ok_or_else(|| "Sign in to the configured Fluxkit server first.".into())
 }
 
 fn api_url(root: &str, path: &str) -> Result<reqwest::Url, String> {
@@ -509,7 +637,7 @@ async fn server_api_request(
     let method_needs_length = matches!(method, reqwest::Method::POST | reqwest::Method::PUT);
     let mut request = client
         .request(method, api_url(&current.server_url, path)?)
-        .bearer_auth(read_token(&current.server_url)?);
+        .bearer_auth(fresh_session(&root).await?.access_token);
     if let Some(body) = body {
         request = request.json(&body);
     } else if method_needs_length {
@@ -728,7 +856,7 @@ pub async fn server_delete_project(
     let id = uuid::Uuid::parse_str(&project_id)
         .map_err(|_| "Invalid project identifier.".to_string())?;
     let root = app.path().app_data_dir().map_err(|_| SETTINGS_ERROR)?;
-    let session = session_for(&root)?;
+    let session = fresh_session(&root).await?;
     let response = http_client()?
         .delete(api_url(
             &session.identity.server_url,
@@ -815,10 +943,24 @@ pub async fn server_connection_get(
 ) -> Result<ConnectionView, String> {
     let root = app.path().app_data_dir().map_err(|_| SETTINGS_ERROR)?;
     let current = settings(&root)?;
+    // Renews or ends the stored sign-in first, so an expired one shows the sign-in form.
+    if read_session()?.is_some_and(|session| session.identity.server_url == current.server_url) {
+        match fresh_session(&root).await {
+            Err(error) if error == SESSION_ENDED => {}
+            Err(error) => return Err(error),
+            Ok(_) => {}
+        }
+    }
     let identity = read_session()?
         .map(|session| session.identity)
         .filter(|identity| identity.server_url == current.server_url);
     let account_id = identity.as_ref().map(|identity| identity.account_id);
+    let session_ended = account_id.is_none()
+        && ENDED
+            .lock()
+            .ok()
+            .and_then(|ended| ended.clone())
+            .is_some_and(|ended| ended.server_url == current.server_url);
     super::projects::commands::run(&projects, move |store| {
         store.set_server_identity(identity);
         Ok(())
@@ -828,6 +970,7 @@ pub async fn server_connection_get(
         server_url: current.server_url,
         authenticated: account_id.is_some(),
         account_id,
+        session_ended,
     })
 }
 
@@ -968,13 +1111,16 @@ async fn finish_login(
             account_id,
         },
         access_token: reply.access_token,
+        refresh_token: reply.refresh_token,
+        expires_at: reply.expires_in.map(|seconds| unix_now() + seconds),
+        login_id: Some(uuid::Uuid::new_v4()),
     };
     let persist = || {
         app.state::<values::ValueState>().clear();
         app.state::<transfer::TransferState>().clear();
-        token_entry()?
-            .set_secret(&serde_json::to_vec(&session).map_err(|_| TOKEN_ERROR)?)
-            .map_err(|_| TOKEN_ERROR.to_string())
+        write_session(&session)?;
+        set_ended(None);
+        Ok(())
     };
     if let Some(cancel) = cancellation {
         app.state::<oidc::OidcState>().commit(cancel, persist)?;
@@ -993,9 +1139,30 @@ pub async fn server_logout(
     app.state::<oidc::OidcState>().cancel();
     app.state::<values::ValueState>().clear();
     app.state::<transfer::TransferState>().clear();
+    let stored = read_session().ok().flatten();
+    set_ended(None);
     match token_entry()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(_) => return Err(TOKEN_ERROR.into()),
+    }
+    // Best effort: end the server-side session too. Signing out works offline regardless.
+    if let Some(Session {
+        identity,
+        refresh_token: Some(refresh_token),
+        ..
+    }) = stored
+    {
+        if let (Ok(client), Ok(url)) = (
+            http_client(),
+            api_url(&identity.server_url, "/api/auth/logout"),
+        ) {
+            let _ = client
+                .post(url)
+                .timeout(std::time::Duration::from_secs(5))
+                .json(&serde_json::json!({ "refreshToken": refresh_token }))
+                .send()
+                .await;
+        }
     }
     server_connection_get(app, projects).await
 }
@@ -1004,7 +1171,7 @@ pub async fn server_logout(
 pub async fn server_projects(app: tauri::AppHandle) -> Result<Vec<ServerProject>, String> {
     let root = app.path().app_data_dir().map_err(|_| SETTINGS_ERROR)?;
     let current = settings(&root)?;
-    let session = session_for(&root)?;
+    let session = fresh_session(&root).await?;
     let scoped_root = account_root(&root, &session.identity)?;
     if current.server_url.is_empty() {
         return Err("Configure a server URL first.".into());
@@ -1062,7 +1229,7 @@ pub async fn server_open_project(
         .map_err(|_| "Invalid project identifier.".to_string())?;
     let root = app.path().app_data_dir().map_err(|_| SETTINGS_ERROR)?;
     let current = settings(&root)?;
-    let session = session_for(&root)?;
+    let session = fresh_session(&root).await?;
     let scoped_root = account_root(&root, &session.identity)?;
     if current.server_url.is_empty() {
         return Err("Configure a server URL first.".into());

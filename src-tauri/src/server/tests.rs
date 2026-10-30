@@ -390,3 +390,90 @@ fn server_errors_name_the_status_and_a_safe_redirect_target() {
     assert!(super::status_error(401, None).ends_with("approve your account (HTTP 401)."));
     assert!(super::status_error(502, None).ends_with("(HTTP 502)."));
 }
+
+#[test]
+fn sessions_refresh_shortly_before_expiry_and_stay_one_login_across_renewals() {
+    let identity = identity();
+    let legacy: Session = serde_json::from_value(serde_json::json!({
+        "identity": identity,
+        "accessToken": "synthetic-old-token"
+    }))
+    .unwrap();
+    assert!(
+        !legacy.needs_refresh(1_000),
+        "pre-refresh sessions keep their old behaviour"
+    );
+
+    let login = uuid::Uuid::new_v4();
+    let session = Session {
+        identity: identity.clone(),
+        access_token: "synthetic-access-1".into(),
+        refresh_token: Some("synthetic-refresh-1".into()),
+        expires_at: Some(10_000),
+        login_id: Some(login),
+    };
+    assert!(!session.needs_refresh(10_000 - REFRESH_MARGIN_SECONDS - 1));
+    assert!(session.needs_refresh(10_000 - REFRESH_MARGIN_SECONDS + 1));
+    assert!(Session {
+        expires_at: None,
+        ..session.clone()
+    }
+    .needs_refresh(0));
+
+    let renewed = Session {
+        access_token: "synthetic-access-2".into(),
+        refresh_token: Some("synthetic-refresh-2".into()),
+        expires_at: Some(13_600),
+        ..session.clone()
+    };
+    assert!(
+        renewed.same_login(&session),
+        "renewal keeps open projects valid"
+    );
+    let other_login = Session {
+        login_id: Some(uuid::Uuid::new_v4()),
+        ..renewed.clone()
+    };
+    assert!(
+        !other_login.same_login(&session),
+        "a new sign-in invalidates old handles"
+    );
+
+    let stored = serde_json::to_value(&renewed).unwrap();
+    assert_eq!(stored["refreshToken"], "synthetic-refresh-2");
+    let restored: Session = serde_json::from_value(stored).unwrap();
+    assert!(restored.same_login(&session));
+}
+
+#[test]
+fn stored_sign_ins_without_refresh_token_expire_with_their_access_token() {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let token = |exp: i64| {
+        format!(
+            "e30.{}.c2lnbmF0dXJl",
+            URL_SAFE_NO_PAD
+                .encode(serde_json::json!({ "sub": "synthetic", "exp": exp }).to_string())
+        )
+    };
+    assert_eq!(jwt_expiry(&token(5_000)), Some(5_000));
+    assert_eq!(jwt_expiry("not-a-jwt"), None);
+    let legacy = Session {
+        identity: identity(),
+        access_token: token(5_000),
+        refresh_token: None,
+        expires_at: None,
+        login_id: None,
+    };
+    assert!(!legacy.expired(4_999));
+    assert!(legacy.expired(5_000));
+    assert!(
+        !legacy.needs_refresh(5_000),
+        "without a refresh token only a new sign-in helps"
+    );
+    let renewable = Session {
+        refresh_token: Some("synthetic-refresh".into()),
+        ..legacy.clone()
+    };
+    assert!(!renewable.expired(9_999));
+    assert!(renewable.needs_refresh(5_000 - REFRESH_MARGIN_SECONDS + 1));
+}

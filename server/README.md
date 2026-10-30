@@ -114,6 +114,15 @@ location = /metrics {
 | `Metrics:Enabled`         | `true`  | `false` removes the `/metrics` endpoint.                  |
 | `Metrics:SnapshotSeconds` | `15`    | Minimum age before the database counts are queried again. |
 
+Reverse proxy: `Proxy:TrustedNetworks` (comma-separated CIDR networks, empty by default) makes
+the server take the client address from the last `X-Forwarded-For` entry of requests coming from
+those networks, so login rate limits apply per client instead of per proxy. The production
+Compose file trusts the private ranges that Docker's gateway uses.
+
+Desktop sessions: `Auth:AccessTokenMinutes` (default `60`), `Auth:SessionIdleDays` (default `7`,
+sign-in again after that many days without use) and `Auth:SessionMaxDays` (default `90`, `0` = no
+absolute limit). See [SELF_HOSTED_BACKEND.md](../docs/SELF_HOSTED_BACKEND.md#desktop-sessions).
+
 Example scrape configuration:
 
 ```yaml

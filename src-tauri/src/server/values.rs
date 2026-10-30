@@ -404,7 +404,7 @@ pub async fn refresh(app: &tauri::AppHandle, context: &Context) -> Result<(), St
         .path()
         .app_data_dir()
         .map_err(|_| super::SETTINGS_ERROR)?;
-    let session = super::session_for(&root)?;
+    let session = super::fresh_session(&root).await?;
     if session.identity != context.identity {
         return Err("This workspace belongs to another server account.".into());
     }
@@ -513,7 +513,7 @@ pub async fn server_vault_action(
         .path()
         .app_data_dir()
         .map_err(|_| super::SETTINGS_ERROR)?;
-    let session = super::session_for(&root)?;
+    let session = super::fresh_session(&root).await?;
     let scoped = super::account_root(&root, &session.identity)?;
     let state = app.state::<ValueState>().inner().clone();
     if action == "lock" {
@@ -639,7 +639,7 @@ pub async fn set_value(
         .path()
         .app_data_dir()
         .map_err(|_| super::SETTINGS_ERROR)?;
-    let session = super::session_for(&root)?;
+    let session = super::fresh_session(&root).await?;
     if session.identity != context.identity {
         return Err("The server account changed.".into());
     }
@@ -746,7 +746,7 @@ pub async fn import_values(
         .path()
         .app_data_dir()
         .map_err(|_| super::SETTINGS_ERROR)?;
-    let session = super::session_for(&root)?;
+    let session = super::fresh_session(&root).await?;
     if session.identity != context.identity {
         return Err("The server account changed.".into());
     }
@@ -1085,6 +1085,9 @@ mod protocol_tests {
         let session = super::super::Session {
             identity: identity.clone(),
             access_token: token.clone(),
+            refresh_token: None,
+            expires_at: None,
+            login_id: None,
         };
         let before: AccountProfile = get(&session, "/api/account/vault").await.unwrap().unwrap();
         assert!(
@@ -1211,6 +1214,9 @@ mod protocol_tests {
                     account_id: uuid::Uuid::parse_str(member["id"].as_str().unwrap()).unwrap(),
                 },
                 access_token: member_token,
+                refresh_token: None,
+                expires_at: None,
+                login_id: None,
             };
             let shared: Bundle<SharedValue> =
                 get(&peer, &format!("/api/projects/{project}/values"))

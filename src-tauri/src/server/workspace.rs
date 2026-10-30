@@ -267,7 +267,7 @@ pub async fn publish(
         .path()
         .app_data_dir()
         .map_err(|_| super::SETTINGS_ERROR)?;
-    let result = match super::session_for(&root_dir) {
+    let result = match super::fresh_session(&root_dir).await {
         Ok(session) => post(&session, &project, &ops).await,
         Err(error) => Err(error),
     };
@@ -360,7 +360,7 @@ pub async fn refresh(
         .path()
         .app_data_dir()
         .map_err(|_| super::SETTINGS_ERROR)?;
-    let session = super::session_for(&root_dir)?;
+    let session = super::fresh_session(&root_dir).await?;
     let response = super::http_client()?
         .get(super::api_url(
             &session.identity.server_url,

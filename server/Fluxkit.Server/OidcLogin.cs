@@ -187,7 +187,7 @@ public static class OidcLogin
                 if (user?.Status == "active")
                 {
                     usage.Login("oidc", "success");
-                    return Results.Ok(new { status = "complete", session = AuthTokens.Create(user, config) });
+                    return Results.Ok(new { status = "complete", session = await AuthTokens.StartSession(user, config, db) });
                 }
                 usage.Login("oidc", user?.Status == "pending" ? "pending" : "rejected");
                 return Results.Ok(new { status = user?.Status == "pending" ? "pendingApproval" : "denied" });

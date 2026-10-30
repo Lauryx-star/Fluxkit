@@ -86,7 +86,7 @@ pub async fn server_preview_transfer(
         .path()
         .app_data_dir()
         .map_err(|_| super::SETTINGS_ERROR)?;
-    let session = super::session_for(&root)?;
+    let session = super::fresh_session(&root).await?;
     let transfers = app.state::<TransferState>().inner().clone();
     run(&projects, move |store| {
         let (project, name, snapshot) = store.snapshot(&handle)?;
@@ -115,7 +115,7 @@ pub async fn server_prepare_transfer(
         .path()
         .app_data_dir()
         .map_err(|_| super::SETTINGS_ERROR)?;
-    let session = super::session_for(&root)?;
+    let session = super::fresh_session(&root).await?;
     let transfers = app.state::<TransferState>().inner().clone();
     let values = app.state::<ValueState>().inner().clone();
     run(&projects, move |store| {
@@ -240,7 +240,7 @@ pub async fn server_commit_transfer(
         .path()
         .app_data_dir()
         .map_err(|_| super::SETTINGS_ERROR)?;
-    let session = super::session_for(&root)?;
+    let session = super::fresh_session(&root).await?;
     let transfers = app.state::<TransferState>().inner().clone();
     let plan = run(&projects, move |store| {
         let snapshot = store.snapshot(&handle)?.2;
@@ -259,7 +259,7 @@ pub async fn server_commit_transfer(
             .ok_or_else(|| "Transfer preview is unavailable.".into())
     })
     .await?;
-    let session = super::session_for(&root)?;
+    let session = super::fresh_session(&root).await?;
     if session.identity != plan.owner {
         return Err("The server account changed. No upload was started.".into());
     }

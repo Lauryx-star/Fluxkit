@@ -143,11 +143,20 @@ public sealed class FluxkitDb(DbContextOptions<FluxkitDb> options)
     public DbSet<SharedValueRecord> SharedValues => Set<SharedValueRecord>();
     public DbSet<VaultValueRecord> VaultValues => Set<VaultValueRecord>();
     public DbSet<ProjectChangeRecord> ProjectChanges => Set<ProjectChangeRecord>();
+    public DbSet<RefreshSession> RefreshSessions => Set<RefreshSession>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
         builder.Entity<FluxkitUser>().HasIndex(user => user.Status);
+        builder.Entity<RefreshSession>(entity =>
+        {
+            entity.HasKey(session => session.Id);
+            entity.Property(session => session.TokenHash).HasMaxLength(32).IsRequired().IsConcurrencyToken();
+            entity.HasIndex(session => session.UserId);
+            entity.HasOne<FluxkitUser>().WithMany().HasForeignKey(session => session.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
         builder.Entity<ProjectRecord>(entity =>
         {
             entity.HasKey(project => project.Id);

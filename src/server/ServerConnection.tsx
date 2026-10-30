@@ -130,8 +130,10 @@ export function ServerConnection({
     steps.findIndex((item) => item.id === step),
   );
 
-  async function perform(operation: () => Promise<Connection>) {
-    if (!requireClosedProjects()) {
+  /** Signing in again after an expired sign-in keeps open server projects of the same account. */
+  const signInAgain = Boolean(connection?.sessionEnded) && url.trim() === connection?.serverUrl;
+  async function perform(operation: () => Promise<Connection>, keepProjects = false) {
+    if (!keepProjects && !requireClosedProjects()) {
       return;
     }
     setBusy(true);
@@ -242,12 +244,18 @@ export function ServerConnection({
               return saved;
             }
             return loginToServer(username, password);
-          });
+          }, signInAgain);
         }}
       >
         <h2>Self-hosted server</h2>
         {!connection?.authenticated && (
           <>
+            {connection?.sessionEnded && (
+              <p role="status">
+                Your sign-in to this server has ended, usually after several days without use. Sign
+                in again to continue; open server projects stay open.
+              </p>
+            )}
             <p>
               Configure a Fluxkit server account. Continue to discover its login mode. OIDC sign-in
               opens your system browser; provider passwords are never entered in Fluxkit.
@@ -731,11 +739,13 @@ export function ServerConnection({
               >
                 {busy
                   ? 'Connecting…'
-                  : authMode === 'local'
-                    ? 'Connect'
-                    : authMode === 'oidc'
-                      ? 'Sign in with OIDC'
-                      : 'Continue'}
+                  : signInAgain && (authMode !== 'local' || (username.trim() && password))
+                    ? 'Sign in again'
+                    : authMode === 'local'
+                      ? 'Connect'
+                      : authMode === 'oidc'
+                        ? 'Sign in with OIDC'
+                        : 'Continue'}
               </button>
             </>
           )}

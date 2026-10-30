@@ -310,3 +310,28 @@ it('points administrators from the Administration step to the server user view',
   await user.click(screen.getByRole('button', { name: 'Manage server users' }));
   expect(onManageUsers).toHaveBeenCalled();
 });
+
+it('offers to sign in again after an ended sign-in without closing open server projects', async () => {
+  const user = userEvent.setup();
+  vi.mocked(native.getServerConnection).mockResolvedValue({
+    authenticated: false,
+    serverUrl: 'https://synthetic.example.test',
+    sessionEnded: true,
+  });
+  vi.mocked(native.setServerConnection).mockResolvedValue({
+    authenticated: false,
+    serverUrl: 'https://synthetic.example.test',
+  });
+  vi.mocked(native.getServerAuthMode).mockResolvedValue({ mode: 'oidc' });
+  vi.mocked(native.loginWithOidc).mockResolvedValue({
+    authenticated: true,
+    serverUrl: 'https://synthetic.example.test',
+    accountId: 'account-id',
+  });
+  show([workspace]);
+  expect(await screen.findByText(/Your sign-in to this server has ended/)).toBeVisible();
+  await user.click(screen.getByRole('button', { name: 'Sign in again' }));
+  await waitFor(() => expect(native.loginWithOidc).toHaveBeenCalledOnce());
+  expect(screen.queryByText(/Close all server projects/)).not.toBeInTheDocument();
+  expect(await screen.findByRole('button', { name: 'Sign out' })).toBeVisible();
+});

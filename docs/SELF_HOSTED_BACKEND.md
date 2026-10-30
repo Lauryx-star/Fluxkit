@@ -31,7 +31,9 @@ The initial API exposes:
 | `POST /api/auth/oidc/start`, `POST /api/auth/oidc/poll` | Start/complete an OIDC desktop handoff |
 | `GET /api/auth/oidc/authorize/{id}`, `POST /api/auth/oidc/callback` | Browser challenge and verified provider callback |
 | `POST /api/auth/register` | Create a pending local account |
-| `POST /api/auth/login` | Issue an access token for an approved account |
+| `POST /api/auth/login` | Issue an access token and a desktop session for an approved account |
+| `POST /api/auth/refresh` | Exchange a refresh token for a new access and refresh token |
+| `POST /api/auth/logout` | End the desktop session of a refresh token |
 | `GET /api/account` | Read the caller's username and server-admin status |
 | `GET /api/admin/pending-users` | List accounts awaiting approval |
 | `POST /api/admin/users/{id}/approve` | Approve an account and create its personal project |
@@ -137,10 +139,27 @@ least one active server administrator always remains. A deleted OIDC identity th
 again becomes a new pending account. The local bootstrap administrator configured on the server
 is recreated at the next start if it was deleted.
 
+## Desktop sessions
+
+A sign-in (local or OIDC) returns a short access token (`Auth:AccessTokenMinutes`, default 60)
+and a refresh token. The desktop renews the access token about two minutes before it expires, so
+a client that is used stays signed in. Refresh tokens are random 256-bit secrets, stored on the
+server only as SHA-256 hashes, and rotate on every use; presenting an already-used token ends the
+whole session. A session ends after `Auth:SessionIdleDays` without a renewal (default 7) and at
+the latest `Auth:SessionMaxDays` after sign-in (default 90, 0 = no limit). Signing out revokes
+the session on the server; disabling or deleting an account removes its sessions. OIDC sessions
+do not depend on the provider's own refresh tokens or session length, so no provider setting is
+needed; disable the account in Fluxkit to end its access immediately.
+
+When a sign-in has ended (or a token from before refresh tokens expired), the desktop removes it
+and **Server connection** offers **Sign in again** directly, without signing out first; open
+server projects of the same account stay open. Errors caused by an ended sign-in carry the same
+action.
+
 ## Account isolation and workspace recovery
 
 The desktop verifies `/api/account` after login and keeps the returned account UUID with the
-access token in a version-2 OS credential entry. Tokens are bound to their configured server
+access and refresh tokens in a version-2 OS credential entry. Tokens are bound to their configured server
 URL. Cache directories and active-workspace pointers are scoped by a SHA-256 digest of server
 URL and account UUID. Every native project-handle operation verifies the same owner, including
 restoration through the ordinary folder chooser. Variables, acquired tokens, local history and
