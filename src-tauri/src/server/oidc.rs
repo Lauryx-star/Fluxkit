@@ -126,7 +126,8 @@ pub async fn server_oidc_login(
     let client = client()?;
     let response = tokio::select! {
         _ = cancel.cancelled() => return Err("Browser sign-in cancelled.".into()),
-        response = client.post(api_url(&current.server_url, "/api/auth/oidc/start")?).send() =>
+        response = client.post(api_url(&current.server_url, "/api/auth/oidc/start")?)
+            .header(reqwest::header::CONTENT_LENGTH, 0).send() =>
             response.map_err(|_| "Could not start browser sign-in.".to_string())?,
     };
     if !response.status().is_success() {
