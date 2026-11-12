@@ -250,6 +250,42 @@ async fn oauth_basic_is_form_encoded_and_tokens_persist_only_in_store() {
 }
 
 #[tokio::test]
+async fn inspect_reveals_only_the_stored_token_without_acquiring_or_renewal_values() {
+    // The endpoint is never contacted: inspection must not acquire, renew or write.
+    let (plan, values) = fixture("http://127.0.0.1:9/token", ClientAuthentication::Basic);
+    let manager = Manager::default();
+    let missing = manager.inspect(&plan, values.clone()).await.unwrap();
+    assert_eq!(missing.state, "missing");
+    assert!(missing.token.is_none());
+    assert!(values.get(&plan.key).unwrap().is_none());
+
+    values
+        .set(
+            &plan.key,
+            r#"{"schemaVersion":1,"token":"synthetic-inspected","renewalToken":"synthetic-renewal","acquiredAt":1000,"expiresAt":2000}"#,
+        )
+        .unwrap();
+    let inspected = manager.inspect(&plan, values.clone()).await.unwrap();
+    assert_eq!(inspected.state, "expired");
+    assert_eq!(inspected.expires_at, Some(2000));
+    assert_eq!(
+        inspected.token.as_ref().map(RevealedToken::value),
+        Some("synthetic-inspected")
+    );
+    let reply = serde_json::to_string(&inspected).unwrap();
+    assert!(reply.contains("\"token\":\"synthetic-inspected\""));
+    assert!(!reply.contains("synthetic-renewal"));
+    assert!(!format!("{inspected:?}").contains("synthetic-inspected"));
+
+    let status =
+        serde_json::to_string(&manager.status(&plan, values.clone()).await.unwrap()).unwrap();
+    assert!(!status.contains("token"));
+    assert!(!status.contains("synthetic"));
+    let raw = values.get(&plan.key).unwrap().unwrap();
+    assert!(raw.contains("synthetic-renewal"));
+}
+
+#[tokio::test]
 async fn oauth_body_unknown_expiry_and_isolation_by_owner_environment_and_configuration() {
     let (url, captured, task) = server(
         response(

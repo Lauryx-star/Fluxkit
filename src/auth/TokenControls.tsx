@@ -4,6 +4,7 @@ import type { ExecutionInput } from '../http/types';
 import type { TokenStatus } from './types';
 import { ConfirmDialog } from '../projects/Dialogs';
 import { tokenStatusLabel } from './rules';
+import { TokenInspector } from './TokenInspector';
 
 interface Pending {
   id: string | null;
@@ -22,6 +23,8 @@ export function TokenControls({
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [confirmForget, setConfirmForget] = useState(false);
+  // Held only while the inspector dialog is open; cleared on close and unmount.
+  const [inspected, setInspected] = useState<string | null>(null);
   const pending = useRef<Pending | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
@@ -37,7 +40,7 @@ export function TokenControls({
       }
     };
   }, []);
-  async function run(action: 'status' | 'renew' | 'forget') {
+  async function run(action: 'status' | 'renew' | 'forget' | 'inspect') {
     if (pending.current || disabled) {
       return;
     }
@@ -52,7 +55,15 @@ export function TokenControls({
       }
       const result = await native.authenticationAction(operation.id, input, action);
       if (mounted.current && !operation.cancelled) {
-        setStatus(result);
+        const { token, ...metadata } = result;
+        setStatus(metadata);
+        if (action === 'inspect') {
+          if (token) {
+            setInspected(token);
+          } else {
+            setError('No local token to inspect. Acquire a token first.');
+          }
+        }
       }
     } catch (error) {
       if (mounted.current) {
@@ -89,9 +100,9 @@ export function TokenControls({
         <p>Expires: {new Date(status.expiresAt * 1000).toISOString()}</p>
       )}
       <p className="auth-help">
-        Status never reveals token values. These actions use the effective authentication shown
-        above and the selected project environment. Renew uses saved ancestor settings and this
-        request’s unsaved authentication.
+        Status never reveals token values; only Inspect token shows the stored token. These actions
+        use the effective authentication shown above and the selected project environment. Renew
+        uses saved ancestor settings and this request’s unsaved authentication.
       </p>
       <div className="token-actions">
         <button
@@ -109,6 +120,14 @@ export function TokenControls({
           onClick={() => void run('renew')}
         >
           Acquire / renew token
+        </button>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={disabled || running}
+          onClick={() => void run('inspect')}
+        >
+          Inspect token
         </button>
         <button
           type="button"
@@ -139,6 +158,9 @@ export function TokenControls({
         )}
       </div>
       {error && <p role="alert">{error}</p>}
+      {inspected !== null && (
+        <TokenInspector token={inspected} onClose={() => setInspected(null)} />
+      )}
       {confirmForget && (
         <ConfirmDialog
           message="Forget this configuration’s local token and renewal value in the selected environment? Project variables and other tokens stay available."

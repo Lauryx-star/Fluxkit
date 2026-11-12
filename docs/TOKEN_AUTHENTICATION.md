@@ -18,6 +18,13 @@ The request Auth tab operates on the effective configuration and selected projec
 - **Check token status** reads metadata without a network request or revealing values.
 - **Acquire / renew token** explicitly acquires even if a usable token exists. It does not send
   the API request.
+- **Inspect token** reads the stored access token, without acquiring, renewing, or a network
+  request, and opens a dialog that shows it. A JWS is decoded locally into its header, payload
+  and a summary of well-known claims (issuer, subject, audience, scopes, issued/not-before/expiry
+  times); its signature is not verified. A JWE shows only its header, and other tokens are shown
+  as opaque values. Expired tokens can still be inspected; a missing token reports that nothing
+  is stored. The token stays only in UI memory while the dialog is open. The renewal value is
+  never revealed.
 - **Forget local token** confirms deletion of only that local token/renewal record. Variables
   and other records stay available. Changing context cancels work and discards late UI replies.
 
@@ -146,11 +153,13 @@ side effects or an OS call already running.
 
 Only the bundled main window gains `authentication_action(id, input, action)`. It consumes a
 begin_http_request reservation and the same ExecutionInput/scope as sending; actions are
-`status`, `renew`, and `forget`. Rust checks handles, ancestry/environment revisions, and auth
-before store access. The API URL need not be valid for these actions. Replies are metadata
-`{state, expiresAt}`, with state `missing`, `valid`, `renewalDue`, `expired`, or `unknownExpiry`.
-execute_http_request gains optional `tokenStatus` metadata for the dispatched token. No tokens
-or resolved inputs are returned. Existing execution result fields remain unchanged.
+`status`, `renew`, `forget`, and `inspect`. Rust checks handles, ancestry/environment revisions,
+and auth before store access. The API URL need not be valid for these actions. Replies are
+metadata `{state, expiresAt}`, with state `missing`, `valid`, `renewalDue`, `expired`, or
+`unknownExpiry`. Only `inspect` adds `token`, the stored access token, for that one explicit user
+action; it is absent when no token is stored. execute_http_request gains optional `tokenStatus`
+metadata for the dispatched token, which never contains the token. No renewal values or resolved
+inputs are returned. Existing execution result fields remain unchanged.
 
 ## File compatibility and dependencies
 

@@ -192,6 +192,55 @@ describe('local token controls', () => {
     expect(await screen.findByText('No local token')).toBeVisible();
     expect(bridge.authenticationAction).toHaveBeenCalledWith('reservation', input, 'forget');
   });
+  it('inspects the stored token only on request and clears it when the dialog closes', async () => {
+    const segment = (value: unknown) =>
+      btoa(JSON.stringify(value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const token = `${segment({ alg: 'HS256', typ: 'JWT' })}.${segment({
+      iss: 'https://issuer.example.test',
+      scope: 'synthetic.read',
+    })}.c2ln`;
+    const user = userEvent.setup();
+    render(<TokenControls input={input} />);
+    expect(bridge.authenticationAction).not.toHaveBeenCalled();
+    bridge.authenticationAction.mockResolvedValueOnce({
+      state: 'valid',
+      expiresAt: null,
+      token,
+    });
+    await user.click(screen.getByRole('button', { name: 'Inspect token' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Token details' });
+    expect(bridge.authenticationAction).toHaveBeenCalledWith('reservation', input, 'inspect');
+    expect(dialog).toHaveTextContent('https://issuer.example.test');
+    expect(dialog).toHaveTextContent('synthetic.read');
+    expect(dialog).toHaveTextContent('signature is present but not verified');
+    expect(screen.getByLabelText('Raw token')).toHaveValue(token);
+    expect(screen.getByText('Token available')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue(token)).not.toBeInTheDocument();
+  });
+  it('explains when there is no local token to inspect', async () => {
+    const user = userEvent.setup();
+    bridge.authenticationAction.mockResolvedValueOnce({ state: 'missing', expiresAt: null });
+    render(<TokenControls input={input} />);
+    await user.click(screen.getByRole('button', { name: 'Inspect token' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('No local token to inspect');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByText('No local token')).toBeVisible();
+  });
+  it('shows opaque tokens without claiming JWT content', async () => {
+    const user = userEvent.setup();
+    bridge.authenticationAction.mockResolvedValueOnce({
+      state: 'unknownExpiry',
+      expiresAt: null,
+      token: 'synthetic-opaque-session',
+    });
+    render(<TokenControls input={input} />);
+    await user.click(screen.getByRole('button', { name: 'Inspect token' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Token details' });
+    expect(dialog).toHaveTextContent('not a JWT');
+    expect(screen.getByLabelText('Raw token')).toHaveValue('synthetic-opaque-session');
+  });
   it('cancels pending registration on context change and discards late results', async () => {
     let register!: (id: string) => void;
     bridge.beginHttpRequest.mockReturnValueOnce(
