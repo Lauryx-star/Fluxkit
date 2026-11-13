@@ -62,4 +62,6 @@ export interface CustomLogin {
 export interface TokenStatus {
   state: 'missing' | 'valid' | 'unknownExpiry' | 'renewalDue' | 'expired';
   expiresAt: number | null;
+  /** Only returned by the explicit `inspect` action. */
+  token?: string;
 }

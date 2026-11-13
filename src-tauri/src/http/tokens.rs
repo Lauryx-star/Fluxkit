@@ -172,6 +172,34 @@ pub struct Record {
 pub struct Status {
     pub state: &'static str,
     pub expires_at: Option<u64>,
+    /// Present only for the explicit `inspect` action; never part of status or send metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<RevealedToken>,
+}
+impl Status {
+    fn missing() -> Self {
+        Self {
+            state: "missing",
+            expires_at: None,
+            token: None,
+        }
+    }
+}
+
+/// A stored token handed to the UI for one explicit inspection. Debug output stays redacted.
+#[derive(Clone, Serialize)]
+#[serde(transparent)]
+pub struct RevealedToken(String);
+impl std::fmt::Debug for RevealedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RevealedToken(<redacted>)")
+    }
+}
+impl RevealedToken {
+    #[cfg(test)]
+    pub fn value(&self) -> &str {
+        &self.0
+    }
 }
 impl Record {
     pub fn status_now(&self) -> Result<Status, String> {
@@ -193,6 +221,7 @@ impl Record {
         Status {
             state,
             expires_at: self.expires_at,
+            token: None,
         }
     }
     fn reusable(&self, now: u64) -> bool {
@@ -280,10 +309,25 @@ impl Manager {
         Ok(read(plan, values)
             .await?
             .map(|r| r.status(time))
-            .unwrap_or(Status {
-                state: "missing",
-                expires_at: None,
-            }))
+            .unwrap_or_else(Status::missing))
+    }
+    /// Return the stored token for one explicit user inspection. Never acquires or renews, so a
+    /// missing token stays missing; expired tokens are still shown so users can examine them.
+    pub async fn inspect<V: Values + Send + Sync + 'static>(
+        &self,
+        plan: &Plan,
+        values: Arc<V>,
+    ) -> Result<Status, String> {
+        let flight = self.flight(&plan.key)?;
+        let _guard = flight.result.lock().await;
+        let time = now()?;
+        Ok(read(plan, values)
+            .await?
+            .map(|record| Status {
+                token: Some(RevealedToken(record.token.clone())),
+                ..record.status(time)
+            })
+            .unwrap_or_else(Status::missing))
     }
     pub async fn forget<V: Values + Send + Sync + 'static>(
         &self,
@@ -298,10 +342,7 @@ impl Manager {
             "Local token was forgotten. Acquire it again explicitly.".into(),
         ));
         flight.generation.fetch_add(1, Ordering::SeqCst);
-        Ok(Status {
-            state: "missing",
-            expires_at: None,
-        })
+        Ok(Status::missing())
     }
     pub async fn ensure<V: Values + Send + Sync + 'static>(
         &self,

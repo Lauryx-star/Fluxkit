@@ -381,9 +381,11 @@ pub enum TokenAction {
     Status,
     Renew,
     Forget,
+    Inspect,
 }
 
-/// Return metadata only. Login responses and tokens never cross this boundary.
+/// Return metadata only, except `inspect`, which returns the stored token for one explicit
+/// user inspection. Login responses and renewal values never cross this boundary.
 #[tauri::command]
 pub async fn authentication_action(
     app: tauri::AppHandle,
@@ -432,6 +434,7 @@ pub async fn authentication_action(
         match action {
             TokenAction::Status => state.tokens.status(&plan, values.clone()).await,
             TokenAction::Forget => state.tokens.forget(&plan, values.clone()).await,
+            TokenAction::Inspect => state.tokens.inspect(&plan, values.clone()).await,
             TokenAction::Renew => {
                 state
                     .tokens

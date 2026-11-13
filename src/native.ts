@@ -262,7 +262,7 @@ export function cancelHttpRequest(id: string) {
 export function authenticationAction(
   id: string,
   input: import('./http/types').ExecutionInput,
-  action: 'status' | 'renew' | 'forget',
+  action: 'status' | 'renew' | 'forget' | 'inspect',
 ) {
   return invoke<import('./auth/types').TokenStatus>('authentication_action', { id, input, action });
 }
