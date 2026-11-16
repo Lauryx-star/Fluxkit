@@ -548,6 +548,15 @@ h1 > span {
   align-items: center;
   margin-bottom: 14px;
 }
+/* The name block takes all the room up to the buttons; long names end in an ellipsis. */
+.editor-heading > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-right: 24px;
+}
+.editor-heading > .save-controls {
+  flex-shrink: 0;
+}
 .request-name {
   font-size: 22px;
   letter-spacing: -0.6px;
@@ -555,8 +564,8 @@ h1 > span {
   color: #e2e8dd;
   border: 0;
   padding: 7px 0 0;
-  max-width: 100%;
-  width: 350px;
+  width: 100%;
+  text-overflow: ellipsis;
 }
 .subtle-tag {
   font-size: 11px;
