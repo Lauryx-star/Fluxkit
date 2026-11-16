@@ -1115,18 +1115,18 @@ export default function App() {
                         Send & save response…
                       </button>
                       <span>Direct connection · redirects shown · no cookie session</span>
+                      <p className="auth-effective" aria-label="Effective authentication">
+                        Authentication: <strong>{authLabel(effective.auth)}</strong> ·{' '}
+                        {effective.source}
+                        {draft.auth ? '' : ' · inherited'}
+                        {manualAuthHint(effective.auth, draft) && (
+                          <span className="auth-override">
+                            {' '}
+                            · {manualAuthHint(effective.auth, draft)}
+                          </span>
+                        )}
+                      </p>
                     </div>
-                    <p className="auth-effective" aria-label="Effective authentication">
-                      Authentication: <strong>{authLabel(effective.auth)}</strong> ·{' '}
-                      {effective.source}
-                      {draft.auth ? '' : ' · inherited'}
-                      {manualAuthHint(effective.auth, draft) && (
-                        <span className="auth-override">
-                          {' '}
-                          · {manualAuthHint(effective.auth, draft)}
-                        </span>
-                      )}
-                    </p>
                     {checkResult && (
                       <div
                         className={`variable-check variable-check-${checkResult.state}`}
