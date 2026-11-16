@@ -53,6 +53,8 @@ import {
   withExpanded,
 } from './projects/session';
 import { ServerUsers } from './server/ServerUsers';
+import { SidebarResizer } from './ui/SidebarResizer';
+import { DEFAULT_SIDEBAR_WIDTH, shownSidebarWidth, useViewportWidth } from './ui/sidebarWidth';
 import { VariableContext } from './environments/VariableContext';
 import { VariableInput } from './environments/VariableInput';
 import { historyKey, keepHistoryScopes } from './environments/textHistory';
@@ -109,6 +111,10 @@ export default function App() {
   // The divider position is part of the saved session; without one the response takes the
   // bottom quarter.
   const [requestPaneRatio, setRequestPaneRatio] = useState(DEFAULT_REQUEST_PANE_RATIO);
+  /** The sidebar width the user chose (part of the saved session); null for the default. */
+  const [sidebarWidth, setSidebarWidth] = useState<number | null>(null);
+  const viewportWidth = useViewportWidth();
+  const shownSidebar = shownSidebarWidth(sidebarWidth ?? DEFAULT_SIDEBAR_WIDTH, viewportWidth);
   /** Expanded collections and folders, most recent last; null while every branch is expanded. */
   const [treeExpanded, setTreeExpanded] = useState<string[] | null>(null);
   const [resizingSplit, setResizingSplit] = useState(false);
@@ -170,6 +176,7 @@ export default function App() {
     requestPaneRatio,
     treeExpanded,
     (ids) => setTreeExpanded((old) => withExpanded(old, ids)),
+    sidebarWidth,
   );
   // Apply the remembered tree expansion once: branches not remembered as expanded (including
   // collections and folders added since) start collapsed.
@@ -187,6 +194,12 @@ export default function App() {
   if (workspace.restoredRatio !== null && workspace.restoredRatio !== appliedRatio) {
     setAppliedRatio(workspace.restoredRatio);
     setRequestPaneRatio(clampSplitRatio(workspace.restoredRatio));
+  }
+  // Apply the restored sidebar width once, when the session has been read.
+  const [appliedSidebar, setAppliedSidebar] = useState<typeof workspace.restoredSidebar>(null);
+  if (workspace.restoredSidebar !== null && workspace.restoredSidebar !== appliedSidebar) {
+    setAppliedSidebar(workspace.restoredSidebar);
+    setSidebarWidth(workspace.restoredSidebar.width);
   }
   const [moveTarget, setMoveTarget] = useState<{
     draftId: number;
@@ -223,6 +236,20 @@ export default function App() {
     closeDraft,
   } = workspace;
   const busy = workspaceBusy || choosingImport || importBusy || exportBusy;
+  const tabsRef = useRef<HTMLDivElement>(null);
+  // Tabs wrap onto at most three rows and scroll beyond that; keep the active tab in view.
+  useEffect(() => {
+    const list = tabsRef.current;
+    const active = list?.querySelector<HTMLElement>('.request-tab.active');
+    if (!list || !active) {
+      return;
+    }
+    if (active.offsetTop < list.scrollTop) {
+      list.scrollTop = active.offsetTop;
+    } else if (active.offsetTop + active.offsetHeight > list.scrollTop + list.clientHeight) {
+      list.scrollTop = active.offsetTop + active.offsetHeight - list.clientHeight;
+    }
+  }, [activeId, drafts.length]);
   // Undo histories belong to open tabs; closing a tab discards its history.
   useEffect(() => keepHistoryScopes(drafts.map((item) => `draft:${item.id}`)), [drafts]);
   const exportProject = workspace.projects.find((p) => p.handle === exportHandle);
@@ -571,7 +598,11 @@ export default function App() {
   return (
     <VariableContext.Provider value={variableContext}>
       <div className="app-shell" inert={workspace.quitOpen || !!moveTarget}>
-        <aside className="sidebar" aria-label="Workspace navigation">
+        <aside
+          className="sidebar"
+          aria-label="Workspace navigation"
+          style={{ width: shownSidebar }}
+        >
           <div className="brand">
             <img className="brand-mark" src={brandMark} alt="" />
             <span>
@@ -715,6 +746,7 @@ export default function App() {
             <span>Small footprint. Big plans.</span>
           </div>
         </aside>
+        <SidebarResizer width={shownSidebar} viewport={viewportWidth} onResize={setSidebarWidth} />
 
         <div className="main-shell">
           <header className="workspace-header">
@@ -787,12 +819,25 @@ export default function App() {
               </div>
             )}
             <div className="request-tabbar" aria-label="Request tabs">
-              <div className="request-tabs">
+              <div className="request-tabs" ref={tabsRef}>
                 {drafts.map((item) => (
                   <div
                     className={`request-tab ${item.id === activeId ? 'active' : ''}`}
                     key={item.id}
                     draggable={!busy}
+                    // A middle click closes the tab, as in browsers; the same confirmation as
+                    // the close button applies. Suppressing mousedown avoids auto-scrolling.
+                    onMouseDown={(event) => {
+                      if (event.button === 1) {
+                        event.preventDefault();
+                      }
+                    }}
+                    onAuxClick={(event) => {
+                      if (event.button === 1) {
+                        event.preventDefault();
+                        closeDraft(item.id);
+                      }
+                    }}
                     onDragStart={(event) => {
                       if (busy) {
                         event.preventDefault();
@@ -823,14 +868,14 @@ export default function App() {
                     </button>
                   </div>
                 ))}
+                <button
+                  className="icon-button new-tab"
+                  aria-label="New request tab"
+                  onClick={() => addDraft()}
+                >
+                  <Icon name="plus" />
+                </button>
               </div>
-              <button
-                className="icon-button new-tab"
-                aria-label="New request tab"
-                onClick={() => addDraft()}
-              >
-                <Icon name="plus" />
-              </button>
               <span className="session-label">
                 {project?.readOnly
                   ? 'SERVER SNAPSHOT · READ ONLY'
@@ -1083,18 +1128,18 @@ export default function App() {
                         Send & save response…
                       </button>
                       <span>Direct connection · redirects shown · no cookie session</span>
+                      <p className="auth-effective" aria-label="Effective authentication">
+                        Authentication: <strong>{authLabel(effective.auth)}</strong> ·{' '}
+                        {effective.source}
+                        {draft.auth ? '' : ' · inherited'}
+                        {manualAuthHint(effective.auth, draft) && (
+                          <span className="auth-override">
+                            {' '}
+                            · {manualAuthHint(effective.auth, draft)}
+                          </span>
+                        )}
+                      </p>
                     </div>
-                    <p className="auth-effective" aria-label="Effective authentication">
-                      Authentication: <strong>{authLabel(effective.auth)}</strong> ·{' '}
-                      {effective.source}
-                      {draft.auth ? '' : ' · inherited'}
-                      {manualAuthHint(effective.auth, draft) && (
-                        <span className="auth-override">
-                          {' '}
-                          · {manualAuthHint(effective.auth, draft)}
-                        </span>
-                      )}
-                    </p>
                     {checkResult && (
                       <div
                         className={`variable-check variable-check-${checkResult.state}`}

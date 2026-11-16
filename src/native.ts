@@ -189,6 +189,8 @@ export interface SessionInput {
   requestPaneRatio: number | null;
   /** Expanded collection and folder ids, most recently expanded last; null = all expanded. */
   treeExpanded: string[] | null;
+  /** The sidebar width in CSS pixels the user chose; null for the default. */
+  sidebarWidth: number | null;
 }
 export interface RestoredSession {
   projects: import('./projects/types').ProjectView[];
@@ -198,6 +200,7 @@ export interface RestoredSession {
   activeTab: number | null;
   requestPaneRatio: number | null;
   treeExpanded?: string[] | null;
+  sidebarWidth?: number | null;
   unavailable: string[];
 }
 /** Reopens the projects and tabs of the previous run; null when none was saved yet. */

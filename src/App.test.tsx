@@ -58,6 +58,25 @@ describe('desktop foundation', () => {
     expect(screen.queryByRole('textbox', { name: 'Request URL' })).not.toBeInTheDocument();
   });
 
+  it('closes a tab with a middle click', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'New request tab' }));
+    await user.click(screen.getByRole('button', { name: 'New request tab' }));
+    const tabs = screen.getByLabelText('Request tabs');
+    await user.pointer({
+      keys: '[MouseMiddle]',
+      target: within(tabs).getByRole('button', { name: 'GET Request 1' }),
+    });
+    // Unsaved tabs ask first, exactly like the close button.
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(within(tabs).queryByRole('button', { name: 'GET Request 1' })).not.toBeInTheDocument();
+    expect(within(tabs).getByRole('button', { name: 'GET Request 2' })).toBeInTheDocument();
+    // A left click still only selects the tab.
+    await user.click(within(tabs).getByRole('button', { name: 'GET Request 2' }));
+    expect(within(tabs).getByRole('button', { name: 'GET Request 2' })).toBeInTheDocument();
+  });
+
   it('undoes request body edits per tab with Ctrl+Z and redoes them with Ctrl+Shift+Z', async () => {
     const user = userEvent.setup();
     render(<App />);

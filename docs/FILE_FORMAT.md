@@ -204,6 +204,12 @@ last run (for example by other server members). Collections and folders the user
 imports are added to the list, so they open expanded. Without the field (sessions from before, or nothing collapsed yet) every branch is
 expanded; the first collapse starts the list from all branches of the open projects.
 
+`sidebarWidth` is the width of the navigation sidebar in CSS pixels as the user last set it
+(100–10,000). The sidebar is shown at that width but at least 200 pixels and at most half of the
+window, so it grows back when the window becomes wider again. Without the field (sessions from
+before, or never resized) the sidebar is 248 pixels wide; the field is only written once the user
+resizes the sidebar.
+
 Tab contents are request templates as typed, including unsaved edits, and can contain literal
 credentials typed into a request. They never contain resolved variable values or responses.
 The file is created owner-only (on Unix) and limited to 16 MiB, 50 projects and 200 tabs; invalid

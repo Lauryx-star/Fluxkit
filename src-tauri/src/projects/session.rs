@@ -1,5 +1,5 @@
 //! Machine-local session: open projects, open request tabs (including unsaved edits) and the
-//! request/response layout, restored at the next start. Separate from portable project files.
+//! layout (request/response divider, sidebar width, expanded tree branches), restored at the next start. Separate from portable project files.
 //!
 //! Tab contents are the editor's own data and may contain sensitive literal request content.
 //! They are stored only in this file in the app-data folder (owner-only permissions on Unix),
@@ -21,6 +21,9 @@ const MAX_PROJECTS: usize = 50;
 const MAX_TABS: usize = 200;
 /// Collection and folder ids whose tree branch was expanded; older entries beyond this are dropped.
 const MAX_EXPANDED: usize = 10_000;
+/// Plausible sidebar widths in CSS pixels.
+const MIN_SIDEBAR: f64 = 100.0;
+const MAX_SIDEBAR: f64 = 10_000.0;
 const SETTINGS_ERROR: &str =
     "Could not save the open tabs for the next start. Check app-data permissions and disk space.";
 const INVALID: &str =
@@ -53,6 +56,10 @@ struct Stored {
     /// Expanded collections and folders; none in sessions saved before this was remembered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tree_expanded: Option<Vec<String>>,
+    /// Sidebar width in CSS pixels; none for the default and in sessions saved before it was
+    /// remembered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sidebar_width: Option<f64>,
 }
 
 /// What the UI hands over: open handles stand for projects.
@@ -67,6 +74,9 @@ pub struct SessionInput {
     /// Expanded collections and folders; none while every branch is still expanded.
     #[serde(default)]
     tree_expanded: Option<Vec<String>>,
+    /// Sidebar width in CSS pixels; none for the default.
+    #[serde(default)]
+    sidebar_width: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -87,6 +97,7 @@ pub struct RestoredSession {
     active_tab: Option<usize>,
     request_pane_ratio: Option<f64>,
     tree_expanded: Option<Vec<String>>,
+    sidebar_width: Option<f64>,
     /// Projects that could not be reopened (moved, deleted, invalid); their tabs are kept
     /// without a project so unsaved edits are not lost.
     unavailable: Vec<String>,
@@ -123,6 +134,16 @@ fn valid_ratio(ratio: Option<f64>) -> Result<Option<f64>, String> {
     }
 }
 
+/// The UI keeps the shown width within its own limits; this only rejects nonsense values.
+fn valid_width(width: Option<f64>) -> Result<Option<f64>, String> {
+    match width {
+        Some(value) if !value.is_finite() || !(MIN_SIDEBAR..=MAX_SIDEBAR).contains(&value) => {
+            Err("The sidebar width is invalid.".into())
+        }
+        other => Ok(other),
+    }
+}
+
 fn decode(bytes: &[u8]) -> Result<Stored, String> {
     let stored: Stored = serde_json::from_slice(bytes).map_err(|_| INVALID)?;
     let in_range = |index: Option<usize>, len: usize| index.is_none_or(|index| index < len);
@@ -139,6 +160,7 @@ fn decode(bytes: &[u8]) -> Result<Stored, String> {
             !project.directory.is_absolute() || validate_id(&project.project_id).is_err()
         })
         || valid_ratio(stored.request_pane_ratio).is_err()
+        || valid_width(stored.sidebar_width).is_err()
         || stored.tree_expanded.as_ref().is_some_and(|ids| {
             ids.len() > MAX_EXPANDED || ids.iter().any(|id| validate_id(id).is_err())
         })
@@ -209,6 +231,7 @@ pub fn save(
             let excess = kept.len().saturating_sub(MAX_EXPANDED);
             kept.split_off(excess)
         }),
+        sidebar_width: valid_width(input.sidebar_width)?,
     };
     let bytes = serde_json::to_vec(&stored).map_err(|_| SETTINGS_ERROR)?;
     if bytes.len() as u64 > LIMIT {
@@ -273,6 +296,7 @@ pub fn restore(
         active_tab: stored.active_tab,
         request_pane_ratio: stored.request_pane_ratio,
         tree_expanded: stored.tree_expanded,
+        sidebar_width: stored.sidebar_width,
         unavailable,
     }))
 }
@@ -297,6 +321,7 @@ mod tests {
             active_tab: Some(1),
             request_pane_ratio: Some(0.75),
             tree_expanded: None,
+            sidebar_width: None,
         }
     }
 
@@ -329,6 +354,41 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(restored.tree_expanded, None);
+    }
+
+    #[test]
+    fn the_sidebar_width_is_remembered_validated_and_optional() {
+        let settings = tempdir().unwrap();
+        let projects = ProjectStore::default();
+        let mut session = input(&[], vec![]);
+        session.sidebar_width = Some(412.0);
+        save(settings.path(), &projects, session).unwrap();
+        let restored = restore(settings.path(), &mut ProjectStore::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.sidebar_width, Some(412.0));
+
+        // Without a chosen width nothing is written, so older versions can still read the file.
+        save(settings.path(), &projects, input(&[], vec![])).unwrap();
+        let bytes = std::fs::read(settings.path().join(FILE)).unwrap();
+        assert!(!String::from_utf8(bytes).unwrap().contains("sidebarWidth"));
+        let restored = restore(settings.path(), &mut ProjectStore::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.sidebar_width, None);
+
+        for width in [f64::NAN, f64::INFINITY, -5.0, 20_000.0] {
+            let mut bad = input(&[], vec![]);
+            bad.sidebar_width = Some(width);
+            assert!(save(settings.path(), &projects, bad).is_err());
+        }
+        let path = settings.path().join(FILE);
+        let stored = br#"{"schemaVersion":1,"projects":[],"activeProject":null,"tabs":[],"activeTab":null,"requestPaneRatio":null,"sidebarWidth":3}"#;
+        fs::write(&path, stored).unwrap();
+        assert_eq!(
+            restore(settings.path(), &mut ProjectStore::default()).unwrap_err(),
+            INVALID
+        );
     }
 
     #[test]
