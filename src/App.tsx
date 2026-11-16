@@ -825,6 +825,19 @@ export default function App() {
                     className={`request-tab ${item.id === activeId ? 'active' : ''}`}
                     key={item.id}
                     draggable={!busy}
+                    // A middle click closes the tab, as in browsers; the same confirmation as
+                    // the close button applies. Suppressing mousedown avoids auto-scrolling.
+                    onMouseDown={(event) => {
+                      if (event.button === 1) {
+                        event.preventDefault();
+                      }
+                    }}
+                    onAuxClick={(event) => {
+                      if (event.button === 1) {
+                        event.preventDefault();
+                        closeDraft(item.id);
+                      }
+                    }}
                     onDragStart={(event) => {
                       if (busy) {
                         event.preventDefault();
