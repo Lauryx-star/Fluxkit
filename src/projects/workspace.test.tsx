@@ -1131,6 +1131,35 @@ describe('session restore', () => {
     );
   });
 
+  it('restores the sidebar width within half the window and remembers changes', async () => {
+    vi.mocked(native.restoreSession).mockResolvedValue({
+      projects: [],
+      activeProject: null,
+      tabs: [],
+      activeTab: null,
+      requestPaneRatio: null,
+      sidebarWidth: 900,
+      unavailable: [],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const sidebar = screen.getByRole('complementary', { name: 'Workspace navigation' });
+    const divider = screen.getByRole('separator', { name: 'Resize sidebar' });
+    const half = Math.floor(window.innerWidth / 2);
+    await waitFor(() => expect(sidebar).toHaveStyle({ width: `${half}px` }));
+    expect(divider).toHaveAttribute('aria-valuemax', String(half));
+    divider.focus();
+    await user.keyboard('{Home}');
+    expect(sidebar).toHaveStyle({ width: '200px' });
+    await user.keyboard('{ArrowRight}');
+    expect(sidebar).toHaveStyle({ width: '216px' });
+    await waitFor(() =>
+      expect(native.saveSession).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sidebarWidth: 216 }),
+      ),
+    );
+  });
+
   it('keeps unsaved edits for the next start or drops them, as chosen when quitting', async () => {
     const user = await setupCollection();
     await user.click(screen.getByRole('button', { name: 'New request in Shop API' }));

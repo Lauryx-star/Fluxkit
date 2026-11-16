@@ -28,6 +28,7 @@ interface Startup {
   activeId: number | null;
   requestPaneRatio: number | null;
   treeExpanded: string[] | null;
+  sidebarWidth: number | null;
   problems: string[];
 }
 
@@ -60,6 +61,7 @@ async function restore(): Promise<Startup> {
       activeId: null,
       requestPaneRatio: null,
       treeExpanded: null,
+      sidebarWidth: null,
       problems: [],
     };
   }
@@ -94,6 +96,7 @@ async function restore(): Promise<Startup> {
     activeId: drafts.some((item) => item.id === activeId) ? activeId : (drafts.at(-1)?.id ?? null),
     requestPaneRatio: session.requestPaneRatio,
     treeExpanded: session.treeExpanded ?? null,
+    sidebarWidth: session.sidebarWidth ?? null,
     problems: problems.length
       ? [...problems, 'Their open requests were kept without a project.']
       : [],
@@ -108,6 +111,8 @@ export function useWorkspace(
   treeExpanded: string[] | null = null,
   /** Called with the collection/folder ids (and their parents) the user just created. */
   onBranchesCreated?: (ids: string[]) => void,
+  /** The sidebar width the user chose; null for the default. */
+  sidebarWidth: number | null = null,
 ) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -125,6 +130,8 @@ export function useWorkspace(
   const [restoredRatio, setRestoredRatio] = useState<number | null>(null);
   /** Set once after the session was read: the remembered tree expansion (null = all). */
   const [restoredTree, setRestoredTree] = useState<{ expanded: string[] | null } | null>(null);
+  /** Set once after the session was read: the remembered sidebar width (null = default). */
+  const [restoredSidebar, setRestoredSidebar] = useState<{ width: number | null } | null>(null);
   // Set once the quit flow wrote the final session, so no pending autosave overwrites it.
   const sessionClosed = useRef(false);
   const remembered = useRef<string | null>(null);
@@ -189,6 +196,7 @@ export function useWorkspace(
             setNextId(restored.drafts.length + 1);
             setRestoredRatio(restored.requestPaneRatio);
             setRestoredTree({ expanded: restored.treeExpanded });
+            setRestoredSidebar({ width: restored.sidebarWidth });
             if (restored.problems.length) {
               setError(restored.problems.join(' '));
             }
@@ -249,7 +257,15 @@ export function useWorkspace(
       }
       void native
         .saveSession(
-          sessionInput(projects, activeHandle, drafts, activeId, requestPaneRatio, treeExpanded),
+          sessionInput(
+            projects,
+            activeHandle,
+            drafts,
+            activeId,
+            requestPaneRatio,
+            treeExpanded,
+            sidebarWidth,
+          ),
         )
         .catch(() => {});
     }, 400);
@@ -263,6 +279,7 @@ export function useWorkspace(
     activeId,
     requestPaneRatio,
     treeExpanded,
+    sidebarWidth,
   ]);
 
   const ask = useCallback(
@@ -1053,7 +1070,15 @@ export function useWorkspace(
       const tabs =
         choice === 'save' ? asSaved(drafts) : choice === 'discard' ? withoutEdits(drafts) : drafts;
       const final = native.saveSession(
-        sessionInput(projects, activeHandle, tabs, activeId, requestPaneRatio, treeExpanded),
+        sessionInput(
+          projects,
+          activeHandle,
+          tabs,
+          activeId,
+          requestPaneRatio,
+          treeExpanded,
+          sidebarWidth,
+        ),
       );
       sessionClosed.current = true;
       if (choice === 'keep') {
@@ -1111,6 +1136,7 @@ export function useWorkspace(
     ask,
     restoredRatio,
     restoredTree,
+    restoredSidebar,
     conflict,
     resolveConflict,
     deleteServerProject,

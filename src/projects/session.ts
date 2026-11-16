@@ -12,6 +12,7 @@ export function sessionInput(
   activeId: number | null,
   requestPaneRatio: number | null,
   treeExpanded: string[] | null = null,
+  sidebarWidth: number | null = null,
 ): SessionInput {
   const index = drafts.findIndex((item) => item.id === activeId);
   return {
@@ -21,6 +22,7 @@ export function sessionInput(
     activeTab: index < 0 ? null : index,
     requestPaneRatio,
     treeExpanded,
+    sidebarWidth,
   };
 }
 

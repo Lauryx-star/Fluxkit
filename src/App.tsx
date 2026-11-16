@@ -53,6 +53,8 @@ import {
   withExpanded,
 } from './projects/session';
 import { ServerUsers } from './server/ServerUsers';
+import { SidebarResizer } from './ui/SidebarResizer';
+import { DEFAULT_SIDEBAR_WIDTH, shownSidebarWidth, useViewportWidth } from './ui/sidebarWidth';
 import { VariableContext } from './environments/VariableContext';
 import { VariableInput } from './environments/VariableInput';
 import { historyKey, keepHistoryScopes } from './environments/textHistory';
@@ -109,6 +111,10 @@ export default function App() {
   // The divider position is part of the saved session; without one the response takes the
   // bottom quarter.
   const [requestPaneRatio, setRequestPaneRatio] = useState(DEFAULT_REQUEST_PANE_RATIO);
+  /** The sidebar width the user chose (part of the saved session); null for the default. */
+  const [sidebarWidth, setSidebarWidth] = useState<number | null>(null);
+  const viewportWidth = useViewportWidth();
+  const shownSidebar = shownSidebarWidth(sidebarWidth ?? DEFAULT_SIDEBAR_WIDTH, viewportWidth);
   /** Expanded collections and folders, most recent last; null while every branch is expanded. */
   const [treeExpanded, setTreeExpanded] = useState<string[] | null>(null);
   const [resizingSplit, setResizingSplit] = useState(false);
@@ -170,6 +176,7 @@ export default function App() {
     requestPaneRatio,
     treeExpanded,
     (ids) => setTreeExpanded((old) => withExpanded(old, ids)),
+    sidebarWidth,
   );
   // Apply the remembered tree expansion once: branches not remembered as expanded (including
   // collections and folders added since) start collapsed.
@@ -187,6 +194,12 @@ export default function App() {
   if (workspace.restoredRatio !== null && workspace.restoredRatio !== appliedRatio) {
     setAppliedRatio(workspace.restoredRatio);
     setRequestPaneRatio(clampSplitRatio(workspace.restoredRatio));
+  }
+  // Apply the restored sidebar width once, when the session has been read.
+  const [appliedSidebar, setAppliedSidebar] = useState<typeof workspace.restoredSidebar>(null);
+  if (workspace.restoredSidebar !== null && workspace.restoredSidebar !== appliedSidebar) {
+    setAppliedSidebar(workspace.restoredSidebar);
+    setSidebarWidth(workspace.restoredSidebar.width);
   }
   const [moveTarget, setMoveTarget] = useState<{
     draftId: number;
@@ -571,7 +584,11 @@ export default function App() {
   return (
     <VariableContext.Provider value={variableContext}>
       <div className="app-shell" inert={workspace.quitOpen || !!moveTarget}>
-        <aside className="sidebar" aria-label="Workspace navigation">
+        <aside
+          className="sidebar"
+          aria-label="Workspace navigation"
+          style={{ width: shownSidebar }}
+        >
           <div className="brand">
             <img className="brand-mark" src={brandMark} alt="" />
             <span>
@@ -715,6 +732,7 @@ export default function App() {
             <span>Small footprint. Big plans.</span>
           </div>
         </aside>
+        <SidebarResizer width={shownSidebar} viewport={viewportWidth} onResize={setSidebarWidth} />
 
         <div className="main-shell">
           <header className="workspace-header">

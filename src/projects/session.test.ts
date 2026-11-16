@@ -36,6 +36,7 @@ describe('session tabs', () => {
       activeTab: 1,
       requestPaneRatio: 0.6,
       treeExpanded: null,
+      sidebarWidth: null,
     });
   });
 

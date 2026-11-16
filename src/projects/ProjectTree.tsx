@@ -122,7 +122,7 @@ export function ProjectTree(props: Props) {
                   }}
                 >
                   <Icon name="folder" size={13} />
-                  <span>{folder.name}</span>
+                  <span title={folder.name}>{folder.name}</span>
                 </button>
                 <div className="tree-actions">
                   <button
@@ -194,7 +194,7 @@ export function ProjectTree(props: Props) {
                 <span className={`method-label method-${request.method.toLowerCase()}`}>
                   {request.method}
                 </span>
-                <span>{request.name}</span>
+                <span title={request.name}>{request.name}</span>
               </button>
               <div className="tree-actions">
                 <button
@@ -224,7 +224,7 @@ export function ProjectTree(props: Props) {
               }}
             >
               <Icon name="code" size={14} />
-              <span>{collection.data.name}</span>
+              <span title={collection.data.name}>{collection.data.name}</span>
             </button>
             <div className="tree-actions">
               <button
