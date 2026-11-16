@@ -303,24 +303,33 @@ main {
   min-height: 0;
 }
 .request-tabbar {
-  min-height: 43px;
+  --tab-height: 42px;
+  min-height: calc(var(--tab-height) + 1px);
   flex-shrink: 0;
   display: flex;
   border-bottom: 1px solid var(--line);
-  align-items: stretch;
+  align-items: flex-start;
   background: #141814;
 }
+/* Tabs wrap onto new rows like text; beyond three rows the list scrolls vertically. */
 .request-tabs {
   display: flex;
+  flex-wrap: wrap;
+  flex: 1 1 auto;
   min-width: 0;
-  overflow-x: auto;
+  max-height: calc(3 * var(--tab-height));
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .request-tab {
   display: flex;
   align-items: center;
+  height: var(--tab-height);
   padding-right: 7px;
   border-right: 1px solid var(--line);
   border-top: 2px solid transparent;
+  /* Separates the rows; the last row's line falls onto the tab bar's own border. */
+  box-shadow: 0 1px 0 var(--line);
   min-width: 155px;
 }
 .request-tab.active {
@@ -367,6 +376,7 @@ main {
   border-radius: 50%;
 }
 .new-tab {
+  height: var(--tab-height);
   padding: 0 16px;
   border-radius: 0;
 }
@@ -375,7 +385,8 @@ main {
   letter-spacing: 1.3px;
   color: #8d9885;
   margin-left: auto;
-  padding: 16px 25px;
+  padding: 0 25px;
+  line-height: var(--tab-height);
   white-space: nowrap;
 }
 .welcome {

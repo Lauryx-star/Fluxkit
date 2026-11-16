@@ -236,6 +236,20 @@ export default function App() {
     closeDraft,
   } = workspace;
   const busy = workspaceBusy || choosingImport || importBusy || exportBusy;
+  const tabsRef = useRef<HTMLDivElement>(null);
+  // Tabs wrap onto at most three rows and scroll beyond that; keep the active tab in view.
+  useEffect(() => {
+    const list = tabsRef.current;
+    const active = list?.querySelector<HTMLElement>('.request-tab.active');
+    if (!list || !active) {
+      return;
+    }
+    if (active.offsetTop < list.scrollTop) {
+      list.scrollTop = active.offsetTop;
+    } else if (active.offsetTop + active.offsetHeight > list.scrollTop + list.clientHeight) {
+      list.scrollTop = active.offsetTop + active.offsetHeight - list.clientHeight;
+    }
+  }, [activeId, drafts.length]);
   // Undo histories belong to open tabs; closing a tab discards its history.
   useEffect(() => keepHistoryScopes(drafts.map((item) => `draft:${item.id}`)), [drafts]);
   const exportProject = workspace.projects.find((p) => p.handle === exportHandle);
@@ -805,7 +819,7 @@ export default function App() {
               </div>
             )}
             <div className="request-tabbar" aria-label="Request tabs">
-              <div className="request-tabs">
+              <div className="request-tabs" ref={tabsRef}>
                 {drafts.map((item) => (
                   <div
                     className={`request-tab ${item.id === activeId ? 'active' : ''}`}
@@ -841,14 +855,14 @@ export default function App() {
                     </button>
                   </div>
                 ))}
+                <button
+                  className="icon-button new-tab"
+                  aria-label="New request tab"
+                  onClick={() => addDraft()}
+                >
+                  <Icon name="plus" />
+                </button>
               </div>
-              <button
-                className="icon-button new-tab"
-                aria-label="New request tab"
-                onClick={() => addDraft()}
-              >
-                <Icon name="plus" />
-              </button>
               <span className="session-label">
                 {project?.readOnly
                   ? 'SERVER SNAPSHOT · READ ONLY'
